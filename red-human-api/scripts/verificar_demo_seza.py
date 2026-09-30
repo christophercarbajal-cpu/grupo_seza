@@ -248,7 +248,143 @@ async def _whatsapp():
     db.close()
 
 
+# ------------------------------------------------------------ 2026-09-30: punta a punta por WhatsApp
+
+
+async def _whatsapp_por_plaza(nombre: str, plaza: str, cambios: dict):
+    """Contesta el cuestionario completo por WhatsApp; regresa (codigo, respuestas del bot, postulación)."""
+    from app.database import SessionLocal
+    from app.models import Vacante
+    from app.routers.candidatos import _crear_candidato, postulacion_para_vacante, procesar_prefiltro
+    from app.services import prefiltro_reglas as pr
+
+    db = SessionLocal()
+    v = db.query(Vacante).filter(Vacante.slug == SLUG + plaza).one()
+    persona = _crear_candidato(db, v.cuenta_id, nombre, "WhatsApp", False)
+    p, _ = postulacion_para_vacante(db, persona, v, v.cuenta_id, "whatsapp", consentimiento=True)
+    db.commit()
+    base = {"municipio": "Puebla", "jornada": "sí", "zona": "sí", "experiencia": "sí", "vehiculo_propio": "sí",
+            "tipo_vehiculo": "1", "anio_vehiculo": "2019", "taxi": "no", "circulacion": "1", "licencia": "si",
+            "poliza": "si", "android": "si", **cambios}
+    ids = [q["id"] for q in pr.preguntas(v.prefiltro_reglas)]
+    salidas = [(await procesar_prefiltro(db, p, "Me interesa la vacante", "whatsapp"))["respuesta"]]
+    for pid in ids:
+        salidas.append((await procesar_prefiltro(db, p, base[pid], "whatsapp"))["respuesta"])
+    db.refresh(p)
+    return db, p, ids, salidas, v
+
+
+async def _whatsapp_completo():
+    from app.services import prefiltro_reglas as pr
+
+    # Orden de las preguntas + «Cumple perfil» → columna «Revisión de vehículo» con liga de fotos
+    db, p, ids, salidas, v = await _whatsapp_por_plaza("Lalo WhatsApp", "puebla", {})
+    textos = [q["texto"] for q in pr.preguntas(v.prefiltro_reglas)]
+    en_orden = all(textos[i] in salidas[i] and f"*{i + 1}/{len(ids)}*" in salidas[i] for i in range(len(ids)))
+    check(en_orden and len(ids) >= 11, f"WhatsApp: las {len(ids)} preguntas del documento salen en orden, una por mensaje")
+    check(p.estado == "cumple" and p.etapa == "Revisión de vehículo" and p.revision_vehiculo is not None
+          and "/vehiculo/" in salidas[-1], "WhatsApp: «Cumple perfil» → «Revisión de vehículo» + liga de fotos")
+    cumple = p.codigo
+    db.close()
+
+    # Vehículo fuera de parámetro → «Requiere revisión» con su motivo; se queda en Prefiltro para RH
+    db, p, *_ = await _whatsapp_por_plaza("Memo WhatsApp", "puebla", {"anio_vehiculo": "2015"})
+    ev = (p.analisis or {}).get("prefiltro_reglas", {}).get("evaluacion", {})
+    check(p.estado == "revision" and ev.get("etiqueta") == "Requiere revisión" and p.etapa == "Prefiltro"
+          and [m["id"] for m in ev.get("motivos", [])] == ["anio_vehiculo"],
+          "WhatsApp: modelo 2015 en Puebla → «Requiere revisión» (motivo año del vehículo), sigue en Prefiltro")
+    db.close()
+
+    db, p, *_ = await _whatsapp_por_plaza("Nico WhatsApp", "cdmx", {"tipo_vehiculo": "un tsuru"})
+    ev = (p.analisis or {}).get("prefiltro_reglas", {}).get("evaluacion", {})
+    check(p.estado == "revision" and [m["id"] for m in ev.get("motivos", [])] == ["tipo_vehiculo"],
+          "WhatsApp: «un tsuru» en CDMX → «Otro» → «Requiere revisión» (motivo tipo de vehículo)")
+    db.close()
+    return cumple
+
+
+async def _whatsapp_confirma(codigo: str, texto: str) -> str:
+    from app.database import SessionLocal
+    from app.models import Postulacion
+    from app.routers.candidatos import procesar_prefiltro
+
+    db = SessionLocal()
+    p = db.query(Postulacion).filter(Postulacion.codigo == codigo).one()
+    r = await procesar_prefiltro(db, p, texto, "whatsapp")
+    db.close()
+    return r["respuesta"]
+
+
+def _capacitacion_y_contadores(cumple: str):
+    from collections import Counter
+    from unittest import mock
+
+    with TestClient(app) as c:
+        c.post("/auth/login", json={"correo": "admin@redhuman.mx", "password": "Verificar123!"})
+        cuentas = c.get("/auth/yo").json().get("cuentas") or []
+        h = {"X-Cuenta-Id": str(next((x["id"] for x in cuentas if "SEZA" in x.get("nombre", "")), 1))}
+
+        def conteos():
+            t = c.get("/candidatos", headers=h).json()
+            kanban = Counter(x["etapa"] for x in (t if isinstance(t, list) else t.get("candidatos", [])))
+            vac = Counter()
+            for v in c.get("/vacantes", headers=h).json():
+                vac.update((v.get("embudo") or {}).get("etapas") or {})
+            return kanban, vac
+
+        vacs = c.get("/vacantes", headers=h).json()
+        puebla = next(v for v in vacs if v["ubicacionEstado"] == "Puebla")
+        cursos = c.get("/capacitacion", headers=h).json()
+        induccion = next(x for x in (cursos if isinstance(cursos, list) else cursos.get("cursos", [])) if x.get("titulo") == "Inducción SEZA")
+        s = c.post("/sesiones-capacitacion", json={"tienda": "Tienda WA", "inicio": "2030-02-01T09:00", "cupo": 5, "supervisor_nombre": "Sup WA",
+                                                  "vacante": puebla["id"], "curso_induccion": induccion["id"]}, headers=h).json()
+
+        k0, v0 = conteos()
+        r = c.post(f"/candidatos/{cumple}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Revisado en persona"}, headers=h)
+        check(r.status_code == 200 and r.json()["vehiculo"]["puedeCitar"], "vehículo del candidato de WhatsApp aprobado por excepción")
+        c.post(f"/candidatos/{cumple}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
+        k1, v1 = conteos()
+        check(k1["Revisión de vehículo"] == k0["Revisión de vehículo"] - 1 and k1["Cita para capacitación"] == k0["Cita para capacitación"] + 1
+              and v1 == k1, "contadores: la tarjeta pasa de «Revisión de vehículo» a «Cita» y Kanban = vacantes")
+
+        # El candidato confirma con «Sí» por WhatsApp → PDF de Inducción SEZA (simulado) y descargable
+        resp = asyncio.run(_whatsapp_confirma(cumple, "Sí, ahí estaré"))
+        check("confirmada" in resp and "material de inducción" in resp, "WhatsApp «Sí» confirma la cita y avisa del material de inducción")
+        panel = c.get(f"/candidatos/{cumple}/operativo", headers=h).json()
+        msgs = c.get(f"/candidatos/{cumple}/mensajes", headers=h).json()
+        liga = next((m["texto"].rsplit(" ", 1)[1] for m in (msgs if isinstance(msgs, list) else msgs.get("mensajes", []))
+                     if "[Simulado" in (m.get("texto") or "")), "")
+        pdf = c.get(f"/capacitacion/publica/{liga.rsplit('/', 1)[1]}/pdf") if liga else None
+        check(panel["capacitacion"]["confirmada"] and pdf is not None and pdf.status_code == 200
+              and pdf.content[:4] == b"%PDF", "el PDF de «Inducción SEZA» se descarga desde la liga enviada")
+
+        # Supervisor: asistencia + resultado → «Capacitación realizada» y contadores al día
+        token = s["ligaSupervisor"].rsplit("/", 1)[1]
+        ev = next(x["evaluacion"] for x in c.get(f"/sesiones-capacitacion/publica/{token}").json()["citados"] if x["nombre"] == "Lalo WhatsApp")
+        r = c.post(f"/sesiones-capacitacion/publica/{token}/asistencia", json={"evaluacion": ev, "asistio": True, "resultado": "favorable"})
+        k2, v2 = conteos()
+        check(r.status_code == 200 and k2["Cita para capacitación"] == k1["Cita para capacitación"] - 1
+              and k2["Capacitación realizada"] == k1["Capacitación realizada"] + 1 and v2 == k2,
+              "supervisor registra «Apto» → «Capacitación realizada»; contadores se recalculan")
+
+        # Si la inducción truena, la cita se confirma igual y el supervisor puede capturar (no bloquea)
+        otro = next(x["id"] for x in c.get("/candidatos", headers=h).json() if x["etapa"] == "Revisión de vehículo")
+        c.post(f"/candidatos/{otro}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Prueba"}, headers=h)
+        c.post(f"/candidatos/{otro}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
+        with mock.patch("app.routers.capacitacion.asignar_a_postulacion", side_effect=RuntimeError("falla simulada")):
+            r = c.post(f"/candidatos/{otro}/operativo/confirmar-cita", headers=h)
+        check(r.status_code == 200 and r.json()["capacitacion"]["confirmada"] and r.json()["induccion"] is None,
+              "si falla el PDF de inducción, la cita queda confirmada igual")
+        nombre = c.get(f"/candidatos/{otro}", headers=h).json()["nombre"]
+        ev = next(x["evaluacion"] for x in c.get(f"/sesiones-capacitacion/publica/{token}").json()["citados"] if x["nombre"] == nombre)
+        r = c.post(f"/sesiones-capacitacion/publica/{token}/asistencia", json={"evaluacion": ev, "asistio": False, "comentario": "No llegó"})
+        check(r.status_code == 200 and c.get(f"/candidatos/{otro}", headers=h).json()["etapa"] == "Cita para capacitación",
+              "«No asistió» deja la tarjeta en «Cita» para reprogramar")
+
+
 if __name__ == "__main__":
     main()
+    if not FALLAS:
+        _capacitacion_y_contadores(asyncio.run(_whatsapp_completo()))
     print("\n" + ("❌ FALLAS: " + ", ".join(FALLAS) if FALLAS else "✅ Todo en orden"))
     sys.exit(1 if FALLAS else 0)

@@ -217,16 +217,26 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
     induccion = None
     curso = db.get(Curso, s.curso_induccion_id) if s and s.curso_induccion_id else None
     if curso:
-        a = await asignar_a_postulacion(db, p, curso, actor=actor, notificar=False)
-        liga = f"{settings.app_url}/capacitacion/{a.token}"
-        texto = (
-            f"[Simulado · demo] 📄 {curso.titulo} (PDF)\n"
-            f"Antes de tu capacitación revisa este material. Descárgalo aquí: {liga}"
-        )
-        guardar_mensaje(db, p, "assistant", texto, "whatsapp", {"enviado": False, "proveedor": "simulado"})
-        induccion = {"curso": curso.codigo, "titulo": curso.titulo, "asignacion": a.codigo, "liga": liga, "simulado": True}
-        registrar(db, actor, "induccion_pdf_simulado", "postulacion", p.codigo, induccion)
-    nota(p, "cita_confirmada", "Cita de capacitación confirmada" + (f"; se simuló el envío del PDF «{curso.titulo}»" if curso else ""), actor)
+        # La inducción es material de apoyo: si su asignación truena, la cita queda confirmada igual y el
+        # supervisor puede registrar la asistencia (savepoint para no dejar la sesión de BD rota).
+        try:
+            with db.begin_nested():
+                a = await asignar_a_postulacion(db, p, curso, actor=actor, notificar=False)
+                liga = f"{settings.app_url}/capacitacion/{a.token}"
+                texto = (
+                    f"[Simulado · demo] 📄 {curso.titulo} (PDF)\n"
+                    f"Antes de tu capacitación revisa este material. Descárgalo aquí: {liga}"
+                )
+                guardar_mensaje(db, p, "assistant", texto, "whatsapp", {"enviado": False, "proveedor": "simulado"})
+                induccion = {"curso": curso.codigo, "titulo": curso.titulo, "asignacion": a.codigo, "liga": liga, "simulado": True}
+                registrar(db, actor, "induccion_pdf_simulado", "postulacion", p.codigo, induccion)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+
+            traceback.print_exc()
+            induccion = None
+            registrar(db, actor, "induccion_pdf_fallido", "postulacion", p.codigo, {"curso": curso.codigo, "error": str(e)[:300]})
+    nota(p, "cita_confirmada", "Cita de capacitación confirmada" + (f"; se simuló el envío del PDF «{curso.titulo}»" if induccion else ""), actor)
     return {"evaluacion": ev, "induccion": induccion, "ya_confirmada": False}
 
 
