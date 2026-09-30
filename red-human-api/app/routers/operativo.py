@@ -11,7 +11,7 @@ services/flujo_operativo.py.
 
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,7 +22,6 @@ from ..database import get_db
 from ..deps import cuenta_actual, usuario_actual, usuario_decisor
 from ..models import (
     RESULTADOS_CAPACITACION,
-    estado_documento_onboarding,
     Cuenta,
     Curso,
     Postulacion,
@@ -322,10 +321,11 @@ def panel_dict(db: Session, p: Postulacion) -> dict:
             "progreso": e.progreso,
             "documentos": [
                 {"tipo": d.tipo, "estado": d.estado, "aprobado": d.aprobado, "archivo": bool(d.archivo), "notas": d.notas_ia or "",
-                 "estadoSimple": estado_documento_onboarding(d)}
+                 "estadoSimple": flujo.estado_documento(d), "revisadoPor": d.revisado_por or ""}
                 for d in e.documentos if not d.interno and d.estado != "no_aplica"
             ],
             "referencias": e.referencias or [],
+            "resultadosReferencia": {"contactada": flujo.RESULTADOS_REFERENCIA[True], "noContactada": flujo.RESULTADOS_REFERENCIA[False]},
         } if e else None,
         "faltantesAlta": faltan,
         "listoParaAlta": not faltan,
@@ -402,41 +402,76 @@ class DocumentoIn(BaseModel):
 
 
 @router.post("/candidatos/{codigo}/operativo/documentos", dependencies=[Depends(_requiere_tablas)])
-def revisar_documento(codigo: str, datos: DocumentoIn, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor),
-                      cuenta: Cuenta = Depends(cuenta_actual)):
-    """Aprobar / rechazar un documento reutiliza la revisión de siempre (`contratacion.marcar_documento`)
-    y después revisa si ya está «Listo para alta»."""
+async def revisar_documento(codigo: str, datos: DocumentoIn, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor),
+                            cuenta: Cuenta = Depends(cuenta_actual)):
+    """Revisar (aprobar) / pedir corrección (rechazar con motivo) reutiliza la revisión de siempre
+    (`contratacion.marcar_documento`) y después revisa si ya está «Listo para alta». Al pedir corrección se le
+    avisa al candidato por WhatsApp con el motivo y su misma liga (best-effort: si el envío falla, la revisión
+    queda guardada y el resultado viaja en `whatsapp`)."""
+    from .candidatos import _enviar_whatsapp, guardar_mensaje
     from .contratacion import EstadoDocIn, marcar_documento
 
     p = _operativo(db, codigo, cuenta.id)
     if not p.expediente:
         raise HTTPException(409, "Primero pide documentos y referencias.")
     if datos.estado == "rechazado" and not datos.notas.strip():
-        raise HTTPException(400, "Indica por qué se rechaza el documento.")
+        raise HTTPException(400, "Indica qué debe corregir el candidato.")
     marcar_documento(p.expediente.id, EstadoDocIn(tipo=datos.tipo, estado=datos.estado, notas=datos.notas), db, u, cuenta)
     db.refresh(p)
+    envio = None
+    if datos.estado == "rechazado":
+        nombre = (p.nombre or "").split(" ")[0] or "hola"
+        texto = (f"Hola {nombre}, tu documento «{datos.tipo}» requiere corrección: {datos.notas.strip()}\n"
+                 f"Vuelve a subirlo aquí, por favor: {flujo.liga_expediente(p.expediente)}")
+        try:
+            envio = await _enviar_whatsapp(p, texto)
+            guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+        except Exception as e:  # noqa: BLE001
+            envio = {"enviado": False, "detalle": str(e)[:300]}
+        flujo.nota(p, "documento_correccion", f"«{datos.tipo}» requiere corrección: {datos.notas.strip()}", u.nombre)
     flujo.revisar_listo(db, p, u.nombre)
     db.commit()
-    return panel_dict(db, p)
+    return {**panel_dict(db, p), "whatsapp": envio}
 
 
 class ReferenciaIn(BaseModel):
     contactada: bool
-    nota: str = ""
+    resultado: str = ""
+    fecha: Optional[str] = None  # fecha y hora de la llamada (hora de México si viene sin zona); vacía = ahora
+    nota: str = ""  # observaciones
 
 
 @router.post("/candidatos/{codigo}/operativo/referencias/{indice}", dependencies=[Depends(_requiere_tablas)])
 def marcar_referencia(codigo: str, indice: int, datos: ReferenciaIn, db: Session = Depends(get_db),
                       u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    """El reclutador registra a mano una llamada a la referencia: fecha, si se contactó, resultado y
+    observaciones. Queda en el historial de llamadas de la referencia, en la postulación y en bitácora."""
     p = _operativo(db, codigo, cuenta.id)
     e = p.expediente
     if not e or not (0 <= indice < len(e.referencias or [])):
         raise HTTPException(404, "Referencia no encontrada.")
-    r = flujo.marcar_referencia(e, indice, datos.contactada, datos.nota.strip(), u.nombre)
+    fecha = None
+    if datos.fecha:
+        try:
+            fecha = datetime.fromisoformat(datos.fecha)
+        except ValueError:
+            raise HTTPException(400, "La fecha de la llamada no es válida.")
+        if fecha.tzinfo is None:
+            fecha = fecha.replace(tzinfo=TZ_MEXICO)
+        if fecha > datetime.now(timezone.utc) + timedelta(minutes=5):
+            raise HTTPException(400, "La fecha de la llamada no puede ser futura.")
+    nota = datos.nota.strip()
+    try:
+        r = flujo.marcar_referencia(e, indice, datos.contactada, nota, u.nombre, resultado=datos.resultado.strip(), fecha=fecha)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    resumen = "contactada" if datos.contactada else "NO contactada"
+    if r["resultado"]:
+        resumen += f" · {r['resultado']}"
     flujo.nota(p, "referencia_contactada" if datos.contactada else "referencia_pendiente",
-               f"Referencia {r['nombre']} ({r['parentesco']}) " + ("contactada" if datos.contactada else "marcada como NO contactada")
-               + (f" — {datos.nota.strip()}" if datos.nota.strip() else ""), u.nombre)
-    registrar(db, u.nombre, "referencia_contactada", "postulacion", p.codigo, {"indice": indice, "contactada": datos.contactada})
+               f"Llamada a referencia {r['nombre']} ({r['parentesco']}): {resumen}" + (f" — {nota}" if nota else ""), u.nombre)
+    registrar(db, u.nombre, "referencia_llamada", "postulacion", p.codigo,
+              {"indice": indice, "contactada": datos.contactada, "resultado": r["resultado"], "fecha": r["fecha_llamada"]})
     flujo.revisar_listo(db, p, u.nombre)
     db.commit()
     return panel_dict(db, p)

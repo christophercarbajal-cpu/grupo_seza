@@ -56,6 +56,27 @@ DOCUMENTOS_OPERATIVO = [
 REFERENCIAS_REQUERIDAS = 3
 PARENTESCOS = ["Familiar", "Amistad", "Exjefe o excompañero", "Vecino(a)", "Otro"]
 
+# Estados del documento como los nombra el documento de requerimientos (se LEEN de los valores de siempre).
+DOC_PENDIENTE, DOC_RECIBIDO, DOC_REVISADO, DOC_CORRECCION = "Pendiente", "Recibido", "Revisado", "Requiere corrección"
+
+# Resultado de la llamada a una referencia: depende de si se logró contactar.
+RESULTADOS_REFERENCIA = {
+    True: ["Favorable", "Con observaciones", "Desfavorable"],
+    False: ["No contestó", "Número equivocado", "Buzón o fuera de servicio"],
+}
+
+
+def estado_documento(d: Documento) -> str:
+    """Pendiente (sin archivo) → Recibido (subido, falta que RH lo revise) → Revisado (RH lo aprobó) |
+    Requiere corrección (RH lo rechazó con motivo; el candidato lo vuelve a subir en la misma liga)."""
+    if d.estado == "rechazado":
+        return DOC_CORRECCION
+    if d.aprobado:
+        return DOC_REVISADO
+    if d.archivo or d.estado == "recibido":
+        return DOC_RECIBIDO
+    return DOC_PENDIENTE
+
 
 def _ahora() -> datetime:
     return datetime.now(timezone.utc)
@@ -362,11 +383,20 @@ def guardar_referencias(db: Session, e, referencias: List[dict]) -> None:
     e.referencias = nuevas
 
 
-def marcar_referencia(e, indice: int, contactada: bool, nota_rh: str, usuario: str) -> dict:
+def marcar_referencia(e, indice: int, contactada: bool, nota_rh: str, usuario: str, *, resultado: str = "",
+                      fecha: Optional[datetime] = None) -> dict:
+    """Registra una LLAMADA a la referencia (fecha, si se contactó, resultado y observaciones). Cada llamada se
+    agrega a `llamadas` (nunca se borra); el estado de la referencia es el de la última llamada."""
+    if resultado and resultado not in RESULTADOS_REFERENCIA[contactada]:
+        raise ValueError(f"Resultado inválido. Usa uno de: {', '.join(RESULTADOS_REFERENCIA[contactada])}")
+    fecha = fecha or _ahora()
     refs = [dict(r) for r in (e.referencias or [])]
     r = refs[indice]
-    r.update({"contactada": contactada, "nota": nota_rh[:500], "contactada_por": usuario if contactada else "",
-              "contactada_en": _ahora().isoformat() if contactada else ""})
+    llamada = {"fecha": fecha.isoformat(), "contactada": contactada, "resultado": resultado,
+               "observaciones": nota_rh[:500], "usuario": usuario, "registrada_en": _ahora().isoformat()}
+    r.update({"contactada": contactada, "resultado": resultado, "nota": nota_rh[:500], "fecha_llamada": fecha.isoformat(),
+              "contactada_por": usuario if contactada else "", "contactada_en": fecha.isoformat() if contactada else "",
+              "llamadas": [*(r.get("llamadas") or []), llamada]})
     e.referencias = refs
     return r
 

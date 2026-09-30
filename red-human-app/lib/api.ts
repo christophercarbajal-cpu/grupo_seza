@@ -1964,6 +1964,8 @@ export interface DocumentoExpedientePublico {
   tipo: string;
   estado: "pendiente" | "revision" | "recibido" | "rechazado";
   obligatorio: boolean;
+  /** Qué debe corregir (solo en rechazados). */
+  motivo?: string;
 }
 
 export interface ExpedientePublico {
@@ -3579,7 +3581,12 @@ export interface ReferenciaCandidato {
   contactada?: boolean;
   contactada_por?: string;
   contactada_en?: string;
+  /** Observaciones de la última llamada. */
   nota?: string;
+  resultado?: string;
+  fecha_llamada?: string;
+  /** Historial de llamadas registradas a mano por el reclutador (solo se agrega). */
+  llamadas?: { fecha: string; contactada: boolean; resultado: string; observaciones: string; usuario: string; registrada_en: string }[];
 }
 
 export interface PanelOperativo {
@@ -3604,8 +3611,10 @@ export interface PanelOperativo {
     id: number;
     liga: string;
     progreso: number;
-    documentos: { tipo: string; estado: string; aprobado: boolean; archivo: boolean; notas: string; estadoSimple: string }[];
+    /** estadoSimple: Pendiente | Recibido | Revisado | Requiere corrección */
+    documentos: { tipo: string; estado: string; aprobado: boolean; archivo: boolean; notas: string; estadoSimple: string; revisadoPor?: string }[];
     referencias: ReferenciaCandidato[];
+    resultadosReferencia?: { contactada: string[]; noContactada: string[] };
   } | null;
   faltantesAlta: string[];
   listoParaAlta: boolean;
@@ -3630,8 +3639,13 @@ export function solicitarDocumentosReferencias(codigo: string) {
 export function revisarDocumentoOperativo(codigo: string, tipo: string, estado: "aprobado" | "rechazado", notas = "") {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/documentos`, { tipo, estado, notas });
 }
-export function marcarReferencia(codigo: string, indice: number, contactada: boolean, nota = "") {
-  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias/${indice}`, { contactada, nota });
+/** Registra a mano una llamada a la referencia (fecha «YYYY-MM-DDTHH:MM» en hora de México, contactada, resultado, observaciones). */
+export function marcarReferencia(
+  codigo: string,
+  indice: number,
+  llamada: { contactada: boolean; resultado: string; fecha: string; nota: string },
+) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias/${indice}`, llamada);
 }
 export function registrarAltaOperativa(codigo: string) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/alta`);

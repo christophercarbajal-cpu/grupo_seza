@@ -212,14 +212,72 @@ def _flujo_operativo(c, h, ana, fer):
     refs.append({"nombre": "Ref Tres", "telefono": "5533333333", "parentesco": "Exjefe o excompañero"})
     check(c.post(f"/expedientes/publica/{tok}/referencias", json={"referencias": refs}).status_code == 200, "el candidato captura sus 3 referencias")
     pdf = b"%PDF-1.4\n" + b"0" * 900
+
+    def estado_doc(tipo):
+        p_ = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
+        return next(x["estadoSimple"] for x in p_["expediente"]["documentos"] if x["tipo"] == tipo)
+
+    # Estados del documento: Pendiente → Recibido → Requiere corrección (motivo + WhatsApp) → Recibido → Revisado
+    ine = "Identificación oficial (INE)"
+    check(estado_doc(ine) == "Pendiente", "documento sin archivo → «Pendiente»")
+    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": ine}, files={"archivo": ("ine.pdf", pdf, "application/pdf")})
+    check(estado_doc(ine) == "Recibido", "el candidato lo sube → «Recibido» (falta revisión de RH)")
+    check(c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": ine, "estado": "rechazado"}, headers=h).status_code == 400,
+          "pedir corrección exige motivo")
+    r_corr = c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": ine, "estado": "rechazado", "notas": "Falta el reverso"}, headers=h).json()
+    msgs = c.get(f"/candidatos/{ana}/mensajes", headers=h).json()
+    lista_m = msgs if isinstance(msgs, list) else msgs.get("mensajes", [])
+    doc_pub = next(x for x in c.get(f"/expedientes/publica/{tok}").json()["documentos"] if x["tipo"] == ine)
+    check(estado_doc(ine) == "Requiere corrección" and r_corr["whatsapp"] is not None
+          and any("requiere corrección: Falta el reverso" in (m.get("texto") or "") for m in lista_m)
+          and doc_pub["motivo"] == "Falta el reverso", "pedir corrección → «Requiere corrección», aviso por WhatsApp y motivo en la liga")
+    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": ine}, files={"archivo": ("ine2.pdf", pdf, "application/pdf")})
+    check(estado_doc(ine) == "Recibido", "lo vuelve a subir → «Recibido» otra vez")
+    c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": ine, "estado": "aprobado"}, headers=h)
+    check(estado_doc(ine) == "Revisado", "RH lo revisa → «Revisado»")
+
+    # Modo Prueba en el flujo operativo: omite la IA pero NO auto-aprueba (RH opera la revisión a mano)
+    from app.database import SessionLocal
+    from app.services.configuracion import obtener as _cfg_obtener
+
+    db = SessionLocal()
+    cfg = _cfg_obtener(db)
+    cfg.modo_prueba = True
+    db.commit()
+    lic = "Licencia de conducir vigente"
+    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": lic}, files={"archivo": ("lic.pdf", pdf, "application/pdf")})
+    check(estado_doc(lic) == "Recibido", "Modo Prueba (flujo operativo): el documento subido queda «Recibido», no se auto-aprueba")
+    cfg.modo_prueba = False
+    db.commit()
+    db.close()
+
     for d in r["expediente"]["documentos"]:
+        if d["tipo"] == ine:
+            continue
         c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": d["tipo"]}, files={"archivo": ("doc.pdf", pdf, "application/pdf")})
         c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": d["tipo"], "estado": "aprobado"}, headers=h)
     panel = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
+    check(all(x["estadoSimple"] == "Revisado" for x in panel["expediente"]["documentos"]), "los 9 documentos del chofer quedan «Revisado»")
     check(panel["etapa"] == "Documentos y referencias" and any("Referencias por contactar" in f for f in panel["faltantesAlta"]),
           "con documentos aprobados aún faltan las referencias contactadas")
-    for i in range(3):
-        panel = c.post(f"/candidatos/{ana}/operativo/referencias/{i}", json={"contactada": True, "nota": "OK"}, headers=h).json()
+
+    # Registro manual de llamadas: fecha, contactada, resultado, observaciones
+    url_ref = f"/candidatos/{ana}/operativo/referencias/0"
+    check(c.post(url_ref, json={"contactada": True, "resultado": "No contestó"}, headers=h).status_code == 400,
+          "llamada: el resultado debe corresponder a si se contactó")
+    check(c.post(url_ref, json={"contactada": True, "resultado": "Favorable", "fecha": "2099-01-01T10:00"}, headers=h).status_code == 400,
+          "llamada: la fecha no puede ser futura")
+    panel = c.post(url_ref, json={"contactada": False, "resultado": "No contestó", "fecha": "2026-09-29T10:15", "nota": "Buzón"}, headers=h).json()
+    ref0 = panel["expediente"]["referencias"][0]
+    check(not ref0["contactada"] and ref0["resultado"] == "No contestó" and len(ref0["llamadas"]) == 1 and panel["etapa"] == "Documentos y referencias",
+          "llamada sin contacto: queda registrada y la referencia sigue por contactar")
+    panel = c.post(url_ref, json={"contactada": True, "resultado": "Favorable", "fecha": "2026-09-29T12:40", "nota": "Lo recomienda"}, headers=h).json()
+    ref0 = panel["expediente"]["referencias"][0]
+    check(ref0["contactada"] and [x["resultado"] for x in ref0["llamadas"]] == ["No contestó", "Favorable"]
+          and ref0["llamadas"][1]["fecha"].startswith("2026-09-29T12:40") and ref0["llamadas"][1]["observaciones"] == "Lo recomienda"
+          and ref0["llamadas"][1]["usuario"], "segunda llamada contactada: historial con fecha, resultado, observaciones y quién llamó")
+    for i in (1, 2):
+        panel = c.post(f"/candidatos/{ana}/operativo/referencias/{i}", json={"contactada": True, "resultado": "Favorable", "nota": "OK"}, headers=h).json()
     check(panel["etapa"] == "Listo para alta" and panel["listoParaAlta"], "3 referencias contactadas → «Listo para alta» automático")
     panel = c.post(f"/candidatos/{ana}/operativo/alta", headers=h).json()
     check(panel["etapa"] == "Alta realizada" and panel["alta"]["colaborador"], "registrar alta → «Alta realizada» + colaborador")

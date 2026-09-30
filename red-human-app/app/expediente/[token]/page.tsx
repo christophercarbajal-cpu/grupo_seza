@@ -30,7 +30,7 @@ type Fase = "cargando" | "no_disponible" | "lista";
 const ESTADO_INFO: Record<DocumentoExpedientePublico["estado"], { label: string; tone: "good" | "warn" | "bad" | "neutral"; icon: typeof Clock }> = {
   recibido: { label: "Recibido", tone: "good", icon: CheckCircle2 },
   revision: { label: "En revisión", tone: "warn", icon: Clock },
-  rechazado: { label: "Rechazado — vuelve a subirlo", tone: "bad", icon: FileWarning },
+  rechazado: { label: "Requiere corrección — vuelve a subirlo", tone: "bad", icon: FileWarning },
   pendiente: { label: "Pendiente", tone: "neutral", icon: Clock },
 };
 
@@ -200,6 +200,9 @@ export default function ExpedientePublico() {
                           <Icono className="h-3 w-3" /> {estado.label}
                         </Badge>
                       </div>
+                      {d.estado === "rechazado" && d.motivo && (
+                        <p className="mt-2 text-[13px] text-bad">Qué corregir: {d.motivo}</p>
+                      )}
                       <div className={cn("mt-3", d.estado === "recibido" && "opacity-70")}>
                         <Dropzone
                           compacto

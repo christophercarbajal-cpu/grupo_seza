@@ -385,7 +385,12 @@ def _registrar_documento(db: Session, e: Expediente, doc: Documento, validado, s
     doc.validacion = v.model_dump()
     doc.estado, doc.notas_ia = _resolver_estado(v, con_ia)
     # vuelve a quedar pendiente de revisión humana («Por revisar»); en Modo Prueba queda «Aprobado» (Onboarding v2)
-    doc.revisado_por = "Modo Prueba" if (modo_prueba_activo(db) and doc.estado == "recibido") else ""
+    # SALVO en el flujo operativo (demo SEZA, 2026-09-30): ahí Modo Prueba solo omite la IA y el documento queda
+    # «Recibido» para que RH opere a mano «Marcar revisado» / «Pedir corrección».
+    from ..services import flujo_operativo
+
+    auto_aprobar = modo_prueba_activo(db) and not (e.postulacion and flujo_operativo.es_operativo(e.postulacion))
+    doc.revisado_por = "Modo Prueba" if (auto_aprobar and doc.estado == "recibido") else ""
     if doc.entregado:  # B3: recibido (o digital en revisión) → fecha/hora y canal de recepción
         doc.recibido_en = doc.subido_en
         doc.recibido_canal = _canal_recepcion(subido_por)

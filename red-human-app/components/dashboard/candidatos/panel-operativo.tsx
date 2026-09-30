@@ -6,8 +6,9 @@
       Confirmar la cita simula el envío del PDF de «Inducción SEZA» por WhatsApp.
    2. Resultado: lo registra el supervisor en su liga — Apto / Requiere seguimiento / No apto (internamente
       Favorable / Con observaciones / Desfavorable).
-   3. Documentos y 3 referencias: liga pública del expediente; RH aprueba documentos y marca referencias
-      contactadas. Con todo listo la tarjeta pasa sola a «Listo para alta».
+   3. Documentos y 3 referencias: liga pública del expediente. Documento: Pendiente → Recibido → Revisado |
+      Requiere corrección (con motivo; se le avisa al candidato). Referencias: RH registra cada llamada (fecha,
+      contactada, resultado, observaciones). Con todo listo la tarjeta pasa sola a «Listo para alta».
    4. Registrar alta → «Alta realizada» (crea el colaborador).
    Una acción principal por paso; toda decisión queda con el nombre de quien la tomó. */
 
@@ -33,7 +34,30 @@ import {
 } from "@/lib/api";
 
 const TONO_RESULTADO: Record<string, "good" | "warn" | "bad"> = { favorable: "good", con_observaciones: "warn", desfavorable: "bad" };
-const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Aprobado: "good", "Por revisar": "warn", Rechazado: "bad", Pendiente: "neutral" };
+const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Revisado: "good", Recibido: "warn", "Requiere corrección": "bad", Pendiente: "neutral" };
+const TONO_REFERENCIA: Record<string, "good" | "warn" | "bad" | "neutral"> = {
+  Favorable: "good",
+  "Con observaciones": "warn",
+  Desfavorable: "bad",
+};
+const RESULTADOS_REFERENCIA_DEFAULT = {
+  contactada: ["Favorable", "Con observaciones", "Desfavorable"],
+  noContactada: ["No contestó", "Número equivocado", "Buzón o fuera de servicio"],
+};
+
+/** «Ahora» en formato de <input type="datetime-local"> (hora local del navegador). */
+function ahoraLocal(): string {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function fechaCorta(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
+}
+
+type Llamada = { indice: number; nombre: string; telefono: string; parentesco: string; contactada: boolean; resultado: string; fecha: string; nota: string };
 
 export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: string; puedeDecidir: boolean; onCambio?: () => void }) {
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -42,14 +66,15 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
   const [ocupado, setOcupado] = useState("");
   const [aviso, setAviso] = useState<{ tono: "ok" | "error" | "warn"; texto: string } | null>(null);
   const [rechazo, setRechazo] = useState<{ tipo: string; motivo: string } | null>(null);
-  const [contacto, setContacto] = useState<{ indice: number; nombre: string; telefono: string; parentesco: string; nota: string } | null>(null);
+  const [contacto, setContacto] = useState<Llamada | null>(null);
 
   function confirmarContacto() {
     if (!contacto) return;
-    const { indice, nota } = contacto;
-    ejecutar(`ref-${indice}`, () => marcarReferencia(codigo, indice, true, nota.trim()), (p) => {
+    const { indice, contactada, resultado, fecha, nota } = contacto;
+    ejecutar(`ref-${indice}`, () => marcarReferencia(codigo, indice, { contactada, resultado, fecha, nota: nota.trim() }), (p) => {
       setContacto(null);
-      return p.etapa === "Listo para alta" ? "Referencia contactada. ¡Expediente completo: pasó a «Listo para alta»!" : "Referencia marcada como contactada.";
+      if (p.etapa === "Listo para alta") return "Llamada registrada. ¡Expediente completo: pasó a «Listo para alta»!";
+      return contactada ? `Llamada registrada: ${resultado}.` : `Llamada registrada: ${resultado}. La referencia sigue por contactar.`;
     });
   }
 
@@ -195,6 +220,16 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
               <Send className="h-4 w-4" /> Pedir documentos y referencias
             </Button>
           )}
+          {puedeDecidir && exp && etapa === "Documentos y referencias" && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={Boolean(ocupado)}
+              onClick={() => ejecutar("docs", () => solicitarDocumentosReferencias(codigo), () => "Se reenvió la liga de documentos y referencias por WhatsApp.")}
+            >
+              <Send className="h-4 w-4" /> Reenviar liga
+            </Button>
+          )}
         </div>
         {!exp && etapa === "Capacitación realizada" && cap.resultado === "desfavorable" && (
           <p className="mt-3 text-[13px] text-ink-2">La capacitación quedó como «No apto»: decide si lo descartas o lo citas a otra sesión.</p>
@@ -221,6 +256,12 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                         ) : (
                           d.tipo
                         )}
+                        {d.estadoSimple === "Requiere corrección" && d.notas && (
+                          <span className="block text-[12px] text-bad">Corregir: {d.notas}</span>
+                        )}
+                        {d.estadoSimple === "Revisado" && d.revisadoPor && (
+                          <span className="block text-[12px] text-ink-3">Revisado por {d.revisadoPor}</span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
@@ -229,12 +270,14 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                         {puedeDecidir && d.archivo && !d.aprobado && (
                           <span className="inline-flex gap-1">
                             <Button size="sm" variant="ghost" disabled={Boolean(ocupado)}
-                              onClick={() => ejecutar(`doc-${d.tipo}`, () => revisarDocumentoOperativo(codigo, d.tipo, "aprobado"), () => `«${d.tipo}» aprobado.`)}>
-                              <CheckCircle2 className="h-4 w-4 text-good" /> Aprobar
+                              onClick={() => ejecutar(`doc-${d.tipo}`, () => revisarDocumentoOperativo(codigo, d.tipo, "aprobado"), () => `«${d.tipo}» revisado.`)}>
+                              <CheckCircle2 className="h-4 w-4 text-good" /> Marcar revisado
                             </Button>
-                            <Button size="sm" variant="ghost" disabled={Boolean(ocupado)} onClick={() => setRechazo({ tipo: d.tipo, motivo: "" })}>
-                              <XCircle className="h-4 w-4 text-bad" /> Rechazar
-                            </Button>
+                            {d.estadoSimple !== "Requiere corrección" && (
+                              <Button size="sm" variant="ghost" disabled={Boolean(ocupado)} onClick={() => setRechazo({ tipo: d.tipo, motivo: "" })}>
+                                <XCircle className="h-4 w-4 text-bad" /> Pedir corrección
+                              </Button>
+                            )}
                           </span>
                         )}
                       </td>
@@ -248,13 +291,13 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                 <input
                   value={rechazo.motivo}
                   onChange={(e) => setRechazo({ ...rechazo, motivo: e.target.value })}
-                  placeholder={`¿Por qué se rechaza «${rechazo.tipo}»?`}
+                  placeholder={`¿Qué debe corregir en «${rechazo.tipo}»? (se le envía por WhatsApp)`}
                   className="h-10 flex-1 rounded-xl border border-border-soft bg-surface px-3 text-sm"
                 />
                 <Button size="sm" variant="outline" onClick={() => setRechazo(null)}>Cancelar</Button>
                 <Button size="sm" disabled={!rechazo.motivo.trim() || Boolean(ocupado)}
-                  onClick={() => ejecutar("rechazo", () => revisarDocumentoOperativo(codigo, rechazo.tipo, "rechazado", rechazo.motivo), () => { setRechazo(null); return "Documento rechazado; el candidato puede volver a subirlo."; })}>
-                  Rechazar
+                  onClick={() => ejecutar("rechazo", () => revisarDocumentoOperativo(codigo, rechazo.tipo, "rechazado", rechazo.motivo), () => { setRechazo(null); return "Documento en «Requiere corrección»: se le avisó al candidato para que lo vuelva a subir en su liga."; })}>
+                  Pedir corrección
                 </Button>
               </div>
             )}
@@ -264,32 +307,45 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
               <p className="mt-2 text-sm text-ink-3">El candidato aún no captura sus referencias en la liga.</p>
             ) : (
               <ul className="mt-2 flex flex-col gap-2">
-                {exp.referencias.map((r, i) => (
-                  <li key={i} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2", r.contactada ? "border-good/30 bg-good-soft/30" : "border-border-soft")}>
-                    <span className="text-sm">
-                      <b className="text-ink">{r.nombre}</b> <span className="text-ink-3">· {r.parentesco}</span>
-                      <a href={`tel:${r.telefono}`} className="ml-2 inline-flex items-center gap-1 text-brand">
-                        <Phone className="h-3.5 w-3.5" /> {r.telefono}
-                      </a>
-                      {r.contactada && (
-                        <span className="block text-[12px] text-ink-3">
-                          Contactada por {r.contactada_por}
-                          {r.nota ? ` — ${r.nota}` : ""}
+                {exp.referencias.map((r, i) => {
+                  const llamadas = r.llamadas ?? [];
+                  return (
+                    <li key={i} className={cn("rounded-xl border px-3 py-2", r.contactada ? "border-good/30 bg-good-soft/30" : "border-border-soft")}>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-sm">
+                          <b className="text-ink">{r.nombre}</b> <span className="text-ink-3">· {r.parentesco}</span>
+                          <a href={`tel:${r.telefono}`} className="ml-2 inline-flex items-center gap-1 text-brand">
+                            <Phone className="h-3.5 w-3.5" /> {r.telefono}
+                          </a>
                         </span>
-                      )}
-                    </span>
-                    {puedeDecidir && (
-                      <Button size="sm" variant={r.contactada ? "ghost" : "outline"} disabled={Boolean(ocupado)}
-                        onClick={() =>
-                          r.contactada
-                            ? ejecutar(`ref-${i}`, () => marcarReferencia(codigo, i, false), () => "Referencia marcada como no contactada.")
-                            : setContacto({ indice: i, nombre: r.nombre, telefono: r.telefono, parentesco: r.parentesco, nota: "" })
-                        }>
-                        {r.contactada ? "Deshacer" : "Marcar contactada"}
-                      </Button>
-                    )}
-                  </li>
-                ))}
+                        <span className="flex items-center gap-2">
+                          <Badge tone={r.contactada ? TONO_REFERENCIA[r.resultado ?? ""] ?? "good" : llamadas.length ? "warn" : "neutral"}>
+                            {r.contactada ? `Contactada${r.resultado ? ` · ${r.resultado}` : ""}` : llamadas.length ? `Sin contactar · ${r.resultado || "intento"}` : "Por llamar"}
+                          </Badge>
+                          {puedeDecidir && (
+                            <Button size="sm" variant={r.contactada ? "ghost" : "outline"} disabled={Boolean(ocupado)}
+                              onClick={() => setContacto({ indice: i, nombre: r.nombre, telefono: r.telefono, parentesco: r.parentesco, contactada: true, resultado: "", fecha: ahoraLocal(), nota: "" })}>
+                              <Phone className="h-4 w-4" /> {llamadas.length ? "Registrar otra llamada" : "Registrar llamada"}
+                            </Button>
+                          )}
+                        </span>
+                      </div>
+                      {llamadas.length > 0 ? (
+                        <ul className="mt-2 flex flex-col gap-1 border-t border-border-faint pt-2 text-[12px] text-ink-3">
+                          {[...llamadas].reverse().map((l, j) => (
+                            <li key={j}>
+                              <span className="font-medium text-ink-2">{fechaCorta(l.fecha)}</span> · {l.contactada ? "Contactada" : "No contactada"}
+                              {l.resultado ? ` · ${l.resultado}` : ""} · {l.usuario}
+                              {l.observaciones ? <span className="block pl-3 italic">«{l.observaciones}»</span> : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : r.contactada ? (
+                        <p className="mt-1 text-[12px] text-ink-3">Contactada por {r.contactada_por}{r.nota ? ` — ${r.nota}` : ""}</p>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </>
@@ -298,24 +354,66 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
 
       {contacto && (
         <ModalMarco
-          titulo="Marcar referencia como contactada"
+          titulo="Registrar llamada a referencia"
           subtitulo={`${contacto.nombre} · ${contacto.parentesco} · ${contacto.telefono}`}
           onClose={() => !ocupado && setContacto(null)}
           ancho="max-w-lg"
         >
-          <CampoRH label="Nota del contacto (opcional)" ayuda="Queda en el historial con tu nombre. Ej. confirma que lo conoce desde hace 5 años y lo recomienda.">
-            <textarea
-              autoFocus
-              rows={3}
-              value={contacto.nota}
-              onChange={(e) => setContacto({ ...contacto, nota: e.target.value })}
-              className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-            />
-          </CampoRH>
+          <div className="flex flex-col gap-4">
+            <CampoRH label="Fecha y hora de la llamada">
+              <input
+                type="datetime-local"
+                value={contacto.fecha}
+                max={ahoraLocal()}
+                onChange={(e) => setContacto({ ...contacto, fecha: e.target.value })}
+                className="h-11 w-full rounded-xl border border-border-soft bg-surface px-3.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+              />
+            </CampoRH>
+            <CampoRH label="¿Se logró contactar?">
+              <div className="flex gap-2">
+                {[true, false].map((v) => (
+                  <button
+                    key={String(v)}
+                    type="button"
+                    onClick={() => setContacto({ ...contacto, contactada: v, resultado: "" })}
+                    className={cn(
+                      "h-11 flex-1 rounded-xl border text-sm font-semibold transition",
+                      contacto.contactada === v ? "border-brand bg-brand-soft text-brand" : "border-border-soft bg-surface text-ink-2 hover:border-brand/40",
+                    )}
+                  >
+                    {v ? "Sí, contactada" : "No se contactó"}
+                  </button>
+                ))}
+              </div>
+            </CampoRH>
+            <CampoRH label="Resultado">
+              <select
+                value={contacto.resultado}
+                onChange={(e) => setContacto({ ...contacto, resultado: e.target.value })}
+                className="h-11 w-full rounded-xl border border-border-soft bg-surface px-3.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+              >
+                <option value="">Elige el resultado…</option>
+                {(contacto.contactada
+                  ? exp?.resultadosReferencia?.contactada ?? RESULTADOS_REFERENCIA_DEFAULT.contactada
+                  : exp?.resultadosReferencia?.noContactada ?? RESULTADOS_REFERENCIA_DEFAULT.noContactada
+                ).map((o) => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            </CampoRH>
+            <CampoRH label="Observaciones (opcional)" ayuda="Quedan en el historial con tu nombre. Ej. confirma que lo conoce desde hace 5 años y lo recomienda.">
+              <textarea
+                rows={3}
+                value={contacto.nota}
+                onChange={(e) => setContacto({ ...contacto, nota: e.target.value })}
+                className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+              />
+            </CampoRH>
+          </div>
           <div className="mt-5 flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setContacto(null)} disabled={Boolean(ocupado)}>Cancelar</Button>
-            <Button onClick={confirmarContacto} disabled={Boolean(ocupado)}>
-              <Phone className="h-4 w-4" /> {ocupado ? "Guardando…" : "Marcar contactada"}
+            <Button onClick={confirmarContacto} disabled={Boolean(ocupado) || !contacto.resultado || !contacto.fecha}>
+              <Phone className="h-4 w-4" /> {ocupado ? "Guardando…" : "Guardar llamada"}
             </Button>
           </div>
         </ModalMarco>

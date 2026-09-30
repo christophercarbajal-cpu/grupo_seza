@@ -43,7 +43,9 @@ def publica(token: str, db: Session = Depends(get_db)):
         "puesto": e.puesto,
         "estado": e.estado,
         "documentos": [
-            {"tipo": d.tipo, "estado": d.estado, "obligatorio": d.obligatorio} for d in e.documentos
+            {"tipo": d.tipo, "estado": d.estado, "obligatorio": d.obligatorio,
+             # qué debe corregir (lo escribió RH al pedir corrección) — solo en rechazados
+             "motivo": (d.notas_ia or "")[:300] if d.estado == "rechazado" else ""} for d in e.documentos
             if d.estado != "no_aplica" and not d.interno  # Onboarding v2: ni «No aplica» ni documentos internos de RH
         ],
         # 2026-09-19: la carta de intención se descarga desde la misma liga (la comparte RH por WhatsApp)

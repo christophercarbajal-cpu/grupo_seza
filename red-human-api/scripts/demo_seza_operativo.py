@@ -203,7 +203,7 @@ def _referencias(db, p, contactadas, admin):
     e = p.expediente
     flujo.guardar_referencias(db, e, [{"nombre": n, "telefono": f"55{5000000 + i * 1111:08d}"[-10:], "parentesco": par} for i, (n, par) in enumerate(REFS, start=1)])
     for i in range(contactadas):
-        flujo.marcar_referencia(e, i, True, "Confirma que lo conoce y lo recomienda.", admin.nombre)
+        flujo.marcar_referencia(e, i, True, "Confirma que lo conoce y lo recomienda.", admin.nombre, resultado="Favorable")
 
 
 async def _llevar(db, p, plaza, etapa, variante, admin, sesion_pasada, sesion_proxima):
