@@ -68,7 +68,7 @@ with TestClient(app) as client:
     check(texto_sueldo(10000, 12000, "MXN", "mensual") == "$10,000 – $12,000 MXN mensuales", "texto_sueldo: rango mensual")
     check(texto_sueldo(3000, None, "MXN", "semanal") == "Desde $3,000 MXN semanales", "texto_sueldo: solo desde")
     check(texto_sueldo(None, None, "MXN", "") == "A convenir" and texto_sueldo(1, 2, "MXN", "a_convenir") == "A convenir", "texto_sueldo: sin montos / a convenir")
-    check("sueldo_periodicidad" in CAMPOS_PLANTILLA and len(CAMPOS_PLANTILLA) == 26, "CAMPOS_PLANTILLA incluye los 4 campos de sueldo y los 3 de Fase 4 (26)")
+    check("sueldo_periodicidad" in CAMPOS_PLANTILLA and len(CAMPOS_PLANTILLA) == 28, "CAMPOS_PLANTILLA incluye los 4 campos de sueldo, los 3 de Fase 4 y los 2 del prefiltro por reglas (28)")
 
     # ---------- 2. /generar: respeta lo capturado, no inventa ----------
     ficha = {

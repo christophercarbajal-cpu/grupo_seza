@@ -6,7 +6,7 @@ cada una con su `copy` (difusión) y su `page` (cuerpo listo para pegar).
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from ..config import settings
 from ..database import get_db
-from ..services import bolsas, conteos, notificaciones
+from ..services import bolsas, conteos, difusion, notificaciones, prefiltro_reglas
 from ..deps import cuenta_actual, usuario_actual, usuario_decisor
 from ..models import (
     ENFOQUES_ENTREVISTA, MONEDAS_SUELDO, PERIODICIDADES_SUELDO, PLATAFORMAS, Cliente, Cuenta, Curso, Plantilla, Postulacion,
@@ -353,6 +353,15 @@ class CrearIn(GenerarIn):
     mostrar_cliente_candidato: bool = True
     plantilla_id: Optional[int] = None  # solo trazabilidad de qué plantilla se usó, si alguna
     enfoque_entrevista: str = "profesional"  # Fase 4 (Punto 6): profesional | profesional_personal
+    prefiltro_reglas: Dict[str, Any] = {}  # demo SEZA: prefiltro por reglas (services/prefiltro_reglas.py)
+    cv_obligatorio: bool = True
+
+
+def _reglas_validas(cfg: Optional[dict], ubicacion: str = "") -> dict:
+    try:
+        return prefiltro_reglas.normalizar(cfg, ubicacion)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("", status_code=201)
@@ -416,6 +425,8 @@ def crear(
         seniority=datos.seniority,
         avisos_cumplimiento=datos.avisos_cumplimiento,
         publicaciones=datos.publicaciones,
+        prefiltro_reglas=_reglas_validas(datos.prefiltro_reglas, datos.ubicacion_texto()),
+        cv_obligatorio=datos.cv_obligatorio,
     )
 
     # Punto 1: `Vacante.empresa` guarda el nombre RESUELTO (Cliente visible o Cuenta), nunca texto
@@ -453,7 +464,9 @@ def por_slug(slug: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Vacante no encontrada")
     if v.estado != "Publicada":
         raise HTTPException(410, "Esta vacante ya no está recibiendo postulaciones.")
-    return _con_logo(db, _salida(db, v), v)
+    salida = _salida(db, v)
+    salida.pop("prefiltroReglas", None)  # las reglas de descarte son internas; el candidato solo ve las preguntas
+    return _con_logo(db, salida, v)
 
 
 @router.get("/slug/{slug}/jobposting")
@@ -587,6 +600,8 @@ class ActualizarIn(BaseModel):
     # Evaluaciones (2026-09-28): sugerencias [{tipo, prueba_id?, nombre?}] + aviso antes de Onboarding
     evaluaciones_sugeridas: Optional[List[dict]] = None
     avisar_evaluaciones_antes_onboarding: Optional[bool] = None
+    prefiltro_reglas: Optional[Dict[str, Any]] = None  # demo SEZA ({} = quitar el prefiltro por reglas)
+    cv_obligatorio: Optional[bool] = None
 
 
 @router.patch("/{codigo}")
@@ -607,6 +622,8 @@ def actualizar(
     if datos.enfoque_entrevista is not None and datos.enfoque_entrevista not in ENFOQUES_ENTREVISTA:
         raise HTTPException(400, f"Enfoque de entrevista inválido. Usa uno de: {', '.join(ENFOQUES_ENTREVISTA)}")
     cambios.pop("empresa", None)  # Punto 1: nunca texto libre; se recalcula abajo
+    if "prefiltro_reglas" in cambios:
+        cambios["prefiltro_reglas"] = _reglas_validas(cambios["prefiltro_reglas"], v.ubicacion)
     if "curso_filtro" in cambios:
         codigo_curso = (cambios.pop("curso_filtro") or "").strip()
         if not codigo_curso:
@@ -784,6 +801,16 @@ def restaurar(
     registrar(db, u.nombre, "vacante_restaurada", "vacante", v.codigo, {"correo_rh": u.correo})
     db.commit()
     return _salida(db, v)
+
+
+@router.get("/{codigo}/facebook")
+def pieza_facebook(
+    codigo: str, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual),
+    cuenta: Cuenta = Depends(cuenta_actual),
+):
+    """Demo SEZA (2026-09-29): copy, datos de la imagen y liga ÚNICA para publicar A MANO en Facebook.
+    No publica nada: RH copia el texto y descarga la imagen (ver services/difusion.py)."""
+    return difusion.pieza(_por_codigo(db, codigo, cuenta.id))
 
 
 @router.get("/{codigo}/publicacion/{plataforma}")

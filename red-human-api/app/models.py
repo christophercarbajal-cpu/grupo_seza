@@ -90,6 +90,11 @@ class Vacante(Base):
     plataformas: Mapped[list] = mapped_column(JSON, default=list)
     # Fase 4 (Punto 6): qué cubre la Entrevista IA — ver ENFOQUES_ENTREVISTA. Solo 2 niveles.
     enfoque_entrevista: Mapped[str] = mapped_column(String(30), default="profesional")
+    # Demo SEZA (2026-09-29): prefiltro POR REGLAS (cuestionario fijo + reglas de descarte/revisión de ESTA
+    # vacante, ver services/prefiltro_reglas.py). Vacío = prefiltro conversacional de siempre (IA).
+    prefiltro_reglas: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Si la postulación web exige CV. Operativos (choferes) = False: el CV es opcional.
+    cv_obligatorio: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # --- contenido enriquecido del generador (módulo 3.5) ---
     resumen: Mapped[str] = mapped_column(Text, default="")
@@ -331,6 +336,10 @@ class Postulacion(Base):
     expediente: Mapped[Optional["Expediente"]] = relationship(
         back_populates="postulacion", uselist=False, cascade="all, delete-orphan"
     )
+    # Demo SEZA: revisión de fotos del vehículo (una por postulación, se reutiliza en correcciones)
+    revision_vehiculo: Mapped[Optional["RevisionVehiculo"]] = relationship(
+        back_populates="postulacion", uselist=False, cascade="all, delete-orphan"
+    )
 
     # --- Datos de persona, delegados (solo lectura) — así los serializadores y las plantillas
     # de mensajes pueden leer p.nombre / p.telefono sin conocer la separación. ---
@@ -395,6 +404,40 @@ class Postulacion(Base):
         self.activa = False
         self.motivo_cierre = motivo
         self.cerrada_en = ahora()
+
+
+# Demo SEZA (2026-09-29): revisión de vehículo tras el prefiltro. El candidato sube fotos por una liga
+# pública; RH aprueba, pide corrección o marca excepción. Solo con «aprobado» o «excepcion» se le puede
+# citar (services/vehiculo.puede_citar).
+LADOS_VEHICULO = {"frente": "Frente", "atras": "Atrás", "izquierdo": "Costado izquierdo", "derecho": "Costado derecho"}
+ESTADOS_VEHICULO = {
+    "pendiente": "Esperando fotos",
+    "por_revisar": "Fotos por revisar",
+    "correccion": "Corrección solicitada",
+    "aprobado": "Vehículo aprobado",
+    "excepcion": "Aprobado por excepción",
+}
+
+
+class RevisionVehiculo(Base):
+    __tablename__ = "revisiones_vehiculo"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    postulacion_id: Mapped[int] = mapped_column(ForeignKey("postulaciones.id"), unique=True, index=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    estado: Mapped[str] = mapped_column(String(20), default="pendiente")  # ver ESTADOS_VEHICULO
+    # {lado: {"archivo_id": int, "subida_en": iso}} — lado ∈ LADOS_VEHICULO
+    fotos: Mapped[dict] = mapped_column(JSON, default=dict)
+    lados_corregir: Mapped[list] = mapped_column(JSON, default=list)
+    comentario: Mapped[str] = mapped_column(Text, default="")  # corrección pedida o motivo de excepción
+    decidido_por: Mapped[str] = mapped_column(String(150), default="")
+    decidido_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    liga_enviada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    envios: Mapped[int] = mapped_column(Integer, default=0)
+    historial: Mapped[list] = mapped_column(JSON, default=list)  # [{evento, texto, usuario, fecha}] solo se agrega
+    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+    postulacion: Mapped["Postulacion"] = relationship(back_populates="revision_vehiculo")
 
 
 class EntrevistaHumana(Base):
@@ -1003,6 +1046,9 @@ class Cliente(Base):
     razon_social: Mapped[str] = mapped_column(String(200), default="")
     nombre_comercial: Mapped[str] = mapped_column(String(200), default="")
     estado: Mapped[str] = mapped_column(String(20), default="Activo")  # Activo | Inactivo
+    # Demo Grupo SEZA (2026-09-29): color de marca (#RRGGBB) para las piezas de difusión (imagen de
+    # Facebook) y la identificación visual de la empresa en tableros. Vacío = color de Red Human.
+    color: Mapped[str] = mapped_column(String(9), default="")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
     cuenta: Mapped["Cuenta"] = relationship(back_populates="clientes")
@@ -1072,6 +1118,8 @@ class Plantilla(Base):
     texto_whatsapp: Mapped[str] = mapped_column(Text, default="")
     texto_bolsa: Mapped[str] = mapped_column(Text, default="")
     enfoque_entrevista: Mapped[str] = mapped_column(String(30), default="profesional")  # Fase 4
+    prefiltro_reglas: Mapped[dict] = mapped_column(JSON, default=dict)  # demo SEZA: igual que Vacante
+    cv_obligatorio: Mapped[bool] = mapped_column(Boolean, default=True)
 
     creado_por: Mapped[str] = mapped_column(String(150), default="")
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
@@ -1091,6 +1139,7 @@ CAMPOS_PLANTILLA = [
     "enfoque_entrevista",
     "sueldo_desde", "sueldo_hasta", "sueldo_moneda", "sueldo_periodicidad",  # Parte 3
     "preguntas_filtro_whatsapp", "ubicacion_estado", "ubicacion_municipio",  # Fase 4
+    "prefiltro_reglas", "cv_obligatorio",  # demo SEZA (2026-09-29)
 ]
 
 
@@ -1105,8 +1154,13 @@ def texto_ubicacion(estado: str, municipio: str, libre: str = "") -> str:
     return (libre or "").strip()
 
 # Parte 3 (2026-09-12): sueldo estructurado. "a_convenir" = sin montos.
-PERIODICIDADES_SUELDO = ["semanal", "quincenal", "mensual", "anual", "a_convenir"]
-NOMBRE_PERIODICIDAD = {"semanal": "semanales", "quincenal": "quincenales", "mensual": "mensuales", "anual": "anuales"}
+# Demo Grupo SEZA (2026-09-29): pago POR DÍA con su frecuencia de pago («$650 diarios, pago semanal»).
+# Un solo campo (`sueldo_periodicidad`, String(15)) guarda ambas cosas para no duplicar la captura.
+PERIODICIDADES_SUELDO = ["semanal", "quincenal", "mensual", "anual", "dia_semanal", "dia_quincenal", "a_convenir"]
+NOMBRE_PERIODICIDAD = {
+    "semanal": "semanales", "quincenal": "quincenales", "mensual": "mensuales", "anual": "anuales",
+    "dia_semanal": "diarios, pago semanal", "dia_quincenal": "diarios, pago quincenal",
+}
 MONEDAS_SUELDO = ["MXN", "USD"]
 
 

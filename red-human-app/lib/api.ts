@@ -561,12 +561,14 @@ export interface VacanteGenerada {
 
 /** Parte 3 (2026-09-12): sueldo estructurado. "a_convenir" = sin montos. El texto que se muestra
  * (`Vacante.sueldo`) lo DERIVA el servidor; nunca se captura ni se inventa. */
-export type PeriodicidadSueldo = "semanal" | "quincenal" | "mensual" | "anual" | "a_convenir";
+export type PeriodicidadSueldo = "semanal" | "quincenal" | "mensual" | "anual" | "dia_semanal" | "dia_quincenal" | "a_convenir";
 export const PERIODICIDADES_SUELDO: { valor: PeriodicidadSueldo; texto: string }[] = [
   { valor: "mensual", texto: "Mensual" },
   { valor: "quincenal", texto: "Quincenal" },
   { valor: "semanal", texto: "Semanal" },
   { valor: "anual", texto: "Anual" },
+  { valor: "dia_semanal", texto: "Por día · pago semanal" },
+  { valor: "dia_quincenal", texto: "Por día · pago quincenal" },
   { valor: "a_convenir", texto: "A convenir" },
 ];
 export const MONEDAS_SUELDO = ["MXN", "USD"];
@@ -778,6 +780,30 @@ export function fetchPublicacion(codigo: string, plataforma: string) {
   return get<PublicacionLista>(`/vacantes/${codigo}/publicacion/${plataforma}`);
 }
 
+/** Demo SEZA (2026-09-29): pieza para publicar A MANO en Facebook — copy, datos de la imagen (se
+ * dibuja en el navegador con el color de la empresa) y la liga única (`?origen=facebook`). */
+export interface PiezaFacebook {
+  vacante: string;
+  publicada: boolean;
+  liga: string;
+  copy: string;
+  copyConLiga: string;
+  copyPropio: boolean;
+  imagen: {
+    empresa: string;
+    color: string;
+    titulo: string;
+    ubicacion: string;
+    sueldo: string;
+    destacados: string[];
+    llamado: string;
+  };
+}
+
+export function fetchPiezaFacebook(codigo: string) {
+  return get<PiezaFacebook>(`/vacantes/${codigo}/facebook`);
+}
+
 /* ============================================================
    Fase B · Clientes (empresas para las que recluta una Cuenta)
    ============================================================ */
@@ -800,13 +826,15 @@ export interface Cliente {
   /** Lo que ve el candidato: nombre comercial si existe, si no el nombre. */
   nombreVisible: string;
   estado: "Activo" | "Inactivo";
+  /** Color de marca (#RRGGBB) para piezas de difusión; vacío = color de Red Human. */
+  color?: string;
   /** Conteo de contactos; la lista completa solo viene en la ficha (`listaContactos`). */
   contactos: number;
   listaContactos?: ContactoCliente[];
   creado: string;
 }
 
-export type CamposCliente = { nombre?: string; razon_social?: string; nombre_comercial?: string; estado?: "Activo" | "Inactivo" };
+export type CamposCliente = { nombre?: string; razon_social?: string; nombre_comercial?: string; estado?: "Activo" | "Inactivo"; color?: string };
 export type CamposContacto = { nombre: string; apellidos?: string; puesto?: string; correo?: string; telefono?: string };
 
 export function fetchClientes(estado?: string) {
@@ -1322,9 +1350,14 @@ export function postular(datos: {
   consentimiento: boolean;
   respuestas?: { pregunta: string; respuesta: string }[];
   cv?: File | null;
+  origen?: string;
+  /** Demo SEZA: prefiltro por reglas {id_pregunta: respuesta}. */
+  respuestasReglas?: Record<string, string>;
 }) {
   const form = new FormData();
   form.append("vacante", datos.slug);
+  if (datos.origen) form.append("origen", datos.origen);
+  if (datos.respuestasReglas) form.append("respuestas_reglas", JSON.stringify(datos.respuestasReglas));
   form.append("nombre", datos.nombre);
   form.append("telefono", datos.telefono ?? "");
   form.append("correo", datos.correo ?? "");
@@ -1338,6 +1371,7 @@ export function postular(datos: {
     nuevo: boolean;
     cv: { procesado: boolean; avisos: string[] };
     clasificacion: { estado: string; score: number; evidencia: string } | null;
+    vehiculo: { liga: string } | null;
   }>("/candidatos/postular", form);
 }
 
@@ -3337,4 +3371,93 @@ export function responderClimaPublica(
     externo_nombre: datos.externoNombre ?? "",
     externo_correo: datos.externoCorreo ?? "",
   });
+}
+
+/* ============================================================
+   Demo Grupo SEZA (2026-09-29): prefiltro por reglas y revisión de vehículo
+   ============================================================ */
+
+export type EfectoRegla = "revision" | "no_cumple";
+
+export interface ResumenPrefiltroReglas {
+  completo: boolean;
+  resultado: "cumple" | "revision" | "no_cumple" | "pendiente";
+  /** «Cumple perfil» / «Requiere revisión» / «No cumple» / «Prefiltro en curso» */
+  etiqueta: string;
+  resultadoOriginal?: string;
+  motivos: { id: string; pregunta: string; respuesta: string; efecto: EfectoRegla; motivo: string }[];
+  siguienteAccion: string;
+  canal?: string;
+  completadoEn?: string;
+  aprobadoPorRH?: { usuario: string; motivo: string; anterior: string; fecha: string } | null;
+  respuestas?: { id: string; pregunta: string; respuesta: string }[];
+  vehiculoEstado?: string;
+  respondidas?: number;
+  total?: number;
+}
+
+export type EstadoVehiculo = "sin_liga" | "pendiente" | "por_revisar" | "correccion" | "aprobado" | "excepcion";
+
+export interface RevisionVehiculo {
+  requerida: boolean;
+  puedeCitar: boolean;
+  motivoBloqueo: string;
+  estado: EstadoVehiculo;
+  etiqueta: string;
+  liga: string;
+  ligaEnviadaEn?: string | null;
+  envios?: number;
+  comentario?: string;
+  decididoPor?: string;
+  decididoEn?: string | null;
+  ladosCorregir?: string[];
+  fotos: { lado: string; nombre: string; cargada: boolean; subidaEn: string; url: string }[];
+  historial: { evento: string; texto: string; usuario: string; fecha: string }[];
+}
+
+export interface FlujoVehiculo {
+  prefiltro: ResumenPrefiltroReglas | null;
+  vehiculo: RevisionVehiculo | null;
+  envio?: { liga: string; whatsapp: { enviado?: boolean; detalle?: unknown } } | null;
+}
+
+export function fetchFlujoVehiculo(codigo: string) {
+  return get<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo`);
+}
+
+export function enviarLigaVehiculo(codigo: string) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/enviar-liga`);
+}
+
+export function decidirVehiculo(codigo: string, accion: "aprobar" | "correccion" | "excepcion", comentario = "", lados: string[] = []) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/decision`, { accion, comentario, lados });
+}
+
+export function aprobarPrefiltroReglas(codigo: string, motivo: string) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/prefiltro-reglas/aprobar`, { motivo });
+}
+
+export interface VehiculoPublico {
+  nombre: string;
+  vacante: string;
+  empresa: string;
+  estado: EstadoVehiculo;
+  abierta: boolean;
+  comentario: string;
+  lados: { clave: string; nombre: string; cargada: boolean; pendiente: boolean }[];
+}
+
+export function fetchVehiculoPublico(token: string) {
+  return get<VehiculoPublico>(`/vehiculo/publica/${token}`);
+}
+
+export function subirFotoVehiculo(token: string, lado: string, archivo: File) {
+  const form = new FormData();
+  form.append("lado", lado);
+  form.append("archivo", archivo);
+  return subir<VehiculoPublico>(`/vehiculo/publica/${token}/foto`, form);
+}
+
+export function urlFotoVehiculoPublica(token: string, lado: string, version = "") {
+  return `${API}/vehiculo/publica/${token}/foto/${lado}${version ? `?v=${version}` : ""}`;
 }

@@ -44,6 +44,8 @@ import {
   type ContenidoVacante,
 } from "@/components/dashboard/vacantes/formulario-contenido";
 import { PageHeader } from "@/components/dashboard/parts";
+import { PiezaFacebookVacante } from "@/components/dashboard/vacantes/pieza-facebook";
+import { PrefiltroReglasEditor } from "@/components/dashboard/vacantes/prefiltro-reglas-editor";
 import { MenuAcciones } from "@/components/dashboard/menu-acciones";
 import { Aviso, BotonCopiar } from "@/components/dashboard/subida";
 import type { Vacante } from "@/lib/data";
@@ -1840,6 +1842,25 @@ function DetalleVacante({
             <p className="text-sm text-ink-3">Esta vacante todavía no tiene publicación por plataforma. Genérala con «Regenerar con IA».</p>
           )}
         </Plegable>
+
+        {live && (
+          <Plegable
+            titulo="Prefiltro por reglas"
+            resumen={
+              v.prefiltroReglas && "activo" in v.prefiltroReglas && v.prefiltroReglas.activo
+                ? `12 preguntas · ${v.prefiltroReglas.vehiculo.tipos_permitidos.join(" o ") || "cualquier vehículo"} · ${v.prefiltroReglas.vehiculo.anio_minimo ? `${v.prefiltroReglas.vehiculo.anio_minimo}+` : "sin año mínimo"}${v.cvObligatorio === false ? " · CV opcional" : ""}`
+                : "No se usa (prefiltro conversacional)"
+            }
+          >
+            <PrefiltroReglasEditor v={v} editable={puedeActuar} onGuardada={() => onCambio(v.id)} />
+          </Plegable>
+        )}
+
+        {live && (
+          <Plegable titulo="Facebook" resumen="Copy, imagen y liga única · publicación manual">
+            <PiezaFacebookVacante codigo={v.id} />
+          </Plegable>
+        )}
 
         {live && (
           <Plegable titulo="Gestión" resumen={[v.cliente ? `Cliente: ${v.cliente}` : "Recluta directo", v.responsable ? `Responsable: ${v.responsable}` : ""].filter(Boolean).join(" · ")}>

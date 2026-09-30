@@ -18,7 +18,7 @@ from .config import settings
 from .database import Base, SessionLocal, engine
 from .migraciones import crear_tablas_base, crear_tablas_conocimiento, crear_tablas_modulos_rh, candidatos_sin_postulacion, relajar_not_null, sincronizar
 from .migraciones import asegurar_reglas_entrevistador
-from .routers import agente, auth, candidatos, capacitacion, clientes, clima, colaboradores, configuracion, conocimiento, contratacion, cuentas, desempeno, emails_preview, empleados, entrevista_humana, entrevistas, evaluaciones, expediente_publico, feeds, firmas, webhooks_proveedores, metricas, notificaciones, onboarding, plantillas, requisiciones, vacantes, webhooks, integraciones
+from .routers import agente, auth, candidatos, capacitacion, clientes, clima, colaboradores, configuracion, conocimiento, contratacion, cuentas, desempeno, emails_preview, empleados, entrevista_humana, entrevistas, evaluaciones, expediente_publico, feeds, firmas, webhooks_proveedores, metricas, notificaciones, onboarding, plantillas, requisiciones, vacantes, vehiculo, webhooks, integraciones
 from .seed import rellenar_slugs_cuentas, sembrar, sembrar_admin
 from .models import TABLAS_CONOCIMIENTO, TABLAS_MODULOS_RH
 from .services import modulos_rh, rag
@@ -201,6 +201,7 @@ app.include_router(onboarding.router)  # 2026-09-28: Onboarding v2 (plantillas y
 app.include_router(evaluaciones.router)  # 2026-09-28: evaluaciones y verificaciones del candidato
 app.include_router(firmas.router)  # 2026-09-29: firma electrónica incrustada (Dropbox Sign)
 app.include_router(webhooks_proveedores.router)  # 2026-09-29: /api/webhooks/dropbox y /api/webhooks/psicometricas
+app.include_router(vehiculo.router)  # 2026-09-29 (demo SEZA): fotos del vehículo y prefiltro por reglas
 
 
 @app.get("/salud")

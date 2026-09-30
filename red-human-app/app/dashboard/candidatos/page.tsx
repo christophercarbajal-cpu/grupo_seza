@@ -44,6 +44,7 @@ import {
   RefreshCw,
   Trash2,
   ArrowRightLeft,
+  Car,
 } from "lucide-react";
 import { Card, Badge, Button, Avatar, Eyebrow, Progress } from "@/components/ui";
 import { PageHeader, EstadoBadge, ScoreRing } from "@/components/dashboard/parts";
@@ -127,6 +128,7 @@ import { asegurarExpediente, crearFirmaDocumento, fetchEstadoFirmas, fetchFirmas
 import { SwitchModoPrueba } from "@/components/dashboard/switch-modo-prueba";
 import { Toast, type ToastMsg } from "@/components/dashboard/toast";
 import { INTERVALO_TABLERO_MS, usePolling } from "@/lib/use-polling";
+import { PanelPrefiltroVehiculo } from "@/components/dashboard/candidatos/panel-prefiltro-vehiculo";
 import { cn, etiquetaRecordatorio } from "@/lib/utils";
 
 const etapas: EtapaCandidato[] = [
@@ -977,7 +979,7 @@ function CandidatosContenido() {
                         {/* Estado y Apto (Fase C) */}
                         <div className="mt-3 flex items-center justify-between">
                           <div className="flex items-center gap-1.5">
-                            <EstadoBadge estado={c.estado} />
+                            {c.prefiltroReglas ? <BadgePrefiltroReglas r={c.prefiltroReglas} /> : <EstadoBadge estado={c.estado} />}
                             {c.resultadoApto === true && (
                               <span className="rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold text-good">
                                 Apto
@@ -1279,7 +1281,7 @@ function Pastilla({
   );
 }
 
-type TabCandidato = "resumen" | "evaluaciones" | "documentos" | "whatsapp" | "contratacion";
+type TabCandidato = "resumen" | "vehiculo" | "evaluaciones" | "documentos" | "whatsapp" | "contratacion";
 
 /** `reintentar` (Lote 4): presente solo en avisos de error de acciones que pueden toparse con
  * un bloqueo de estado forzable — el botón "Continuar de todos modos" solo se pinta si además
@@ -1326,7 +1328,10 @@ function ModalCandidato({
     setConfirmarEliminar(false);
     onEliminado?.();
   }
-  const [tab, setTab] = useState<TabCandidato>(() => (c.etapa === "Contratación" ? "contratacion" : "resumen"));
+  // Demo SEZA: con prefiltro por reglas, en Prefiltro la ficha abre directo en «Prefiltro / Vehículo»
+  const [tab, setTab] = useState<TabCandidato>(() =>
+    c.etapa === "Contratación" ? "contratacion" : c.prefiltroReglas && c.etapa === "Prefiltro" ? "vehiculo" : "resumen",
+  );
   // Si el candidato ENTRA a Contratación mientras el modal ya está abierto (p.ej. RH lo mueve
   // de etapa sin cerrar la ficha), salta solo a esa pestaña para que no se pierda entre las
   // demás — sin esto, seguiría en "resumen" hasta que el usuario la buscara a mano.
@@ -1554,7 +1559,11 @@ function ModalCandidato({
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
-            <EstadoBadge estado={c.estado} prefijo="Prefiltro: " />
+            {c.prefiltroReglas ? (
+              <BadgePrefiltroReglas r={c.prefiltroReglas} />
+            ) : (
+              <EstadoBadge estado={c.estado} prefijo="Prefiltro: " />
+            )}
             {live && puedeDecidir && (
               <Button
                 size="sm"
@@ -1612,6 +1621,7 @@ function ModalCandidato({
             {(
               [
                 { id: "resumen", label: "Resumen", icon: User, tone: "brand" },
+                ...(c.prefiltroReglas ? [{ id: "vehiculo", label: "Prefiltro / Vehículo", icon: Car, tone: "warn" }] : []),
                 { id: "evaluaciones", label: "Evaluación integral", icon: Sparkles, tone: "human" },
                 { id: "documentos", label: "CV y documentos", icon: FileText, tone: "brand" },
                 { id: "whatsapp", label: "WhatsApp", icon: MessageCircle, tone: "good", badge: c.mensajes },
@@ -1677,6 +1687,9 @@ function ModalCandidato({
           {c.etapa === "Entrevista Humana" && <PanelEntrevistaHumana c={c} live={live} onCambio={onCambio} />}
 
           {tab === "resumen" && <PestanaResumen c={c} live={live} onCambio={onCambio} setTab={setTab} />}
+          {tab === "vehiculo" && c.prefiltroReglas && (
+            <PanelPrefiltroVehiculo codigo={c.id} puedeDecidir={Boolean(live && puedeDecidir)} onCambio={async () => { const n = await fetchCandidato(c.id); if (n) onCambio?.(n); }} />
+          )}
           {tab === "evaluaciones" && <PestanaEvaluaciones c={c} live={live} onCambio={onCambio} versionEval={versionEval} />}
           {tab === "documentos" && <PestanaDocumentos c={c} live={live} onCambio={onCambio} setAviso={setAviso} />}
           {tab === "whatsapp" && <PestanaWhatsApp c={c} live={live} onCambio={onCambio} />}
@@ -2074,6 +2087,24 @@ function textoEntrevistaStatus(s: NonNullable<Candidato["entrevistaStatus"]>): {
     default:
       return { titulo: "Entrevista Red Human programada", detalle: "Aún no se realiza.", tono: "neutral" };
   }
+}
+
+/** Demo SEZA: Cumple perfil / Requiere revisión / No cumple (+ estado del vehículo si ya hay revisión). */
+function BadgePrefiltroReglas({ r }: { r: NonNullable<Candidato["prefiltroReglas"]> }) {
+  const tono = r.resultado === "cumple" ? "good" : r.resultado === "revision" ? "warn" : r.resultado === "no_cumple" ? "bad" : "neutral";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1" title={r.siguienteAccion}>
+      <Badge tone={tono} dot>
+        {r.etiqueta}
+      </Badge>
+      {r.completo && r.resultado === "cumple" && r.vehiculoEstado && (
+        <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-ink-2">
+          <Car className="mr-0.5 inline h-3 w-3" />
+          {r.vehiculoEstado}
+        </span>
+      )}
+    </span>
+  );
 }
 
 function PestanaResumen({

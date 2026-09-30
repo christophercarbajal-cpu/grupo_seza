@@ -188,6 +188,8 @@ export interface Candidato {
   clienteVacante?: string | null;
   /** Fase 7A: id del Cliente de la vacante (contactos para entrevistador externo / notificar). */
   clienteIdVacante?: number | null;
+  /** Demo SEZA: prefiltro por reglas — resultado, motivos y siguiente acción (null si la vacante no lo usa). */
+  prefiltroReglas?: import("./api").ResumenPrefiltroReglas | null;
   /* --- Puntos 3/5: síntesis global (CV + Prefiltro + Entrevista IA + Entrevista Humana),
    * calculada al vuelo en cada lectura del detalle — nunca se persiste, siempre está al día. --- */
   /** Prefiltro = SOLO status de entrada (cumple / no_cumple); no participa en la evaluación integral. */
@@ -262,6 +264,30 @@ export interface BloquePublicacion {
   etiquetas: string[];
 }
 
+/** Demo SEZA (2026-09-29): prefiltro por reglas (services/prefiltro_reglas.py). */
+export interface PreguntaReglas {
+  id: string;
+  tipo: "abierta" | "si_no" | "opcion" | "anio";
+  texto: string;
+  opciones: string[];
+}
+export interface ConfigPrefiltroReglas {
+  activo: boolean;
+  jornada_horas: number | null;
+  /** [ubicación] de la pregunta de jornada; [zona] de la pregunta 3 (vacía = se omite). */
+  ubicacion_texto: string;
+  zona: string;
+  /** Municipios atendidos: vacía = el municipio nunca descarta; fuera de ella = revisión. */
+  cobertura: string[];
+  experiencia_indispensable: boolean;
+  vehiculo: { tipos_permitidos: string[]; anio_minimo: number | null };
+  reglas: Record<string, Record<string, "ok" | "revision" | "no_cumple">>;
+  fotos_vehiculo: boolean;
+}
+/** Sin vehículo propio estas preguntas ya no aplican (mismo criterio que el backend). */
+export const PREGUNTAS_VEHICULARES = ["tipo_vehiculo", "anio_vehiculo", "taxi", "circulacion", "poliza"];
+export const TIPOS_VEHICULO = ["Sedán de cuatro puertas", "Kangoo", "Otro"];
+
 export interface Vacante {
   id: string;
   titulo: string;
@@ -304,6 +330,10 @@ export interface Vacante {
     descarta: boolean;
     opciones?: string[];
   }[];
+  /** Demo SEZA: prefiltro POR REGLAS — preguntas que ve el candidato, config (solo RH) y si el CV es obligatorio. */
+  prefiltroPreguntas?: PreguntaReglas[];
+  prefiltroReglas?: ConfigPrefiltroReglas | Record<string, never>;
+  cvObligatorio?: boolean;
   /** Fase 4: prefiltro por WhatsApp independiente (vacío = usa `criterios`) y ubicación estructurada. */
   criteriosWhatsapp?: { pregunta: string; tipo: string; valida: string; respuesta_esperada: string; descarta: boolean; opciones?: string[] }[];
   ubicacionEstado?: string;
@@ -330,6 +360,8 @@ export interface Vacante {
   /* --- Fase B: Cliente/Responsable/Colaboradores/visibilidad --- */
   cliente?: string | null;
   clienteId?: number | null;
+  /** Demo SEZA: color de marca de la empresa de la vacante. */
+  clienteColor?: string;
   /** Fase 4 (Punto 6): enfoque de la Entrevista IA. */
   enfoqueEntrevista?: "profesional" | "profesional_personal";
   responsable?: string | null;
