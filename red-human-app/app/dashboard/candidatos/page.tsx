@@ -358,6 +358,21 @@ function CandidatosContenido() {
     }
   }, [searchParams]);
 
+  // 2026-09-30: columnas vacías del Kanban (preferencia de cada usuario en este navegador)
+  const [vistaVacias, setVistaVacias] = useState<"mostrar" | "compactar" | "ocultar">("mostrar");
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("rh-candidatos-vacias");
+      if (v === "mostrar" || v === "compactar" || v === "ocultar") setVistaVacias(v);
+    } catch {}
+  }, []);
+  const cambiarVistaVacias = (nueva: "mostrar" | "compactar" | "ocultar") => {
+    setVistaVacias(nueva);
+    try {
+      localStorage.setItem("rh-candidatos-vacias", nueva);
+    } catch {}
+  };
+
   const cambiarVista = (nueva: "pipeline" | "lista") => {
     setVista(nueva);
     try {
@@ -877,9 +892,9 @@ function CandidatosContenido() {
 
       {/* Estado de carga: esqueleto neutro (nunca tarjetas de ejemplo) hasta la primera respuesta real */}
       {cargando && (
-        <div className={cn("mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3", etapas.length > 6 ? "xl:grid-cols-4 2xl:grid-cols-8" : "xl:grid-cols-6")} aria-busy="true">
+        <div className="mt-6 flex gap-3 overflow-x-auto pb-3" aria-busy="true">
           {etapas.map((etapa) => (
-            <div key={etapa} className="rounded-2xl border border-border-soft bg-surface p-3">
+            <div key={etapa} className="w-[288px] shrink-0 rounded-2xl border border-border-soft bg-surface p-3">
               <div className="h-4 w-24 animate-pulse rounded bg-surface-2" />
               <div className="mt-3 h-20 animate-pulse rounded-xl bg-surface-2/60" />
             </div>
@@ -887,191 +902,125 @@ function CandidatosContenido() {
         </div>
       )}
 
-      {/* VISTA 1: PIPELINE (Kanban) */}
-      {!cargando && vista === "pipeline" && (
-        <div className={cn("mt-6 grid gap-4", columnaResaltada ? "grid-cols-1 sm:max-w-md" : cn("sm:grid-cols-2 lg:grid-cols-3", etapas.length > 6 ? "xl:grid-cols-4 2xl:grid-cols-8" : "xl:grid-cols-6"))}>
-          {etapas.filter((etapa) => !columnaResaltada || etapa === columnaResaltada).map((etapa) => {
-            const cols = datosFiltrados.filter((c) => c.etapa === etapa);
-            const esResaltada = columnaResaltada === etapa;
-
-            return (
-              <div
-                key={etapa}
-                id={`columna-etapa-${etapa.replace(/\s/g, "-")}`}
-                className={cn(
-                  "flex flex-col rounded-2xl border p-3 transition-all duration-300",
-                  esResaltada
-                    ? "border-brand bg-brand/5 ring-2 ring-brand/30 shadow-md"
-                    : "border-border-soft bg-surface-2/40",
+      {/* VISTA 1: PIPELINE (Kanban) — 2026-09-30: columnas de ancho fijo con scroll horizontal
+          (nunca comprimir columnas para que quepan todas); las vacías se pueden compactar u ocultar. */}
+      {!cargando && vista === "pipeline" && (() => {
+        const columnas = etapas
+          .filter((etapa) => !columnaResaltada || etapa === columnaResaltada)
+          .map((etapa) => ({ etapa, cols: datosFiltrados.filter((c) => c.etapa === etapa) }));
+        const visibles = columnas.filter(({ cols, etapa }) => vistaVacias !== "ocultar" || cols.length > 0 || etapa === columnaResaltada);
+        const ocultas = columnas.length - visibles.length;
+        return (
+          <div className="mt-6">
+            {!columnaResaltada && (
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1 rounded-xl border border-border-soft bg-surface-2/60 p-1" role="group" aria-label="Columnas vacías">
+                  {([
+                    { key: "mostrar", label: "Todas las fases" },
+                    { key: "compactar", label: "Compactar vacías" },
+                    { key: "ocultar", label: "Ocultar vacías" },
+                  ] as const).map((o) => (
+                    <button
+                      key={o.key}
+                      onClick={() => cambiarVistaVacias(o.key)}
+                      className={cn(
+                        "rounded-lg px-2.5 py-1 text-xs font-semibold transition",
+                        vistaVacias === o.key ? "bg-surface text-brand shadow-sm" : "text-ink-3 hover:bg-surface/60 hover:text-ink",
+                      )}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                {ocultas > 0 && (
+                  <span className="text-xs text-ink-3">
+                    {ocultas} fase{ocultas !== 1 ? "s" : ""} sin candidatos oculta{ocultas !== 1 ? "s" : ""}
+                  </span>
                 )}
-              >
-                <div className="mb-3 flex items-center justify-between px-1">
-                  <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: etapaColor[etapa] }} />
-                    <span className={cn("text-sm font-semibold", esResaltada && "text-brand")}>{nombreEtapa(etapa)}</span>
-                  </div>
-                  <span
+              </div>
+            )}
+
+            <div className="flex snap-x gap-3 overflow-x-auto overscroll-x-contain pb-3 [scrollbar-width:thin]">
+              {visibles.map(({ etapa, cols }) => {
+                const esResaltada = columnaResaltada === etapa;
+                const idColumna = `columna-etapa-${etapa.replace(/\s/g, "-")}`;
+
+                // Columna vacía compactada: franja angosta con el nombre vertical
+                if (vistaVacias === "compactar" && cols.length === 0 && !esResaltada) {
+                  return (
+                    <div
+                      key={etapa}
+                      id={idColumna}
+                      title={`${nombreEtapa(etapa)} · sin candidatos`}
+                      className="flex w-11 shrink-0 snap-start flex-col items-center gap-2 rounded-2xl border border-dashed border-border-soft bg-surface-2/30 py-3"
+                    >
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ background: etapaColor[etapa] }} />
+                      <span className="rounded-full bg-surface px-1.5 py-0.5 font-mono text-[10px] text-ink-3">0</span>
+                      <span className="text-xs font-semibold text-ink-3 [writing-mode:vertical-rl]">{nombreEtapa(etapa)}</span>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    key={etapa}
+                    id={idColumna}
                     className={cn(
-                      "rounded-full px-2 py-0.5 font-mono text-[11px]",
-                      esResaltada ? "bg-brand text-white font-bold" : "bg-surface text-ink-3",
+                      "flex shrink-0 snap-start flex-col rounded-2xl border p-2.5 transition-all duration-300",
+                      esResaltada ? "w-full max-w-md" : "w-[288px]",
+                      esResaltada
+                        ? "border-brand bg-brand/5 ring-2 ring-brand/30 shadow-md"
+                        : "border-border-soft bg-surface-2/40",
                     )}
                   >
-                    {cols.length}
-                  </span>
-                </div>
+                    <div className="mb-2.5 flex items-center justify-between gap-2 px-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: etapaColor[etapa] }} />
+                        <span className={cn("truncate text-sm font-semibold", esResaltada && "text-brand")}>{nombreEtapa(etapa)}</span>
+                      </div>
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full px-2 py-0.5 font-mono text-[11px]",
+                          esResaltada ? "bg-brand text-white font-bold" : "bg-surface text-ink-3",
+                        )}
+                      >
+                        {cols.length}
+                      </span>
+                    </div>
 
-                <div className="flex flex-col gap-2.5">
-                  {cols.map((c) => {
-                    const esDup = duplicadosSet.has(c.id);
-                    return (
-                      /* 2026-09-22: el menú «…» va FUERA del botón de la tarjeta (no se anidan botones);
-                         solo aparece donde tiene sentido avanzar directo a Entrevista Humana. */
-                      <div key={c.id} className="relative">
-                      {puedeDecidir && c.flujo !== "operativo" && ETAPAS_AVANCE_DIRECTO.includes(c.etapa) && c.activa !== false && (
-                        <div className="absolute right-1.5 top-1.5 z-10">
-                          <MenuAcciones
-                            etiqueta={`Acciones de ${c.nombre}`}
-                            acciones={[{
-                              etiqueta: "Avanzar a Entrevista Humana",
-                              icono: <CalendarClock />,
-                              title: TEXTO_AVANCE_DIRECTO,
-                              onClick: () => setAvanceKanban(c),
-                            }]}
-                          />
+                    {/* Scroll vertical propio: la barra horizontal del tablero siempre queda a la vista */}
+                    <div className="-mx-0.5 flex max-h-[calc(100dvh-15rem)] min-h-[6rem] flex-col gap-2 overflow-y-auto px-0.5 pb-0.5">
+                      {cols.map((c) => (
+                        <TarjetaKanban
+                          key={c.id}
+                          c={c}
+                          esDup={duplicadosSet.has(c.id)}
+                          onAbrir={() => abrir(c)}
+                          onAvanzar={
+                            puedeDecidir && c.flujo !== "operativo" && ETAPAS_AVANCE_DIRECTO.includes(c.etapa) && c.activa !== false
+                              ? () => setAvanceKanban(c)
+                              : undefined
+                          }
+                        />
+                      ))}
+                      {cols.length === 0 && (
+                        <div className="rounded-xl border border-dashed border-border-soft py-8 text-center text-xs text-ink-3">
+                          Sin candidatos
                         </div>
                       )}
-                      <button
-                        onClick={() => abrir(c)}
-                        className="card-hover group w-full rounded-xl border border-border-soft bg-surface p-3.5 text-left transition-all hover:border-brand/40 hover:shadow-md"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="relative">
-                            <ScoreRing score={c.score} />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <p className="truncate text-sm font-semibold group-hover:text-brand">{c.nombre}</p>
-                              {c.esPrueba && (
-                                <span className="shrink-0 rounded bg-brand-soft px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide text-brand">
-                                  Prueba
-                                </span>
-                              )}
-                              {c.yaAplicoAntes && (
-                                <span
-                                  title={`Este candidato tiene ${c.totalPostulaciones} postulaciones`}
-                                  className="shrink-0 rounded bg-blue-500/10 px-1.5 py-0.5 font-mono text-[9px] font-bold text-blue-600"
-                                >
-                                  🔄 Ya aplicó antes
-                                </span>
-                              )}
-                              {c.activa === false && (
-                                <span
-                                  title={`Postulación cerrada (${c.motivoCierre || "sin motivo"}) — queda como historial de la persona`}
-                                  className="shrink-0 rounded bg-ink-3/10 px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide text-ink-3"
-                                >
-                                  Cerrada
-                                </span>
-                              )}
-                              {esDup && (
-                                <span
-                                  title="Posible candidato duplicado (coincide teléfono o correo)"
-                                  className="shrink-0 rounded bg-warn-soft px-1.5 py-0.5 font-mono text-[9px] font-bold text-warn"
-                                >
-                                  Duplicado
-                                </span>
-                              )}
-                            </div>
-                            <p className="truncate text-xs text-ink-3">
-                              {c.puesto || "Sin vacante"}
-                              {c.clienteVacante ? ` · ${c.clienteVacante}` : ""}
-                            </p>
-                            <div className="mt-1 flex items-center gap-1.5">
-                              <span className="rounded bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-brand">
-                                Score CV: {c.score}%
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Estado y Apto (Fase C) */}
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
-                            {c.prefiltroReglas ? <BadgePrefiltroReglas r={c.prefiltroReglas} /> : <EstadoBadge estado={c.estado} />}
-                            {c.resultadoApto === true && (
-                              <span className="rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold text-good">
-                                Apto
-                              </span>
-                            )}
-                            {c.resultadoApto === false && (
-                              <span className="rounded-md bg-bad-soft px-1.5 py-0.5 text-[10px] font-bold text-bad">
-                                No apto
-                              </span>
-                            )}
-                          </div>
-                          <span className="flex items-center gap-1 font-mono text-[10px] text-ink-3">
-                            {c.fuente === "WhatsApp" ? (
-                              <span className="inline-flex items-center gap-1 font-semibold text-good">
-                                <MessageCircle className="h-3 w-3" /> WhatsApp
-                              </span>
-                            ) : (
-                              c.fuente
-                            )}
-                          </span>
-                        </div>
-
-                        {/* Señales */}
-                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          {(c.archivos ?? 0) > 0 && (
-                            <Pastilla icon={FileText} tono="neutral">
-                              {c.archivos} CV/doc
-                            </Pastilla>
-                          )}
-                          {(c.mensajes ?? 0) > 0 && (
-                            <Pastilla icon={MessageCircle} tono="good">
-                              {c.mensajes} msgs
-                            </Pastilla>
-                          )}
-                          {c.entrevistaEstado === "evaluada" && (
-                            <Pastilla icon={Video}>match {c.entrevistaMatch ?? "—"}</Pastilla>
-                          )}
-                          {c.expedienteId != null && (
-                            <Pastilla icon={UserCheck} tono="good">
-                              expediente {c.expedienteProgreso ?? 0}%
-                            </Pastilla>
-                          )}
-                          {c.consentimiento === false && (
-                            <Pastilla icon={AlertTriangle} tono="warn">
-                              sin consentimiento
-                            </Pastilla>
-                          )}
-                        </div>
-
-                        {/* Fecha última actividad / aplicación */}
-                        {(c.ultimaActividadEn || c.aplicado) && (
-                          <div className="mt-2.5 flex items-center gap-1 border-t border-border-faint pt-2 text-[10px] text-ink-3">
-                            <Clock className="h-3 w-3" />
-                            <span>
-                              {c.ultimaActividadEn
-                                ? `Actividad ${fechaCorta(c.ultimaActividadEn)}`
-                                : `Aplicó ${fechaCorta(c.aplicado)}`}
-                            </span>
-                          </div>
-                        )}
-                      </button>
-                      </div>
-                    );
-                  })}
-                  {cols.length === 0 && (
-                    <div className="rounded-xl border border-dashed border-border-soft py-8 text-center text-xs text-ink-3">
-                      Sin candidatos
                     </div>
-                  )}
+                  </div>
+                );
+              })}
+              {visibles.length === 0 && (
+                <div className="w-full rounded-xl border border-dashed border-border-soft py-10 text-center text-sm text-ink-3">
+                  Ninguna fase tiene candidatos con estos filtros.
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* VISTA 2: LISTA (Fase C) */}
       {!cargando && vista === "lista" && (
@@ -1276,14 +1225,147 @@ export default function Candidatos() {
   );
 }
 
+/** Tarjeta del Kanban (2026-09-30): compacta y a prueba de desbordes — las señales secundarias
+ *  (fuente, CV, mensajes, expediente, consentimiento) son íconos con número y el detalle va en el tooltip. */
+function TarjetaKanban({
+  c,
+  esDup,
+  onAbrir,
+  onAvanzar,
+}: {
+  c: Candidato;
+  esDup: boolean;
+  onAbrir: () => void;
+  onAvanzar?: () => void;
+}) {
+  const marcas = [
+    c.esPrueba && { t: "Prueba", title: "Registro de Modo Prueba", cls: "bg-brand-soft text-brand" },
+    c.yaAplicoAntes && { t: "Reaplicó", title: `Este candidato tiene ${c.totalPostulaciones} postulaciones`, cls: "bg-blue-500/10 text-blue-600" },
+    c.activa === false && { t: "Cerrada", title: `Postulación cerrada (${c.motivoCierre || "sin motivo"}) — queda como historial de la persona`, cls: "bg-ink-3/10 text-ink-3" },
+    esDup && { t: "Duplicado", title: "Posible candidato duplicado (coincide teléfono o correo)", cls: "bg-warn-soft text-warn" },
+  ].filter(Boolean) as { t: string; title: string; cls: string }[];
+  const fecha = c.ultimaActividadEn ? fechaCorta(c.ultimaActividadEn) : c.aplicado ? fechaCorta(c.aplicado) : null;
+
+  return (
+    /* 2026-09-22: el menú «…» va FUERA del botón de la tarjeta (no se anidan botones);
+       solo aparece donde tiene sentido avanzar directo a Entrevista Humana. */
+    <div className="relative">
+      {onAvanzar && (
+        <div className="absolute right-1 top-1 z-10">
+          <MenuAcciones
+            etiqueta={`Acciones de ${c.nombre}`}
+            acciones={[{
+              etiqueta: "Avanzar a Entrevista Humana",
+              icono: <CalendarClock />,
+              title: TEXTO_AVANCE_DIRECTO,
+              onClick: onAvanzar,
+            }]}
+          />
+        </div>
+      )}
+      <button
+        onClick={onAbrir}
+        className="card-hover group w-full min-w-0 overflow-hidden rounded-xl border border-border-soft bg-surface p-3 text-left transition-all hover:border-brand/40 hover:shadow-md"
+      >
+        <div className={cn("flex items-center gap-2.5", onAvanzar && "pr-7")}>
+          <div className="shrink-0" title={c.score != null ? `Score CV: ${c.score}%` : "Sin Score CV"}>
+            <ScoreRing score={c.score ?? 0} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold group-hover:text-brand" title={c.nombre}>{c.nombre}</p>
+            <p className="truncate text-xs text-ink-3" title={`${c.puesto || "Sin vacante"}${c.clienteVacante ? ` · ${c.clienteVacante}` : ""}`}>
+              {c.puesto || "Sin vacante"}
+              {c.clienteVacante ? ` · ${c.clienteVacante}` : ""}
+            </p>
+          </div>
+        </div>
+
+        {marcas.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {marcas.map((m) => (
+              <span key={m.t} title={m.title} className={cn("rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wide", m.cls)}>
+                {m.t}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Estado del prefiltro / validación */}
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
+          {c.prefiltroReglas ? <BadgePrefiltroReglas r={c.prefiltroReglas} /> : <EstadoBadge estado={c.estado} />}
+          {c.resultadoApto === true && (
+            <span className="rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold text-good">Apto</span>
+          )}
+          {c.resultadoApto === false && (
+            <span className="rounded-md bg-bad-soft px-1.5 py-0.5 text-[10px] font-bold text-bad">No apto</span>
+          )}
+        </div>
+
+        {/* Señales compactas: ícono + número, detalle en el tooltip */}
+        <div className="mt-2 flex items-center justify-between gap-2 border-t border-border-faint pt-2">
+          <div className="flex min-w-0 items-center gap-1">
+            <FuenteChip fuente={c.fuente} />
+            {(c.archivos ?? 0) > 0 && (
+              <Pastilla icon={FileText} title={`${c.archivos} CV/documento(s)`}>{c.archivos}</Pastilla>
+            )}
+            {(c.mensajes ?? 0) > 0 && (
+              <Pastilla icon={MessageCircle} tono="good" title={`${c.mensajes} mensaje(s) de WhatsApp`}>{c.mensajes}</Pastilla>
+            )}
+            {c.entrevistaEstado === "evaluada" && (
+              <Pastilla icon={Video} title={`Entrevista Red Human evaluada · afinidad ${c.entrevistaMatch ?? "—"}`}>{c.entrevistaMatch ?? "—"}</Pastilla>
+            )}
+            {c.expedienteId != null && (
+              <Pastilla icon={UserCheck} tono="good" title={`Expediente ${c.expedienteProgreso ?? 0}%`}>{c.expedienteProgreso ?? 0}%</Pastilla>
+            )}
+            {c.consentimiento === false && (
+              <Pastilla icon={AlertTriangle} tono="warn" title="Sin consentimiento registrado" />
+            )}
+          </div>
+          {fecha && (
+            <span
+              className="flex shrink-0 items-center gap-1 text-[10px] text-ink-3"
+              title={c.ultimaActividadEn ? "Última actividad" : "Fecha de aplicación"}
+            >
+              <Clock className="h-3 w-3" />
+              {fecha}
+            </span>
+          )}
+        </div>
+      </button>
+    </div>
+  );
+}
+
+/** Fuente del candidato como ícono (el nombre completo va en el tooltip). */
+function FuenteChip({ fuente }: { fuente?: string | null }) {
+  if (!fuente) return null;
+  if (fuente === "WhatsApp") {
+    return <Pastilla icon={MessageCircle} tono="good" title="Llegó por WhatsApp" />;
+  }
+  if (fuente === "Facebook") {
+    return (
+      <span title="Llegó por Facebook" className="inline-grid h-[18px] w-[18px] shrink-0 place-items-center rounded-md bg-[#1877f2]/10 font-sans text-[11px] font-bold text-[#1877f2]">
+        f
+      </span>
+    );
+  }
+  return (
+    <span title={`Fuente: ${fuente}`} className="max-w-[72px] shrink truncate rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[10px] text-ink-3">
+      {fuente}
+    </span>
+  );
+}
+
 function Pastilla({
   icon: Icon,
   children,
   tono = "neutral",
+  title,
 }: {
   icon: React.ComponentType<{ className?: string }>;
-  children: React.ReactNode;
+  children?: React.ReactNode;
   tono?: "neutral" | "good" | "warn";
+  title?: string;
 }) {
   const tonos = {
     neutral: "bg-surface-2 text-ink-3",
@@ -1291,7 +1373,7 @@ function Pastilla({
     warn: "bg-warn-soft text-warn",
   };
   return (
-    <span className={cn("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px]", tonos[tono])}>
+    <span title={title} className={cn("inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px]", tonos[tono])}>
       <Icon className="h-3 w-3" />
       {children}
     </span>
