@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from ..deps import cuenta_actual, usuario_actual
 from ..database import get_db
-from ..models import ETAPAS_CANDIDATO, Candidato, Cuenta, Entrevista, Expediente, Postulacion, Vacante
+from ..models import ETAPAS_CANDIDATO, Candidato, Cuenta, Entrevista, Expediente, Postulacion, Vacante  # noqa: F401
+from ..services import flujo_operativo
 from ..services import conteos
 
 router = APIRouter(prefix="/metricas", tags=["metricas"], dependencies=[Depends(usuario_actual)])
@@ -81,7 +82,7 @@ def pipeline(db: Session = Depends(get_db), cuenta: Cuenta = Depends(cuenta_actu
         "candidatos": {
             "total": total_candidatos,
             "nuevos_7d": _postulaciones(db, cuenta.id).filter(Postulacion.creado_en >= hace_7d).count(),
-            "por_etapa": {e: por_etapa.get(e, 0) for e in ETAPAS_CANDIDATO},
+            "por_etapa": {e: por_etapa.get(e, 0) for e in flujo_operativo.etapas_de(cuenta)},  # demo SEZA: Kanban de la Cuenta
             "por_estado": por_estado,
             "por_fuente": por_fuente,
             "sin_consentimiento": _postulaciones(db, cuenta.id).filter(Postulacion.consentimiento.is_(False)).count(),

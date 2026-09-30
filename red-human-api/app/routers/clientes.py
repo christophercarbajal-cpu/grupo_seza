@@ -2,6 +2,7 @@
 personas de contacto (Punto 10). Un contacto NO es un usuario del sistema: solo recibe las
 notificaciones de Cliente configuradas en Fase D (services/notificaciones.py)."""
 
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -39,6 +40,7 @@ def _cliente_dict(c: Cliente, detalle: bool = False) -> dict:
         "nombreComercial": c.nombre_comercial,
         "nombreVisible": c.nombre_visible,
         "estado": c.estado,
+        "color": c.color or "",
         "contactos": len(c.contactos),
         "creado": c.creado_en.isoformat(),
     }
@@ -87,6 +89,15 @@ class CrearIn(BaseModel):
     razon_social: str = ""
     nombre_comercial: str = ""
     estado: str = "Activo"
+    color: str = ""  # #RRGGBB de la marca (demo SEZA); vacío = color de Red Human
+
+
+def _color(valor: str) -> str:
+    """Color de marca validado (#RGB o #RRGGBB, en minúsculas); vacío se respeta."""
+    valor = (valor or "").strip().lower()
+    if valor and not re.fullmatch(r"#(?:[0-9a-f]{3}|[0-9a-f]{6})", valor):
+        raise HTTPException(400, "El color debe ser hexadecimal, por ejemplo #1d4ed8.")
+    return valor
 
 
 def _crear_cliente(db: Session, cuenta: Cuenta, u: Usuario, datos: CrearIn) -> Cliente:
@@ -102,7 +113,7 @@ def _crear_cliente(db: Session, cuenta: Cuenta, u: Usuario, datos: CrearIn) -> C
 
     c = Cliente(
         cuenta_id=cuenta.id, nombre=nombre, razon_social=datos.razon_social.strip(),
-        nombre_comercial=datos.nombre_comercial.strip(), estado=datos.estado,
+        nombre_comercial=datos.nombre_comercial.strip(), estado=datos.estado, color=_color(datos.color),
     )
     db.add(c)
     db.flush()
@@ -178,6 +189,7 @@ class ActualizarIn(BaseModel):
     razon_social: Optional[str] = None
     nombre_comercial: Optional[str] = None
     estado: Optional[str] = None
+    color: Optional[str] = None
 
 
 @router.patch("/{cliente_id}")
@@ -209,6 +221,9 @@ def actualizar(
     if datos.estado is not None:
         c.estado = datos.estado
         cambios.append("estado")
+    if datos.color is not None:
+        c.color = _color(datos.color)
+        cambios.append("color")
 
     if cambios:
         registrar(db, u.nombre, "cliente_editado", "cliente", str(c.id), {"campos": cambios, "correo_rh": u.correo})

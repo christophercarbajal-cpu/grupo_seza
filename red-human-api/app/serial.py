@@ -64,6 +64,18 @@ def nombre_empresa_candidato(v: Vacante) -> str:
     return v.empresa or ""
 
 
+def _preguntas_reglas(v: Vacante) -> list:
+    from .services import prefiltro_reglas  # import local: el servicio no depende de serial
+
+    return prefiltro_reglas.preguntas(v.prefiltro_reglas) if prefiltro_reglas.activo(v.prefiltro_reglas) else []
+
+
+def _resumen_prefiltro_reglas(p: Postulacion):
+    from .services import vehiculo  # import local: vehiculo importa serial
+
+    return vehiculo.resumen_prefiltro(p)
+
+
 def vacante_dict(
     v: Vacante,
     n_candidatos: int = 0,
@@ -80,6 +92,8 @@ def vacante_dict(
         # --- Fase B: Cliente/Responsable/Colaboradores/visibilidad ---
         "cliente": v.cliente.nombre if v.cliente else None,
         "clienteId": v.cliente_id,
+        # Demo SEZA: color de marca de la empresa de la vacante (imagen de Facebook, tarjetas)
+        "clienteColor": (v.cliente.color if v.cliente else "") or "",
         "responsable": v.responsable.nombre if v.responsable else None,
         "colaboradores": colaboradores or [],
         "mostrarClienteCandidato": v.mostrar_cliente_candidato,
@@ -121,6 +135,10 @@ def vacante_dict(
         "criteriosWhatsapp": [p for p in (v.preguntas_filtro_whatsapp or []) if isinstance(p, dict)],
         "ubicacionEstado": v.ubicacion_estado or "",
         "ubicacionMunicipio": v.ubicacion_municipio or "",
+        # Demo SEZA (2026-09-29): prefiltro por reglas (config de la vacante + preguntas que ve el candidato)
+        "prefiltroReglas": v.prefiltro_reglas or {},
+        "prefiltroPreguntas": _preguntas_reglas(v),
+        "cvObligatorio": v.cv_obligatorio is not False,
         # Capacitación universal (2026-09-16): curso que se asigna como filtro al quedar apto
         "cursoFiltroId": v.curso_filtro.codigo if v.curso_filtro else None,
         # Evaluaciones (2026-09-28): solo SUGERENCIAS + aviso opcional al enviar a Onboarding
@@ -457,6 +475,10 @@ def postulacion_dict(p: Postulacion, detalle: bool = False, n_mensajes: Optional
         "resultadoApto": p.resultado_apto,
         "clienteVacante": v.cliente.nombre if v and v.cliente else None,
         "clienteIdVacante": v.cliente_id if v else None,  # Fase 7A: para elegir contactos/entrevistador externo
+        # Demo SEZA: qué Kanban usa la Cuenta de la postulación ("rh" | "operativo")
+        "flujo": (p.cuenta.flujo_candidatos if p.cuenta else "rh") or "rh",
+        # Demo SEZA: resultado del prefiltro por reglas + siguiente acción (None si la vacante no lo usa)
+        "prefiltroReglas": _resumen_prefiltro_reglas(p),
         # --- Persona (maestro) ---
         "candidato": _persona_dict(c),
     }

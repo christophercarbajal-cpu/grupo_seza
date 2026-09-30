@@ -561,12 +561,14 @@ export interface VacanteGenerada {
 
 /** Parte 3 (2026-09-12): sueldo estructurado. "a_convenir" = sin montos. El texto que se muestra
  * (`Vacante.sueldo`) lo DERIVA el servidor; nunca se captura ni se inventa. */
-export type PeriodicidadSueldo = "semanal" | "quincenal" | "mensual" | "anual" | "a_convenir";
+export type PeriodicidadSueldo = "semanal" | "quincenal" | "mensual" | "anual" | "dia_semanal" | "dia_quincenal" | "a_convenir";
 export const PERIODICIDADES_SUELDO: { valor: PeriodicidadSueldo; texto: string }[] = [
   { valor: "mensual", texto: "Mensual" },
   { valor: "quincenal", texto: "Quincenal" },
   { valor: "semanal", texto: "Semanal" },
   { valor: "anual", texto: "Anual" },
+  { valor: "dia_semanal", texto: "Por día · pago semanal" },
+  { valor: "dia_quincenal", texto: "Por día · pago quincenal" },
   { valor: "a_convenir", texto: "A convenir" },
 ];
 export const MONEDAS_SUELDO = ["MXN", "USD"];
@@ -778,6 +780,30 @@ export function fetchPublicacion(codigo: string, plataforma: string) {
   return get<PublicacionLista>(`/vacantes/${codigo}/publicacion/${plataforma}`);
 }
 
+/** Demo SEZA (2026-09-29): pieza para publicar A MANO en Facebook — copy, datos de la imagen (se
+ * dibuja en el navegador con el color de la empresa) y la liga única (`?origen=facebook`). */
+export interface PiezaFacebook {
+  vacante: string;
+  publicada: boolean;
+  liga: string;
+  copy: string;
+  copyConLiga: string;
+  copyPropio: boolean;
+  imagen: {
+    empresa: string;
+    color: string;
+    titulo: string;
+    ubicacion: string;
+    sueldo: string;
+    destacados: string[];
+    llamado: string;
+  };
+}
+
+export function fetchPiezaFacebook(codigo: string) {
+  return get<PiezaFacebook>(`/vacantes/${codigo}/facebook`);
+}
+
 /* ============================================================
    Fase B · Clientes (empresas para las que recluta una Cuenta)
    ============================================================ */
@@ -800,13 +826,15 @@ export interface Cliente {
   /** Lo que ve el candidato: nombre comercial si existe, si no el nombre. */
   nombreVisible: string;
   estado: "Activo" | "Inactivo";
+  /** Color de marca (#RRGGBB) para piezas de difusión; vacío = color de Red Human. */
+  color?: string;
   /** Conteo de contactos; la lista completa solo viene en la ficha (`listaContactos`). */
   contactos: number;
   listaContactos?: ContactoCliente[];
   creado: string;
 }
 
-export type CamposCliente = { nombre?: string; razon_social?: string; nombre_comercial?: string; estado?: "Activo" | "Inactivo" };
+export type CamposCliente = { nombre?: string; razon_social?: string; nombre_comercial?: string; estado?: "Activo" | "Inactivo"; color?: string };
 export type CamposContacto = { nombre: string; apellidos?: string; puesto?: string; correo?: string; telefono?: string };
 
 export function fetchClientes(estado?: string) {
@@ -1322,9 +1350,14 @@ export function postular(datos: {
   consentimiento: boolean;
   respuestas?: { pregunta: string; respuesta: string }[];
   cv?: File | null;
+  origen?: string;
+  /** Demo SEZA: prefiltro por reglas {id_pregunta: respuesta}. */
+  respuestasReglas?: Record<string, string>;
 }) {
   const form = new FormData();
   form.append("vacante", datos.slug);
+  if (datos.origen) form.append("origen", datos.origen);
+  if (datos.respuestasReglas) form.append("respuestas_reglas", JSON.stringify(datos.respuestasReglas));
   form.append("nombre", datos.nombre);
   form.append("telefono", datos.telefono ?? "");
   form.append("correo", datos.correo ?? "");
@@ -1338,6 +1371,7 @@ export function postular(datos: {
     nuevo: boolean;
     cv: { procesado: boolean; avisos: string[] };
     clasificacion: { estado: string; score: number; evidencia: string } | null;
+    vehiculo: { liga: string } | null;
   }>("/candidatos/postular", form);
 }
 
@@ -1939,6 +1973,11 @@ export interface ExpedientePublico {
   documentos: DocumentoExpedientePublico[];
   /** 2026-09-19: la carta de intención se puede descargar desde la liga pública. */
   cartaDisponible?: boolean;
+  /** Demo SEZA (flujo operativo): el candidato captura 3 referencias en esta misma liga. */
+  pideReferencias?: boolean;
+  referencias?: { nombre: string; telefono: string; parentesco: string }[];
+  parentescos?: string[];
+  referenciasRequeridas?: number;
 }
 
 export function urlCartaIntencionPublica(token: string) {
@@ -3337,4 +3376,279 @@ export function responderClimaPublica(
     externo_nombre: datos.externoNombre ?? "",
     externo_correo: datos.externoCorreo ?? "",
   });
+}
+
+/* ============================================================
+   Demo Grupo SEZA (2026-09-29): prefiltro por reglas y revisión de vehículo
+   ============================================================ */
+
+export type EfectoRegla = "revision" | "no_cumple";
+
+export interface ResumenPrefiltroReglas {
+  completo: boolean;
+  resultado: "cumple" | "revision" | "no_cumple" | "pendiente";
+  /** «Cumple perfil» / «Requiere revisión» / «No cumple» / «Prefiltro en curso» */
+  etiqueta: string;
+  resultadoOriginal?: string;
+  motivos: { id: string; pregunta: string; respuesta: string; efecto: EfectoRegla; motivo: string }[];
+  siguienteAccion: string;
+  canal?: string;
+  completadoEn?: string;
+  aprobadoPorRH?: { usuario: string; motivo: string; anterior: string; fecha: string } | null;
+  respuestas?: { id: string; pregunta: string; respuesta: string }[];
+  vehiculoEstado?: string;
+  respondidas?: number;
+  total?: number;
+}
+
+export type EstadoVehiculo = "sin_liga" | "pendiente" | "por_revisar" | "correccion" | "aprobado" | "excepcion";
+
+export interface RevisionVehiculo {
+  requerida: boolean;
+  puedeCitar: boolean;
+  motivoBloqueo: string;
+  estado: EstadoVehiculo;
+  etiqueta: string;
+  liga: string;
+  ligaEnviadaEn?: string | null;
+  envios?: number;
+  comentario?: string;
+  decididoPor?: string;
+  decididoEn?: string | null;
+  ladosCorregir?: string[];
+  fotos: { lado: string; nombre: string; cargada: boolean; subidaEn: string; url: string }[];
+  historial: { evento: string; texto: string; usuario: string; fecha: string }[];
+}
+
+export interface FlujoVehiculo {
+  prefiltro: ResumenPrefiltroReglas | null;
+  vehiculo: RevisionVehiculo | null;
+  envio?: { liga: string; whatsapp: { enviado?: boolean; detalle?: unknown } } | null;
+}
+
+export function fetchFlujoVehiculo(codigo: string) {
+  return get<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo`);
+}
+
+export function enviarLigaVehiculo(codigo: string) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/enviar-liga`);
+}
+
+export function decidirVehiculo(codigo: string, accion: "aprobar" | "correccion" | "excepcion", comentario = "", lados: string[] = []) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/decision`, { accion, comentario, lados });
+}
+
+export function aprobarPrefiltroReglas(codigo: string, motivo: string) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/prefiltro-reglas/aprobar`, { motivo });
+}
+
+export interface VehiculoPublico {
+  nombre: string;
+  vacante: string;
+  empresa: string;
+  estado: EstadoVehiculo;
+  abierta: boolean;
+  comentario: string;
+  lados: { clave: string; nombre: string; cargada: boolean; pendiente: boolean }[];
+}
+
+export function fetchVehiculoPublico(token: string) {
+  return get<VehiculoPublico>(`/vehiculo/publica/${token}`);
+}
+
+export function subirFotoVehiculo(token: string, lado: string, archivo: File) {
+  const form = new FormData();
+  form.append("lado", lado);
+  form.append("archivo", archivo);
+  return subir<VehiculoPublico>(`/vehiculo/publica/${token}/foto`, form);
+}
+
+export function urlFotoVehiculoPublica(token: string, lado: string, version = "") {
+  return `${API}/vehiculo/publica/${token}/foto/${lado}${version ? `?v=${version}` : ""}`;
+}
+
+/* ---------- Demo SEZA: flujo operativo (Kanban de 8 etapas, capacitación en tienda, documentos y alta) ---------- */
+
+export const ETAPAS_OPERATIVO = [
+  "Nuevo",
+  "Prefiltro",
+  "Revisión de vehículo",
+  "Cita para capacitación",
+  "Capacitación realizada",
+  "Documentos y referencias",
+  "Listo para alta",
+  "Alta realizada",
+] as const;
+
+export function fetchFlujoCandidatos() {
+  return get<{ flujo: "rh" | "operativo"; etapas: string[] }>("/candidatos-flujo");
+}
+
+export interface SesionCapacitacion {
+  codigo: string;
+  nombre: string;
+  tienda: string;
+  direccion: string;
+  inicio: string | null;
+  inicioTexto: string;
+  duracionMin: number;
+  cupo: number;
+  ocupados: number;
+  disponibles: number;
+  supervisorNombre: string;
+  supervisorTelefono: string;
+  indicaciones: string;
+  vacante: string | null;
+  vacanteTitulo: string;
+  cursoInduccion: string | null;
+  cursoInduccionTitulo: string;
+  estado: "programada" | "cerrada" | "cancelada";
+  ligaSupervisor: string;
+  citados?: CitadoSesion[];
+}
+
+export interface CitadoSesion {
+  evaluacion: string;
+  postulacion?: string;
+  nombre: string;
+  vacante: string;
+  confirmada: boolean;
+  asistencia: "" | "asistio" | "no_asistio";
+  resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
+  resultadoEtiqueta: string;
+  comentario: string;
+  estado?: string;
+}
+
+export type CamposSesion = {
+  tienda: string;
+  direccion?: string;
+  inicio: string;
+  duracion_min?: number;
+  cupo: number;
+  supervisor_nombre?: string;
+  supervisor_telefono?: string;
+  indicaciones?: string;
+  vacante?: string | null;
+  curso_induccion?: string | null;
+};
+
+export function fetchSesionesCapacitacion(incluirPasadas = false) {
+  return get<SesionCapacitacion[]>(`/sesiones-capacitacion${incluirPasadas ? "?incluir_pasadas=true" : ""}`);
+}
+export function fetchSesionCapacitacion(codigo: string) {
+  return get<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}`);
+}
+export function crearSesionCapacitacion(datos: CamposSesion) {
+  return post<SesionCapacitacion>("/sesiones-capacitacion", datos);
+}
+export function editarSesionCapacitacion(codigo: string, datos: CamposSesion) {
+  return patch<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}`, datos);
+}
+export function estadoSesionCapacitacion(codigo: string, estado: "programada" | "cerrada" | "cancelada") {
+  return post<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}/estado`, { estado });
+}
+
+export interface SesionSupervisor {
+  nombre: string;
+  tienda: string;
+  direccion: string;
+  inicioTexto: string;
+  supervisor: string;
+  empresa: string;
+  cupo: number;
+  estado: string;
+  resultados: { valor: "favorable" | "con_observaciones" | "desfavorable"; texto: string }[];
+  citados: CitadoSesion[];
+}
+export function fetchSesionSupervisor(token: string) {
+  return get<SesionSupervisor>(`/sesiones-capacitacion/publica/${token}`);
+}
+export function registrarAsistenciaSupervisor(
+  token: string,
+  datos: { evaluacion: string; asistio: boolean; resultado?: string; comentario?: string; supervisor?: string },
+) {
+  return post<SesionSupervisor>(`/sesiones-capacitacion/publica/${token}/asistencia`, datos);
+}
+
+export interface ReferenciaCandidato {
+  nombre: string;
+  telefono: string;
+  parentesco: string;
+  capturada_en?: string;
+  contactada?: boolean;
+  contactada_por?: string;
+  contactada_en?: string;
+  nota?: string;
+}
+
+export interface PanelOperativo {
+  etapa: string;
+  etapas: string[];
+  capacitacion: {
+    evaluacion: string | null;
+    nombre: string;
+    estado: string | null;
+    confirmada: boolean;
+    confirmadaEn: string | null;
+    asistencia: string;
+    resultado: string;
+    resultadoEtiqueta: string;
+    dictamenInterno: string;
+    comentario: string;
+    registradoPor: string;
+    sesion: SesionCapacitacion | null;
+    induccion: string;
+  };
+  expediente: {
+    id: number;
+    liga: string;
+    progreso: number;
+    documentos: { tipo: string; estado: string; aprobado: boolean; archivo: boolean; notas: string; estadoSimple: string }[];
+    referencias: ReferenciaCandidato[];
+  } | null;
+  faltantesAlta: string[];
+  listoParaAlta: boolean;
+  alta: { por: string; en: string | null; colaborador: { codigo: string; nombre: string } | null } | null;
+  whatsapp?: { enviado?: boolean };
+  induccion?: { titulo: string; liga: string; simulado: boolean } | null;
+  liga?: string;
+}
+
+export function fetchPanelOperativo(codigo: string) {
+  return get<PanelOperativo>(`/candidatos/${codigo}/operativo`);
+}
+export function citarCapacitacion(codigo: string, sesion: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/citar`, { sesion });
+}
+export function confirmarCitaCapacitacion(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/confirmar-cita`);
+}
+export function solicitarDocumentosReferencias(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/solicitar-documentos`);
+}
+export function revisarDocumentoOperativo(codigo: string, tipo: string, estado: "aprobado" | "rechazado", notas = "") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/documentos`, { tipo, estado, notas });
+}
+export function marcarReferencia(codigo: string, indice: number, contactada: boolean, nota = "") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias/${indice}`, { contactada, nota });
+}
+export function registrarAltaOperativa(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/alta`);
+}
+
+export function guardarReferenciasPublicas(token: string, referencias: { nombre: string; telefono: string; parentesco: string }[]) {
+  return post<ExpedientePublico>(`/expedientes/publica/${token}/referencias`, { referencias });
+}
+
+const ETAPAS_RH_ORDEN = ["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding"];
+/** Orden de una etapa en cualquiera de los dos Kanban (para ordenar contadores que llegan como diccionario). */
+export function ordenEtapa(etapa: string): number {
+  const i = (ETAPAS_OPERATIVO as readonly string[]).indexOf(etapa);
+  return i >= 0 ? i : 100 + ETAPAS_RH_ORDEN.indexOf(etapa);
+}
+
+/** Demo SEZA: duplica un curso (módulos, evaluación, material) — así nace «Inducción SEZA». */
+export function duplicarCurso(codigo: string, titulo: string) {
+  return post<Curso>(`/capacitacion/${codigo}/duplicar`, { titulo });
 }

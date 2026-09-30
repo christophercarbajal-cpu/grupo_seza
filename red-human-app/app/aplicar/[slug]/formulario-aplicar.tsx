@@ -17,12 +17,13 @@ import {
   Mail,
   Phone,
   AlertTriangle,
+  Camera,
 } from "lucide-react";
 import { Logo, Button, Card, Badge } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Dropzone, pesoLegible } from "@/components/dashboard/subida";
 import { fetchVacantePorSlug, postular } from "@/lib/api";
-import type { Vacante } from "@/lib/data";
+import { PREGUNTAS_VEHICULARES, type Vacante } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
 const pasos = ["Tus datos", "Currículum", "Unas preguntas"];
@@ -48,6 +49,9 @@ export default function FormularioAplicar() {
   const [respuestas, setRespuestas] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
+  // Demo SEZA: prefiltro por reglas (12 preguntas por id) y liga de fotos que regresa el servidor si cumple
+  const [respReglas, setRespReglas] = useState<Record<string, string>>({});
+  const [ligaVehiculo, setLigaVehiculo] = useState("");
 
   useEffect(() => {
     fetchVacantePorSlug(slug).then((v) => {
@@ -78,8 +82,22 @@ export default function FormularioAplicar() {
     return m;
   }, [vacante]);
 
+  const cvObligatorio = vacante?.cvObligatorio !== false;
+  const sinVehiculo = respReglas.vehiculo_propio === "No";
+  const preguntasReglas = useMemo(
+    () => (vacante?.prefiltroPreguntas ?? []).filter((q) => !(sinVehiculo && PREGUNTAS_VEHICULARES.includes(q.id))),
+    [vacante, sinVehiculo],
+  );
+  const conReglas = preguntasReglas.length > 0;
+
   const puedeAvanzar =
-    step === 0 ? datos.nombre.trim().length > 2 && (datos.telefono.trim() || datos.correo.trim()) : step === 1 ? consent && cv !== null : true;
+    step === 0
+      ? datos.nombre.trim().length > 2 && (datos.telefono.trim() || datos.correo.trim())
+      : step === 1
+        ? consent && (cv !== null || !cvObligatorio)
+        : conReglas
+          ? preguntasReglas.every((q) => (respReglas[q.id] ?? "").trim())
+          : true;
 
   async function siguiente() {
     setError("");
@@ -93,7 +111,7 @@ export default function FormularioAplicar() {
     }
 
     // Validaciones previas al envío
-    if (!cv) {
+    if (!cv && cvObligatorio) {
       setError("El currículum es obligatorio. Por favor sube tu CV en formato PDF o imagen.");
       setStep(1);
       return;
@@ -109,12 +127,18 @@ export default function FormularioAplicar() {
         consentimiento: consent,
         respuestas: preguntas.map((p) => ({ pregunta: p, respuesta: respuestas[p] ?? "" })),
         cv,
+        // liga única por canal (p. ej. Facebook: ?origen=facebook) → fuente de la postulación
+        origen: new URLSearchParams(window.location.search).get("origen") ?? "",
+        respuestasReglas: conReglas
+          ? Object.fromEntries(preguntasReglas.map((q) => [q.id, respReglas[q.id] ?? ""]))
+          : undefined,
       });
       setEnviando(false);
       if (!r.ok) {
         setError(r.error);
         return;
       }
+      setLigaVehiculo(r.data.vehiculo?.liga ?? "");
       setDone(true);
     } catch (err) {
       setEnviando(false);
@@ -179,7 +203,7 @@ export default function FormularioAplicar() {
         )}
 
         {done ? (
-          <Exito titulo={titulo} conCv={Boolean(cv)} />
+          <Exito titulo={titulo} conCv={Boolean(cv)} ligaVehiculo={ligaVehiculo} />
         ) : (
           <Card className="mt-6 overflow-hidden">
             {/* Progreso */}
@@ -265,7 +289,7 @@ export default function FormularioAplicar() {
                       ) : (
                         <Dropzone
                           onArchivos={(a) => setCv(a[0])}
-                          titulo="Sube tu currículum (obligatorio)"
+                          titulo={cvObligatorio ? "Sube tu currículum (obligatorio)" : "Sube tu currículum (opcional)"}
                           ayuda="PDF o foto · máx. 10 MB · nuestro asistente leerá tus datos para que no los captures"
                         />
                       )}
@@ -292,7 +316,11 @@ export default function FormularioAplicar() {
                     </div>
                   )}
 
-                  {step === 2 && (
+                  {step === 2 && conReglas && (
+                    <PreguntasReglas preguntas={preguntasReglas} respuestas={respReglas} onCambio={(id, v) => setRespReglas((r) => ({ ...r, [id]: v }))} />
+                  )}
+
+                  {step === 2 && !conReglas && (
                     <div className="flex flex-col gap-4">
                       {preguntas.map((q, i) => {
                         const opciones = opcionesPorPregunta[q] ?? ["Sí", "No", "Parcial"];
@@ -400,7 +428,61 @@ function Campo({
   );
 }
 
-function Exito({ titulo, conCv }: { titulo: string; conCv: boolean }) {
+/** Demo SEZA: las 12 preguntas del prefiltro por reglas (Sí/No, opción, año o texto corto). */
+function PreguntasReglas({
+  preguntas,
+  respuestas,
+  onCambio,
+}: {
+  preguntas: NonNullable<Vacante["prefiltroPreguntas"]>;
+  respuestas: Record<string, string>;
+  onCambio: (id: string, valor: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-5">
+      {preguntas.map((q, i) => (
+        <div key={q.id}>
+          <p className="mb-2 text-sm font-medium">
+            <span className="mr-1 font-mono text-ink-3">{i + 1}.</span> {q.texto}
+          </p>
+          {q.tipo === "abierta" || q.tipo === "anio" ? (
+            <input
+              type={q.tipo === "anio" ? "number" : "text"}
+              inputMode={q.tipo === "anio" ? "numeric" : undefined}
+              min={q.tipo === "anio" ? 1950 : undefined}
+              max={q.tipo === "anio" ? new Date().getFullYear() + 1 : undefined}
+              placeholder={q.tipo === "anio" ? "Ej. 2019" : "Escribe tu respuesta"}
+              value={respuestas[q.id] ?? ""}
+              onChange={(e) => onCambio(q.id, e.target.value)}
+              className="h-12 w-full rounded-xl border border-border-soft bg-surface px-4 text-sm outline-none transition focus:border-brand focus:ring-2 focus:ring-brand/20"
+            />
+          ) : (
+            <div className={cn("grid gap-2", q.opciones.length > 2 ? "grid-cols-2 sm:grid-cols-3" : "grid-cols-2")}>
+              {q.opciones.map((op) => {
+                const activa = respuestas[q.id] === op;
+                return (
+                  <button
+                    key={op}
+                    type="button"
+                    onClick={() => onCambio(q.id, op)}
+                    className={cn(
+                      "min-h-11 rounded-xl border px-3 py-2.5 text-sm transition",
+                      activa ? "border-brand bg-brand-soft font-medium text-brand" : "border-border-soft bg-surface hover:border-brand hover:bg-brand-soft",
+                    )}
+                  >
+                    {op}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean; ligaVehiculo?: string }) {
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
       <Card className="mt-8 overflow-hidden text-center">
@@ -426,6 +508,17 @@ function Exito({ titulo, conCv }: { titulo: string; conCv: boolean }) {
 
         {/* Zero-Touch: el siguiente contacto lo dispara el sistema por WhatsApp, no un clic del candidato */}
         <div className="p-6 sm:p-8 flex flex-col items-center gap-5">
+          {ligaVehiculo && (
+            <div className="flex w-full max-w-md flex-col items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-5 text-center">
+              <Camera className="h-7 w-7 text-brand" />
+              <p className="text-sm leading-relaxed text-ink">
+                Siguiente paso: sube 4 fotos de tu vehículo (frente, atrás y ambos costados). También te mandamos la liga por WhatsApp.
+              </p>
+              <Button href={ligaVehiculo} className="w-full">
+                <Camera className="h-4 w-4" /> Subir fotos de mi vehículo
+              </Button>
+            </div>
+          )}
           <div className="flex w-full max-w-md items-start gap-3 rounded-2xl border border-[#25D366]/30 bg-[#25D366]/10 p-5 text-left">
             <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#25D366]/15 text-[#25D366]">
               <MessageCircle className="h-5 w-5" />

@@ -24,7 +24,10 @@ TALENT = "Talent.com"
 
 # periodicidad capturada → (unitText de Schema.org, factor). Quincenal = medio mes: en México una
 # quincena es exactamente la mitad del mes, así que ×2 a MONTH es aritmética, no una estimación.
-UNIDAD_SALARIO = {"mensual": ("MONTH", 1), "quincenal": ("MONTH", 2), "semanal": ("WEEK", 1), "anual": ("YEAR", 1)}
+UNIDAD_SALARIO = {
+    "mensual": ("MONTH", 1), "quincenal": ("MONTH", 2), "semanal": ("WEEK", 1), "anual": ("YEAR", 1),
+    "dia_semanal": ("DAY", 1), "dia_quincenal": ("DAY", 1),  # pago por día: el monto ya es diario
+}
 
 
 def publicable_en(v: Vacante, plataforma: str) -> bool:

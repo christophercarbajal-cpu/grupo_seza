@@ -34,6 +34,8 @@ def _plantilla_dict(p: Plantilla) -> dict:
         "sueldoHasta": p.sueldo_hasta,
         "sueldoMoneda": p.sueldo_moneda or "MXN",
         "sueldoPeriodicidad": p.sueldo_periodicidad or "",
+        "prefiltroReglas": p.prefiltro_reglas or {},  # demo SEZA
+        "cvObligatorio": p.cv_obligatorio is not False,
         "requisitos": p.requisitos,
         "descripcion": p.descripcion,
         "resumen": p.resumen,
@@ -126,6 +128,8 @@ class PlantillaIn(BaseModel):
     texto_whatsapp: str = ""
     texto_bolsa: str = ""
     enfoque_entrevista: str = "profesional"
+    prefiltro_reglas: dict = {}  # demo SEZA
+    cv_obligatorio: bool = True
 
 
 def _crear_plantilla(db: Session, cuenta: Cuenta, u: Usuario, datos: PlantillaIn) -> Plantilla:

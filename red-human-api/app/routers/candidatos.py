@@ -51,6 +51,9 @@ from ..serial import archivo_dict, expediente_dict, nombre_empresa_candidato, po
 from ..services import archivos as fs
 from ..services import ia
 from ..services import notificaciones
+from ..services import flujo_operativo
+from ..services import prefiltro_reglas
+from ..services import vehiculo as vehiculo_srv
 from ..services.configuracion import modo_prueba_activo, permite_duplicados, puede_forzar_prueba
 from ..services.notificaciones import RE_CORREO, TZ_MEXICO, NotificarIn, override_de
 from ..services.whatsapp import enviar_mensaje, enviar_plantilla
@@ -111,6 +114,8 @@ def crear_postulacion(
 ) -> Postulacion:
     """ÚNICO lugar donde nace una Postulación (webhooks, entrevistas y scripts la reutilizan):
     el código P-#### siempre sale del id de la postulación, nunca del de la persona."""
+    if etapa == "Prefiltro" and flujo_operativo.es_operativa(db.get(Cuenta, cuenta_id)):
+        etapa = flujo_operativo.NUEVO  # demo SEZA: el Kanban operativo arranca en «Nuevo»
     p = Postulacion(
         codigo="TMP",
         candidato_id=c.id,
@@ -749,6 +754,10 @@ async def _disparar_plantilla_inicio(db: Session, p: Postulacion) -> dict:
     return envio
 
 
+# ?origen= de la liga pública → Candidato.fuente (alimenta «por fuente» en métricas).
+FUENTES_LIGA = {"facebook": "Facebook"}
+
+
 @router.post("/postular", status_code=201)
 async def postular(
     vacante: str = Form(..., description="slug o código de la vacante publicada"),
@@ -758,6 +767,8 @@ async def postular(
     consentimiento: bool = Form(default=False),
     respuestas: str = Form(default="", description="JSON: [{pregunta, respuesta}]"),
     cv: Optional[UploadFile] = File(default=None, description="CV en PDF o imagen"),
+    origen: str = Form(default="", description="?origen= de la liga (p. ej. facebook)"),
+    respuestas_reglas: str = Form(default="", description="prefiltro por reglas: JSON {id_pregunta: respuesta}"),
     db: Session = Depends(get_db),
 ):
     """Postulación desde la página pública `/aplicar/[slug]` — un solo paso para el candidato.
@@ -782,15 +793,37 @@ async def postular(
     if vac.estado != "Publicada":  # 2026-09-16: una liga vieja a una vacante eliminada/cerrada no abre postulaciones
         raise HTTPException(410, "Esta vacante ya no está disponible.")
 
+    # Demo SEZA (2026-09-29): prefiltro POR REGLAS — se valida ANTES de crear a la persona: todas las
+    # preguntas que aplican deben venir contestadas.
+    reglas_respuestas, reglas_textos = None, {}
+    if prefiltro_reglas.activo(vac.prefiltro_reglas):
+        try:
+            crudas = json.loads(respuestas_reglas) if respuestas_reglas else {}
+        except (ValueError, TypeError):
+            crudas = {}
+        crudas = crudas if isinstance(crudas, dict) else {}
+        lista = {q["id"]: q for q in prefiltro_reglas.preguntas(vac.prefiltro_reglas)}
+        reglas_respuestas = {}
+        for pid, q in lista.items():
+            texto_r = str(crudas.get(pid) or "").strip()[:200]
+            if texto_r:
+                reglas_textos[pid] = texto_r
+                reglas_respuestas[pid] = prefiltro_reglas.interpretar(q, texto_r) or ""
+        faltan = [lista[i]["texto"] for i in prefiltro_reglas.aplicables(vac.prefiltro_reglas, reglas_respuestas) if i not in reglas_textos]
+        if faltan:
+            raise HTTPException(400, f"Contesta todas las preguntas del prefiltro. Falta: {faltan[0]}")
+
     tel = _telefono(telefono)
     prueba = modo_prueba_activo(db)
+    # Demo SEZA (2026-09-29): la liga única de Facebook (`?origen=facebook`) deja la fuente atribuida.
+    fuente = FUENTES_LIGA.get((origen or "").strip().lower(), "Formulario")
 
     # Con Modo Prueba activo (permite_duplicados), `c` siempre queda en None aquí: cada llamada es una
     # persona nueva e independiente, sin importar cuánto pasó desde la anterior.
     c = None if permite_duplicados(db) else _duplicado(db, tel, correo, vac.cuenta_id)
     nuevo_candidato = c is None
     if c is None:
-        c = _crear_candidato(db, vac.cuenta_id, nombre.strip(), "Formulario", prueba, telefono=tel, correo=correo.strip())
+        c = _crear_candidato(db, vac.cuenta_id, nombre.strip(), fuente, prueba, telefono=tel, correo=correo.strip())
     else:
         if nombre.strip() and (not c.nombre or c.nombre.startswith("Candidato")):
             c.nombre = nombre.strip()
@@ -803,6 +836,8 @@ async def postular(
     p, nueva_postulacion = postulacion_para_vacante(db, c, vac, vac.cuenta_id, "formulario", consentimiento=True)
     # 2026-09-16 (prefiltro dual): las respuestas del formulario web se guardan para compararlas después
     # con lo que la persona diga por WhatsApp (antes se recibían y se tiraban).
+    if fuente != "Formulario":  # persona ya existente: la fuente de ESTA postulación queda en su análisis
+        p.analisis = {**(p.analisis or {}), "fuente_liga": fuente}
     respuestas_web = _parsear_respuestas_web(respuestas)
     if respuestas_web:
         analisis_p = dict(p.analisis or {})
@@ -825,6 +860,9 @@ async def postular(
         db, "sistema", "postulacion_recibida", "postulacion", p.codigo,
         {"candidato": c.codigo, "vacante": vac.codigo, "persona_nueva": nuevo_candidato, "postulacion_nueva": nueva_postulacion},
     )
+    cierre_reglas = None
+    if reglas_respuestas is not None and not p.prefiltro_completo:
+        cierre_reglas = await cerrar_prefiltro_reglas(db, p, reglas_respuestas, reglas_textos, "web")
     db.commit()
 
     # Zero-Touch: dispara la plantilla de Meta ("recibimos tu postulación") ya con la postulación
@@ -844,6 +882,8 @@ async def postular(
         "nuevo": nuevo_candidato,
         "postulacionNueva": nueva_postulacion,
         "cv": {"procesado": resultado_cv.get("ok", False), "avisos": resultado_cv.get("avisos", [])},
+        # Demo SEZA: el candidato NO ve el resultado (lo decide RH); solo la liga de fotos si ya le toca.
+        "vehiculo": {"liga": cierre_reglas["vehiculo"]["liga"]} if cierre_reglas and cierre_reglas.get("vehiculo") else None,
     }
 
 
@@ -1368,6 +1408,156 @@ def _texto_aclaracion(nombre: str, inc: dict) -> str:
     )
 
 
+# ------------------------------------------------------------
+# Prefiltro POR REGLAS (demo SEZA, 2026-09-29) — services/prefiltro_reglas.py
+# ------------------------------------------------------------
+
+
+def _estado_reglas(p: Postulacion) -> dict:
+    return dict((p.analisis or {}).get("prefiltro_reglas") or {})
+
+
+async def cerrar_prefiltro_reglas(db: Session, p: Postulacion, respuestas: dict, textos: dict, canal: str) -> dict:
+    """Evalúa las respuestas contra las reglas de la vacante y deja el resultado en la postulación
+    (Cumple perfil / Requiere revisión / No cumple, con motivos). La IA solo recomienda: la postulación
+    sigue activa en Prefiltro. Si cumple, sale sola la liga de fotos del vehículo. Regresa
+    {evaluacion, respuesta, whatsapp, vehiculo}."""
+    cfg = p.vacante.prefiltro_reglas
+    ev = prefiltro_reglas.evaluar(cfg, respuestas)
+    estado = _estado_reglas(p)
+    estado.update({"respuestas": respuestas, "textos": textos, "canal": canal, "pendiente": None,
+                   "evaluacion": ev, "completado_en": datetime.now(timezone.utc).isoformat()})
+    analisis = dict(p.analisis or {})
+    analisis["prefiltro_reglas"] = estado
+    analisis["respuestas_prefiltro"] = [
+        {"pregunta": x["pregunta"], "respuesta": textos.get(x["id"]) or x["respuesta"]}
+        for x in prefiltro_reglas.respuestas_legibles(cfg, respuestas) if x["id"] in respuestas
+    ]
+    analisis.update({"origen": analisis.get("origen") or "prefiltro", "prefiltro_resultado": ev["resultado"],
+                     "prefiltro_evidencia": prefiltro_reglas.evidencia(ev)})
+    p.analisis = analisis
+    p.prefiltro_completo = True
+    p.estado = ev["resultado"]
+    p.evidencia = prefiltro_reglas.evidencia(ev)
+    _recalcular_resultado_apto(p)
+    flujo_operativo.al_cerrar_prefiltro(db, p, vehiculo_srv.requiere_fotos(p))
+    registrar(db, "agente-ia", "prefiltro_reglas_evaluado", "postulacion", p.codigo,
+              {"resultado": ev["resultado"], "motivos": [m["motivo"] for m in ev["motivos"]], "canal": canal})
+
+    vehiculo_envio = None
+    if ev["resultado"] == "cumple" and vehiculo_srv.requiere_fotos(p):
+        vehiculo_envio = await vehiculo_srv.enviar_liga(db, p, "agente-ia")
+        respuesta = vehiculo_srv.texto_liga(p, p.revision_vehiculo)
+        envio = vehiculo_envio["whatsapp"]
+    else:
+        respuesta = (
+            f"¡Gracias por tus respuestas, {nombre_ficha(p)}! Tu información quedó registrada y una persona del "
+            "equipo de RH la revisará. Te contactamos por este medio. 😊"
+        )
+        envio = {"enviado": False}
+        if canal == "whatsapp":
+            envio = await _enviar_whatsapp(p, respuesta, canal)
+            guardar_mensaje(db, p, "assistant", respuesta, canal, envio)
+    _actualizar_ultima_actividad(p)
+    return {"evaluacion": ev, "respuesta": respuesta, "whatsapp": envio, "vehiculo": vehiculo_envio}
+
+
+async def _turno_prefiltro_reglas(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
+    """Un turno del cuestionario por WhatsApp: interpreta la respuesta a la pregunta pendiente y manda la
+    siguiente (una por mensaje). Si no se entiende, repregunta con ayuda; a la segunda la deja sin
+    respuesta legible (eso manda a revisión, nunca descarta)."""
+    cfg = p.vacante.prefiltro_reglas
+    lista = prefiltro_reglas.preguntas(cfg)
+    por_id = {q["id"]: i for i, q in enumerate(lista)}
+
+    async def decir(msg: str) -> dict:
+        envio = await _enviar_whatsapp(p, msg, canal)
+        guardar_mensaje(db, p, "assistant", msg, canal, envio)
+        _actualizar_ultima_actividad(p)
+        db.commit()
+        return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": envio}
+
+    if p.prefiltro_completo:  # ya contestó todo: se le recuerda en qué va, sin volver a preguntar
+        r = p.revision_vehiculo
+        if r and r.estado in ("pendiente", "correccion"):
+            return await decir(vehiculo_srv.texto_liga(p, r))
+        if r and r.estado == "por_revisar":
+            return await decir(f"Gracias, {nombre_ficha(p)}. Ya recibimos las fotos de tu vehículo; RH las está revisando y te avisamos por aquí.")
+        if r and r.estado in vehiculo_srv.ESTADOS_CITABLES:
+            return await decir(f"¡Tu vehículo ya fue aprobado, {nombre_ficha(p)}! En breve te contactamos para agendar tu cita.")
+        return await decir(f"Gracias, {nombre_ficha(p)}. Tu información ya está con el equipo de RH; te contactamos por este medio.")
+
+    estado = _estado_reglas(p)
+    respuestas = dict(estado.get("respuestas") or {})
+    textos = dict(estado.get("textos") or {})
+    pendiente = estado.get("pendiente")
+    intro = ""
+    if pendiente not in por_id:  # primer turno: todavía no se ha hecho ninguna pregunta
+        intro = (f"¡Perfecto, {nombre_ficha(p)}! Te haré unas preguntas rápidas sobre ti y tu vehículo "
+                 f"(máximo {len(lista)}). Contesta una por una.\n\n")
+    else:
+        q = lista[por_id[pendiente]]
+        valor = prefiltro_reglas.interpretar(q, texto)
+        if valor is None:
+            intentos = int(estado.get("intentos") or 0) + 1
+            if intentos < 2:
+                estado["intentos"] = intentos
+                p.analisis = {**(p.analisis or {}), "prefiltro_reglas": estado}
+                return await decir(f"No te entendí bien. {prefiltro_reglas.ayuda(q)}\n\n{prefiltro_reglas.texto_pregunta_whatsapp(cfg, por_id[pendiente])}")
+            valor = ""  # sin respuesta legible → cuenta como faltante (revisión)
+        respuestas[q["id"]] = valor
+        textos[q["id"]] = texto[:200]
+        estado["intentos"] = 0
+
+    siguiente = next((i for i in prefiltro_reglas.aplicables(cfg, respuestas) if i not in respuestas), None)
+    estado.update({"respuestas": respuestas, "textos": textos, "pendiente": siguiente, "canal": canal})
+    p.analisis = {**(p.analisis or {}), "prefiltro_reglas": estado}
+    if siguiente is not None:
+        flujo_operativo.al_iniciar_prefiltro(db, p)
+        return await decir(intro + prefiltro_reglas.texto_pregunta_whatsapp(cfg, por_id[siguiente]))
+
+    cierre = await cerrar_prefiltro_reglas(db, p, respuestas, textos, canal)
+    db.commit()
+    return {
+        "respuesta": cierre["respuesta"], "ia": False, "whatsapp": cierre["whatsapp"],
+        "clasificacion": {"estado": p.estado, "evidencia": p.evidencia, "etiqueta": cierre["evaluacion"]["etiqueta"]},
+    }
+
+
+async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
+    """Demo SEZA: WhatsApp en el Kanban operativo. Prefiltro por reglas mientras no termine; con una cita de
+    capacitación sin confirmar, un «Sí» la confirma (y sale el PDF de inducción simulado); en lo demás el
+    candidato recibe en qué va su proceso. Nunca pasa por el agente conversacional ni por el Zero-Touch."""
+    v = p.vacante
+    if v and prefiltro_reglas.activo(v.prefiltro_reglas) and p.etapa in (flujo_operativo.NUEVO, flujo_operativo.PREFILTRO, flujo_operativo.VEHICULO):
+        return await _turno_prefiltro_reglas(db, p, texto, canal)
+
+    async def decir(msg: str) -> dict:
+        envio = await _enviar_whatsapp(p, msg, canal)
+        guardar_mensaje(db, p, "assistant", msg, canal, envio)
+        _actualizar_ultima_actividad(p)
+        db.commit()
+        return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": envio}
+
+    nombre = nombre_ficha(p)
+    if p.etapa == flujo_operativo.CITA:
+        ev = flujo_operativo.evaluacion_capacitacion(db, p)
+        if ev and ev.sesion_id and not ev.cita_confirmada_en and ev.estado not in ("revisada", "fallida"):
+            if prefiltro_reglas.interpretar({"id": "x", "tipo": "si_no"}, texto) == "si" or "confirm" in texto.lower():
+                r = await flujo_operativo.confirmar_cita(db, p, "candidato")
+                extra = " Te acabamos de compartir el material de inducción para que lo revises antes." if r.get("induccion") else ""
+                return await decir(f"¡Listo, {nombre}! Tu asistencia quedó confirmada. Te esperamos.{extra}")
+            return await decir(f"{nombre}, ¿confirmas tu asistencia a la capacitación? Responde *Sí*. Si necesitas otra fecha, dinos y RH te reprograma.")
+        if ev and ev.cita_confirmada_en:
+            return await decir(f"Tu cita ya está confirmada, {nombre}. Si necesitas cambiarla, RH te contactará por aquí.")
+        return await decir(f"Gracias, {nombre}. En breve RH te comparte la fecha de tu capacitación.")
+    if p.etapa in (flujo_operativo.DOCUMENTOS, flujo_operativo.CAPACITADO) and p.expediente:
+        return await decir(f"{nombre}, puedes subir tus documentos y tus 3 referencias aquí: {flujo_operativo.liga_expediente(p.expediente)}")
+    if p.etapa in (flujo_operativo.LISTO, flujo_operativo.ALTA):
+        return await decir(f"¡Gracias, {nombre}! Tu expediente está completo; RH te confirma tu fecha de ingreso por este medio.")
+    return await decir(f"Gracias, {nombre}. Tu información está con el equipo de RH; te contactamos por este medio.")
+
+
 async def procesar_prefiltro(db: Session, p: Postulacion, texto: str, canal: str, wa_id: str = "") -> dict:
     """Registra el mensaje del candidato en ESTA postulación, corre un turno del agente y
     responde. El historial que ve el modelo es solo el de esta postulación: las preguntas de
@@ -1381,6 +1571,14 @@ async def procesar_prefiltro(db: Session, p: Postulacion, texto: str, canal: str
         historial = mensajes_db
     else:
         historial = mensajes_db + [{"rol": "user", "texto": texto}]
+
+    # Demo SEZA (2026-09-29): vacante con prefiltro POR REGLAS → cuestionario fijo de 12 preguntas,
+    # evaluado sin IA contra las reglas de la vacante. Mientras siga en Prefiltro, el agente conversacional
+    # (y el Zero-Touch que movería a Entrevista IA) no entra: lo siguiente es la revisión del vehículo.
+    if flujo_operativo.es_operativo(p):  # Kanban operativo: nunca el agente conversacional
+        return await _turno_operativo(db, p, texto, canal)
+    if v and prefiltro_reglas.activo(v.prefiltro_reglas) and p.etapa == "Prefiltro":
+        return await _turno_prefiltro_reglas(db, p, texto, canal)
 
     # Zero-Touch fase 2: ya en Onboarding -> el agente solo acompaña documentos. Va ANTES que las
     # ramas de fase 1 a propósito: sin este check, una postulación en Onboarding (que ya trae
@@ -1784,6 +1982,18 @@ async def mover_etapa(
     (`POST /onboarding/expedientes/{id}/iniciar`, que llama a `aplicar_movimiento`); aquí se rechaza salvo
     con Modo Prueba activo."""
     p = _por_codigo(db, codigo, cuenta.id)
+    if flujo_operativo.es_operativo(p):  # demo SEZA: Kanban operativo con sus propios candados
+        try:
+            flujo_operativo.validar_movimiento(db, p, datos.etapa, modo_prueba_activo(db))
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        if datos.etapa == p.etapa:
+            raise HTTPException(409, f"La postulación ya está en {datos.etapa}.")
+        if not p.activa:
+            p.activa, p.motivo_cierre, p.cerrada_en = True, "", None
+        flujo_operativo.mover(db, p, datos.etapa, u.nombre, (datos.comentario or "Movimiento manual").strip())
+        db.commit()
+        return postulacion_dict(p, detalle=True)
     await aplicar_movimiento(db, p, datos, u, forzar_prueba)
     return postulacion_dict(p, detalle=True)
 
@@ -1807,6 +2017,12 @@ async def aplicar_movimiento(
     libre = manual or puede_forzar_prueba(db, forzar_prueba)
     if datos.etapa == p.etapa:
         raise HTTPException(409, f"La postulación ya está en {datos.etapa}.")
+    # Demo SEZA (2026-09-29): con revisión de vehículo, nadie sale de Prefiltro (ni a mano) hasta que RH
+    # apruebe el vehículo o marque excepción. Modo Prueba lo omite, como el resto de la integridad.
+    if p.etapa == "Prefiltro" and not prueba_total:
+        citable, motivo_bloqueo = vehiculo_srv.puede_citar(p)
+        if not citable:
+            raise HTTPException(409, motivo_bloqueo)
     if datos.etapa == "Entrevista Humana" and not manual:
         raise HTTPException(409, "Para programar la Entrevista Humana usa POST /candidatos/{codigo}/entrevista-humana.")
     if datos.etapa == "Onboarding":

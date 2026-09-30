@@ -982,18 +982,20 @@ function FormUsuario({
 /* 3. Clientes y contactos (Punto 10)                                  */
 /* ================================================================== */
 
-type FormClienteState = { nombre: string; razonSocial: string; nombreComercial: string; estado: "Activo" | "Inactivo" };
+type FormClienteState = { nombre: string; razonSocial: string; nombreComercial: string; estado: "Activo" | "Inactivo"; color: string };
 const clienteAForm = (c?: Cliente | null): FormClienteState => ({
   nombre: c?.nombre ?? "",
   razonSocial: c?.razonSocial ?? "",
   nombreComercial: c?.nombreComercial ?? "",
   estado: c?.estado ?? "Activo",
+  color: c?.color ?? "",
 });
 const clienteACampos = (f: FormClienteState): CamposCliente & { nombre: string } => ({
   nombre: f.nombre,
   razon_social: f.razonSocial,
   nombre_comercial: f.nombreComercial,
   estado: f.estado,
+  color: f.color,
 });
 
 function CamposClienteForm({ f, set }: { f: FormClienteState; set: (k: keyof FormClienteState, v: string) => void }) {
@@ -1003,6 +1005,19 @@ function CamposClienteForm({ f, set }: { f: FormClienteState; set: (k: keyof For
       <Entrada label="Razón social" value={f.razonSocial} onChange={(v) => set("razonSocial", v)} placeholder="Ej. Distribuidora Norte S.A. de C.V." />
       <Entrada label="Nombre comercial" value={f.nombreComercial} onChange={(v) => set("nombreComercial", v)} placeholder="Lo que ven los candidatos (si aplica)" />
       <Selector label="Estatus" value={f.estado} onChange={(v) => set("estado", v)} opciones={["Activo", "Inactivo"]} />
+      <label className="block">
+        <span className="text-[12px] font-medium text-ink-2">Color de marca</span>
+        <span className="mt-1 flex items-center gap-2">
+          <input
+            type="color"
+            value={f.color || "#ee4444"}
+            onChange={(e) => set("color", e.target.value)}
+            aria-label="Color de marca"
+            className="h-11 w-14 cursor-pointer rounded-lg border border-border bg-surface p-1"
+          />
+          <span className="text-[12px] text-ink-3">{f.color ? f.color : "Sin color (usa el de Red Human)"} · se usa en la imagen de Facebook</span>
+        </span>
+      </label>
     </div>
   );
 }
@@ -1058,7 +1073,10 @@ function SeccionClientes() {
               {clientes.map((c) => (
                 <tr key={c.id} className="border-b border-border-faint last:border-0">
                   <td className="py-2.5 pr-3">
-                    <button type="button" onClick={() => setFichaId(c.id)} className="font-medium text-ink hover:text-brand hover:underline">{c.nombre}</button>
+                    <button type="button" onClick={() => setFichaId(c.id)} className="inline-flex items-center gap-2 font-medium text-ink hover:text-brand hover:underline">
+                      {c.color && <span aria-hidden className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: c.color }} />}
+                      {c.nombre}
+                    </button>
                   </td>
                   <td className="py-2.5 pr-3 text-ink-2">{c.nombreComercial || "—"}</td>
                   <td className="py-2.5 pr-3 text-center text-ink-2">{c.contactos}</td>
