@@ -15,6 +15,7 @@ import { MenuAcciones } from "@/components/dashboard/menu-acciones";
 import { usePuedeDecidir } from "@/components/sesion";
 import { usePolling } from "@/lib/use-polling";
 import { duplicarCurso } from "@/lib/api";
+import { CampoRH, ModalMarco, inputRH } from "@/components/dashboard/modulos-rh";
 import {
   archivarCurso,
   asignarCurso,
@@ -100,12 +101,13 @@ export default function FichaCurso() {
   }
 
   /** Demo SEZA: copia completa del curso (módulos, evaluación y material) con otro nombre. */
+  const [duplicando, setDuplicando] = useState<{ titulo: string; guardando: boolean; error: string } | null>(null);
   async function duplicar() {
-    if (!curso) return;
-    const titulo = window.prompt("Nombre de la copia", `${curso.titulo} (copia)`);
-    if (!titulo?.trim()) return;
-    const r = await duplicarCurso(curso.id, titulo.trim());
-    if (!r.ok) return setAviso({ tono: "error", texto: r.error });
+    if (!curso || !duplicando?.titulo.trim()) return;
+    setDuplicando({ ...duplicando, guardando: true, error: "" });
+    const r = await duplicarCurso(curso.id, duplicando.titulo.trim());
+    if (!r.ok) return setDuplicando({ ...duplicando, guardando: false, error: r.error });
+    setDuplicando(null);
     router.push(`/dashboard/capacitacion/${r.data.id}`);
   }
 
@@ -128,6 +130,32 @@ export default function FichaCurso() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
+      {duplicando && (
+        <ModalMarco
+          titulo="Duplicar curso"
+          subtitulo="Se copian los módulos, la evaluación y el material. Editar la copia nunca cambia el original."
+          onClose={() => !duplicando.guardando && setDuplicando(null)}
+          ancho="max-w-lg"
+        >
+          <CampoRH label="Nombre del nuevo curso">
+            <input
+              autoFocus
+              className={inputRH}
+              value={duplicando.titulo}
+              onChange={(e) => setDuplicando({ ...duplicando, titulo: e.target.value })}
+              onKeyDown={(e) => e.key === "Enter" && duplicar()}
+              placeholder="Ej. Inducción SEZA"
+            />
+          </CampoRH>
+          {duplicando.error && <p className="mt-3 text-sm text-bad">{duplicando.error}</p>}
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setDuplicando(null)} disabled={duplicando.guardando}>Cancelar</Button>
+            <Button onClick={duplicar} disabled={duplicando.guardando || !duplicando.titulo.trim()}>
+              <Copy className="h-4 w-4" /> {duplicando.guardando ? "Duplicando…" : "Duplicar curso"}
+            </Button>
+          </div>
+        </ModalMarco>
+      )}
       <Link href="/dashboard/capacitacion" className="inline-flex items-center gap-1.5 text-xs text-ink-3 hover:text-ink"><ArrowLeft className="h-3.5 w-3.5" /> Capacitación</Link>
       <PageHeader title={curso.titulo} subtitle={`${curso.categoria || "General"} · ${curso.modalidad === "instructor_ia" ? "Instructor IA" : "Autoguiado"} · ${curso.duracion || `${curso.duracionHoras} h`} · ${curso.modulos} módulos · ${curso.preguntas} preguntas · mínimo ${curso.calificacionMinima}%`}>
         <Badge tone={curso.estado === "Publicado" ? "good" : "neutral"} dot>{etiquetaEstadoCurso(curso.estado)}</Badge>
@@ -162,7 +190,7 @@ export default function FichaCurso() {
               { etiqueta: "Editar módulos", icono: <Pencil />, onClick: () => setEditando("modulos") },
               { etiqueta: "Editar evaluación", icono: <Pencil />, onClick: () => setEditando("evaluacion") },
               { etiqueta: "Descargar PDF del curso", icono: <Download />, onClick: () => window.open(urlPdfCurso(curso.id), "_blank") },
-              { etiqueta: "Duplicar curso…", icono: <Copy />, onClick: duplicar },
+              { etiqueta: "Duplicar curso…", icono: <Copy />, onClick: () => setDuplicando({ titulo: `${curso.titulo} (copia)`, guardando: false, error: "" }) },
               { etiqueta: "Archivar curso", icono: <X />, peligrosa: true, onClick: archivar },
             ]}
           />

@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CalendarCheck, CheckCircle2, ClipboardList, FileCheck2, Phone, Send, UserCheck, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso, BotonCopiar } from "@/components/dashboard/subida";
+import { CampoRH, ModalMarco } from "@/components/dashboard/modulos-rh";
 import { cn } from "@/lib/utils";
 import {
   citarCapacitacion,
@@ -41,6 +42,16 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
   const [ocupado, setOcupado] = useState("");
   const [aviso, setAviso] = useState<{ tono: "ok" | "error" | "warn"; texto: string } | null>(null);
   const [rechazo, setRechazo] = useState<{ tipo: string; motivo: string } | null>(null);
+  const [contacto, setContacto] = useState<{ indice: number; nombre: string; telefono: string; parentesco: string; nota: string } | null>(null);
+
+  function confirmarContacto() {
+    if (!contacto) return;
+    const { indice, nota } = contacto;
+    ejecutar(`ref-${indice}`, () => marcarReferencia(codigo, indice, true, nota.trim()), (p) => {
+      setContacto(null);
+      return p.etapa === "Listo para alta" ? "Referencia contactada. ¡Expediente completo: pasó a «Listo para alta»!" : "Referencia marcada como contactada.";
+    });
+  }
 
   const cargar = useCallback(async () => {
     const [p, s] = await Promise.all([fetchPanelOperativo(codigo), fetchSesionesCapacitacion()]);
@@ -269,11 +280,11 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                     </span>
                     {puedeDecidir && (
                       <Button size="sm" variant={r.contactada ? "ghost" : "outline"} disabled={Boolean(ocupado)}
-                        onClick={() => {
-                          const nota = r.contactada ? "" : (window.prompt(`Nota del contacto con ${r.nombre} (opcional)`) ?? "");
-                          ejecutar(`ref-${i}`, () => marcarReferencia(codigo, i, !r.contactada, nota), (p) =>
-                            p.etapa === "Listo para alta" ? "Referencia contactada. ¡Expediente completo: pasó a «Listo para alta»!" : r.contactada ? "Referencia marcada como no contactada." : "Referencia marcada como contactada.");
-                        }}>
+                        onClick={() =>
+                          r.contactada
+                            ? ejecutar(`ref-${i}`, () => marcarReferencia(codigo, i, false), () => "Referencia marcada como no contactada.")
+                            : setContacto({ indice: i, nombre: r.nombre, telefono: r.telefono, parentesco: r.parentesco, nota: "" })
+                        }>
                         {r.contactada ? "Deshacer" : "Marcar contactada"}
                       </Button>
                     )}
@@ -284,6 +295,31 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
           </>
         )}
       </Card>
+
+      {contacto && (
+        <ModalMarco
+          titulo="Marcar referencia como contactada"
+          subtitulo={`${contacto.nombre} · ${contacto.parentesco} · ${contacto.telefono}`}
+          onClose={() => !ocupado && setContacto(null)}
+          ancho="max-w-lg"
+        >
+          <CampoRH label="Nota del contacto (opcional)" ayuda="Queda en el historial con tu nombre. Ej. confirma que lo conoce desde hace 5 años y lo recomienda.">
+            <textarea
+              autoFocus
+              rows={3}
+              value={contacto.nota}
+              onChange={(e) => setContacto({ ...contacto, nota: e.target.value })}
+              className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+            />
+          </CampoRH>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setContacto(null)} disabled={Boolean(ocupado)}>Cancelar</Button>
+            <Button onClick={confirmarContacto} disabled={Boolean(ocupado)}>
+              <Phone className="h-4 w-4" /> {ocupado ? "Guardando…" : "Marcar contactada"}
+            </Button>
+          </div>
+        </ModalMarco>
+      )}
 
       {/* ---------- 4. Alta ---------- */}
       {exp && (
