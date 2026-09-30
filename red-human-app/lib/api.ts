@@ -1973,6 +1973,11 @@ export interface ExpedientePublico {
   documentos: DocumentoExpedientePublico[];
   /** 2026-09-19: la carta de intención se puede descargar desde la liga pública. */
   cartaDisponible?: boolean;
+  /** Demo SEZA (flujo operativo): el candidato captura 3 referencias en esta misma liga. */
+  pideReferencias?: boolean;
+  referencias?: { nombre: string; telefono: string; parentesco: string }[];
+  parentescos?: string[];
+  referenciasRequeridas?: number;
 }
 
 export function urlCartaIntencionPublica(token: string) {
@@ -3460,4 +3465,190 @@ export function subirFotoVehiculo(token: string, lado: string, archivo: File) {
 
 export function urlFotoVehiculoPublica(token: string, lado: string, version = "") {
   return `${API}/vehiculo/publica/${token}/foto/${lado}${version ? `?v=${version}` : ""}`;
+}
+
+/* ---------- Demo SEZA: flujo operativo (Kanban de 8 etapas, capacitación en tienda, documentos y alta) ---------- */
+
+export const ETAPAS_OPERATIVO = [
+  "Nuevo",
+  "Prefiltro",
+  "Revisión de vehículo",
+  "Cita para capacitación",
+  "Capacitación realizada",
+  "Documentos y referencias",
+  "Listo para alta",
+  "Alta realizada",
+] as const;
+
+export function fetchFlujoCandidatos() {
+  return get<{ flujo: "rh" | "operativo"; etapas: string[] }>("/candidatos-flujo");
+}
+
+export interface SesionCapacitacion {
+  codigo: string;
+  nombre: string;
+  tienda: string;
+  direccion: string;
+  inicio: string | null;
+  inicioTexto: string;
+  duracionMin: number;
+  cupo: number;
+  ocupados: number;
+  disponibles: number;
+  supervisorNombre: string;
+  supervisorTelefono: string;
+  indicaciones: string;
+  vacante: string | null;
+  vacanteTitulo: string;
+  cursoInduccion: string | null;
+  cursoInduccionTitulo: string;
+  estado: "programada" | "cerrada" | "cancelada";
+  ligaSupervisor: string;
+  citados?: CitadoSesion[];
+}
+
+export interface CitadoSesion {
+  evaluacion: string;
+  postulacion?: string;
+  nombre: string;
+  vacante: string;
+  confirmada: boolean;
+  asistencia: "" | "asistio" | "no_asistio";
+  resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
+  resultadoEtiqueta: string;
+  comentario: string;
+  estado?: string;
+}
+
+export type CamposSesion = {
+  tienda: string;
+  direccion?: string;
+  inicio: string;
+  duracion_min?: number;
+  cupo: number;
+  supervisor_nombre?: string;
+  supervisor_telefono?: string;
+  indicaciones?: string;
+  vacante?: string | null;
+  curso_induccion?: string | null;
+};
+
+export function fetchSesionesCapacitacion(incluirPasadas = false) {
+  return get<SesionCapacitacion[]>(`/sesiones-capacitacion${incluirPasadas ? "?incluir_pasadas=true" : ""}`);
+}
+export function fetchSesionCapacitacion(codigo: string) {
+  return get<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}`);
+}
+export function crearSesionCapacitacion(datos: CamposSesion) {
+  return post<SesionCapacitacion>("/sesiones-capacitacion", datos);
+}
+export function editarSesionCapacitacion(codigo: string, datos: CamposSesion) {
+  return patch<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}`, datos);
+}
+export function estadoSesionCapacitacion(codigo: string, estado: "programada" | "cerrada" | "cancelada") {
+  return post<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}/estado`, { estado });
+}
+
+export interface SesionSupervisor {
+  nombre: string;
+  tienda: string;
+  direccion: string;
+  inicioTexto: string;
+  supervisor: string;
+  empresa: string;
+  cupo: number;
+  estado: string;
+  resultados: { valor: "favorable" | "con_observaciones" | "desfavorable"; texto: string }[];
+  citados: CitadoSesion[];
+}
+export function fetchSesionSupervisor(token: string) {
+  return get<SesionSupervisor>(`/sesiones-capacitacion/publica/${token}`);
+}
+export function registrarAsistenciaSupervisor(
+  token: string,
+  datos: { evaluacion: string; asistio: boolean; resultado?: string; comentario?: string; supervisor?: string },
+) {
+  return post<SesionSupervisor>(`/sesiones-capacitacion/publica/${token}/asistencia`, datos);
+}
+
+export interface ReferenciaCandidato {
+  nombre: string;
+  telefono: string;
+  parentesco: string;
+  capturada_en?: string;
+  contactada?: boolean;
+  contactada_por?: string;
+  contactada_en?: string;
+  nota?: string;
+}
+
+export interface PanelOperativo {
+  etapa: string;
+  etapas: string[];
+  capacitacion: {
+    evaluacion: string | null;
+    nombre: string;
+    estado: string | null;
+    confirmada: boolean;
+    confirmadaEn: string | null;
+    asistencia: string;
+    resultado: string;
+    resultadoEtiqueta: string;
+    dictamenInterno: string;
+    comentario: string;
+    registradoPor: string;
+    sesion: SesionCapacitacion | null;
+    induccion: string;
+  };
+  expediente: {
+    id: number;
+    liga: string;
+    progreso: number;
+    documentos: { tipo: string; estado: string; aprobado: boolean; archivo: boolean; notas: string; estadoSimple: string }[];
+    referencias: ReferenciaCandidato[];
+  } | null;
+  faltantesAlta: string[];
+  listoParaAlta: boolean;
+  alta: { por: string; en: string | null; colaborador: { codigo: string; nombre: string } | null } | null;
+  whatsapp?: { enviado?: boolean };
+  induccion?: { titulo: string; liga: string; simulado: boolean } | null;
+  liga?: string;
+}
+
+export function fetchPanelOperativo(codigo: string) {
+  return get<PanelOperativo>(`/candidatos/${codigo}/operativo`);
+}
+export function citarCapacitacion(codigo: string, sesion: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/citar`, { sesion });
+}
+export function confirmarCitaCapacitacion(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/confirmar-cita`);
+}
+export function solicitarDocumentosReferencias(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/solicitar-documentos`);
+}
+export function revisarDocumentoOperativo(codigo: string, tipo: string, estado: "aprobado" | "rechazado", notas = "") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/documentos`, { tipo, estado, notas });
+}
+export function marcarReferencia(codigo: string, indice: number, contactada: boolean, nota = "") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias/${indice}`, { contactada, nota });
+}
+export function registrarAltaOperativa(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/alta`);
+}
+
+export function guardarReferenciasPublicas(token: string, referencias: { nombre: string; telefono: string; parentesco: string }[]) {
+  return post<ExpedientePublico>(`/expedientes/publica/${token}/referencias`, { referencias });
+}
+
+const ETAPAS_RH_ORDEN = ["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding"];
+/** Orden de una etapa en cualquiera de los dos Kanban (para ordenar contadores que llegan como diccionario). */
+export function ordenEtapa(etapa: string): number {
+  const i = (ETAPAS_OPERATIVO as readonly string[]).indexOf(etapa);
+  return i >= 0 ? i : 100 + ETAPAS_RH_ORDEN.indexOf(etapa);
+}
+
+/** Demo SEZA: duplica un curso (módulos, evaluación, material) — así nace «Inducción SEZA». */
+export function duplicarCurso(codigo: string, titulo: string) {
+  return post<Curso>(`/capacitacion/${codigo}/duplicar`, { titulo });
 }

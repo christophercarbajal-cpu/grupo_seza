@@ -4,12 +4,13 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import { fetchPipeline, nombreEtapa } from "@/lib/api";
 import { usePolling } from "@/lib/use-polling";
+import { useEtapasCuenta } from "@/lib/use-etapas-cuenta";
 
 /** 2026-09-20 (B4): candidatos ACTIVOS por etapa — misma fuente que el Kanban y los contadores de cada
- * vacante (`Postulacion.etapa`, `services/conteos.por_etapa`). Cada renglón lleva al Kanban filtrado. */
-const ETAPAS = ["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding"];
-
+ * vacante (`Postulacion.etapa`, `services/conteos.por_etapa`). Cada renglón lleva al Kanban filtrado.
+ * Demo SEZA: las etapas son las del Kanban de la Cuenta (8 en el flujo operativo). */
 export function EmbudoEtapas() {
+  const ETAPAS = useEtapasCuenta();
   const [porEtapa, setPorEtapa] = useState<Record<string, number> | null>(null);
   const cargar = useCallback(async () => {
     const p = await fetchPipeline();

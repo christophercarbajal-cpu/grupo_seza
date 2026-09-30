@@ -475,6 +475,8 @@ def postulacion_dict(p: Postulacion, detalle: bool = False, n_mensajes: Optional
         "resultadoApto": p.resultado_apto,
         "clienteVacante": v.cliente.nombre if v and v.cliente else None,
         "clienteIdVacante": v.cliente_id if v else None,  # Fase 7A: para elegir contactos/entrevistador externo
+        # Demo SEZA: qué Kanban usa la Cuenta de la postulación ("rh" | "operativo")
+        "flujo": (p.cuenta.flujo_candidatos if p.cuenta else "rh") or "rh",
         # Demo SEZA: resultado del prefiltro por reglas + siguiente acción (None si la vacante no lo usa)
         "prefiltroReglas": _resumen_prefiltro_reglas(p),
         # --- Persona (maestro) ---

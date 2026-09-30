@@ -14,6 +14,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Dropzone } from "@/components/dashboard/subida";
 import { cn } from "@/lib/utils";
 import {
+  guardarReferenciasPublicas,
   fetchExpedientePublico,
   subirDocumentoPublico,
   type DocumentoExpedientePublico,
@@ -213,9 +214,71 @@ export default function ExpedientePublico() {
                 <p className="text-center text-[11px] text-ink-3">* obligatorio</p>
               </div>
             )}
+
+            {info.pideReferencias && info.estado !== "alta" && (
+              <FormularioReferencias token={token} info={info} onGuardado={(i) => setInfo(i)} />
+            )}
           </>
         )}
       </div>
     </main>
+  );
+}
+
+/** Demo SEZA (flujo operativo): 3 referencias personales — nombre, teléfono a 10 dígitos y parentesco. RH las
+ * marca como contactadas desde la ficha; con documentos aprobados y referencias contactadas queda listo para alta. */
+function FormularioReferencias({ token, info, onGuardado }: { token: string; info: ExpedientePublico; onGuardado: (i: ExpedientePublico) => void }) {
+  const n = info.referenciasRequeridas ?? 3;
+  const iniciales = Array.from({ length: n }, (_, i) => info.referencias?.[i] ?? { nombre: "", telefono: "", parentesco: "" });
+  const [refs, setRefs] = useState(iniciales);
+  const [estado, setEstado] = useState<{ tono: "ok" | "error"; texto: string } | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  const completas = refs.every((r) => r.nombre.trim() && r.telefono.replace(/\D/g, "").length === 10 && r.parentesco);
+
+  function set(i: number, k: "nombre" | "telefono" | "parentesco", v: string) {
+    setRefs((x) => x.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  }
+
+  async function guardar() {
+    setGuardando(true);
+    setEstado(null);
+    const r = await guardarReferenciasPublicas(token, refs.map((x) => ({ ...x, telefono: x.telefono.replace(/\D/g, "") })));
+    setGuardando(false);
+    if (!r.ok) return setEstado({ tono: "error", texto: r.error });
+    setEstado({ tono: "ok", texto: "¡Gracias! Guardamos tus referencias. RH se comunicará con ellas." });
+    onGuardado(r.data);
+  }
+
+  const campo = "h-11 w-full rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand";
+  return (
+    <Card className="mt-6 p-5">
+      <p className="text-sm font-semibold text-ink">Referencias personales ({n})</p>
+      <p className="mt-0.5 text-[12px] text-ink-3">Personas que te conozcan y que RH pueda llamar. No pongas tu propio número.</p>
+      <div className="mt-4 flex flex-col gap-4">
+        {refs.map((r, i) => (
+          <div key={i} className="grid gap-2 sm:grid-cols-3">
+            <input className={campo} placeholder={`Nombre completo (referencia ${i + 1})`} value={r.nombre} onChange={(e) => set(i, "nombre", e.target.value)} />
+            <input className={campo} placeholder="Teléfono (10 dígitos)" inputMode="tel" value={r.telefono} onChange={(e) => set(i, "telefono", e.target.value)} />
+            <select className={campo} value={r.parentesco} onChange={(e) => set(i, "parentesco", e.target.value)}>
+              <option value="">Parentesco…</option>
+              {(info.parentescos ?? []).map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+      {estado && <p className={cn("mt-3 text-[13px]", estado.tono === "ok" ? "text-good" : "text-bad")}>{estado.texto}</p>}
+      <button
+        type="button"
+        onClick={guardar}
+        disabled={!completas || guardando}
+        className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-xl bg-brand px-4 text-sm font-semibold text-brand-ink transition hover:brightness-110 disabled:opacity-50 totem:min-h-16 totem:text-xl"
+      >
+        {guardando ? "Guardando…" : "Guardar referencias"}
+      </button>
+    </Card>
   );
 }

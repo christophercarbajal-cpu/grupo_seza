@@ -1,4 +1,4 @@
-"""Ambiente de demostración GRUPO SEZA — puntos 1 a 4 (2026-09-29).
+"""Ambiente de demostración GRUPO SEZA — puntos 1 a 8 (2026-09-29).
 
 Deja en la base (entorno aislado de la demo):
   * Cuenta «Grupo SEZA» con tres empresas (Clientes) y su color de marca:
@@ -13,6 +13,10 @@ Deja en la base (entorno aislado de la demo):
     plaza — services/prefiltro_reglas.py), revisión de fotos del vehículo y CV opcional.
     Cada una trae su pieza de Facebook (`publicaciones["facebook"]`: copy + destacados de la imagen); la
     liga única la arma `services/difusion.liga` (`/aplicar/{slug}?origen=facebook`).
+
+Puntos 5-8 (scripts/demo_seza_operativo.py): Kanban operativo de 8 etapas, «Inducción SEZA» duplicada de un
+curso existente, sesiones de «Capacitación en tienda» con cupo y 25 candidatos ficticios repartidos en las 8
+etapas (sin teléfono, correo @demo.invalid: ningún mensaje sale).
 
 Seguridad: sin `--ejecutar` es SIMULACRO (hace todo dentro de una transacción y la deshace). Idempotente:
 la Cuenta se reconoce por su slug, los Clientes por nombre, la plantilla por nombre y cada vacante por
@@ -44,6 +48,7 @@ from app.routers.plantillas import PlantillaIn, _crear_plantilla  # noqa: E402
 from app.routers.vacantes import SEPARADOR_REQUISITOS, CrearIn, _slug_unico, crear  # noqa: E402
 from app.seed import slug_cuenta_unico  # noqa: E402
 from app.services import difusion, prefiltro_reglas  # noqa: E402
+import demo_seza_operativo as operativo  # noqa: E402  (puntos 5-8; vive junto a este script)
 
 ACTOR = "script:cargar_demo_seza"
 SLUG_CUENTA = "grupo-seza"
@@ -285,6 +290,18 @@ def main() -> None:
         clientes = _clientes(db, cuenta)
         plantilla = _plantilla(db, cuenta, admin)
         vacantes = [_vacante(db, cuenta, admin, clientes["SEZA"], plantilla, d) for d in VACANTES]
+
+        # Puntos 5-8: Kanban operativo, Inducción SEZA, sesiones con cupo y candidatos ficticios
+        cuenta.flujo_candidatos = "operativo"
+        por_plaza = {d["plaza"]: v for d, v in zip(VACANTES, vacantes)}
+        curso = operativo.induccion(db, cuenta, admin)
+        ses = operativo.sesiones(db, cuenta, por_plaza, curso)
+        creados = operativo.candidatos(db, cuenta, admin, por_plaza, ses)
+        print(f"  + {creados} candidatos ficticios nuevos")
+        print("\nKanban (postulaciones activas por etapa):")
+        conteo = operativo.conteo_por_etapa(db, cuenta)
+        for etapa in operativo.flujo.ETAPAS_OPERATIVO:
+            print(f"  {etapa:<26} {conteo.get(etapa, 0)}")
 
         print("\nLigas únicas de Facebook:")
         for v in vacantes:

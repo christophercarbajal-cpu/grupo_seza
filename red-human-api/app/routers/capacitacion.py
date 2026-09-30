@@ -203,6 +203,38 @@ class EditarCursoIn(BaseModel):
     evaluacion: Optional[List[PreguntaIn]] = None
 
 
+def duplicar_curso(db: Session, origen: Curso, titulo: str, cuenta_id: Optional[int], actor: str) -> Curso:
+    """Copia completa de un curso (módulos, evaluación, material) como un curso NUEVO — editar la copia nunca
+    toca el original ni sus asignaciones. Demo SEZA: «Inducción SEZA» nace así de un curso existente."""
+    c = Curso(
+        codigo="TMP", cuenta_id=cuenta_id, titulo=titulo.strip()[:200], categoria=origen.categoria, duracion_horas=origen.duracion_horas,
+        modalidad=origen.modalidad, duracion_texto=origen.duracion_texto, objetivo=origen.objetivo, estado=origen.estado,
+        obligatorio=origen.obligatorio, creado_por=actor, contexto=origen.contexto, adjuntos=list(origen.adjuntos or []),
+        evaluacion=list(origen.evaluacion or []), calificacion_minima=origen.calificacion_minima,
+    )
+    db.add(c)
+    db.flush()
+    c.codigo = f"CUR-{100 + c.id}"
+    for m in origen.modulos:
+        db.add(ModuloCurso(curso_id=c.id, orden=m.orden, titulo=m.titulo, contenido=m.contenido, resumen=m.resumen,
+                           puntos_clave=list(m.puntos_clave or []), preguntas_verificacion=list(m.preguntas_verificacion or [])))
+    registrar(db, actor, "curso_duplicado", "curso", c.codigo, {"origen": origen.codigo, "titulo": c.titulo})
+    return c
+
+
+class DuplicarIn(BaseModel):
+    titulo: str = ""
+
+
+@router.post("/{codigo}/duplicar", status_code=201)
+def duplicar(codigo: str, datos: DuplicarIn, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    origen = _por_codigo(db, codigo, cuenta.id)
+    c = duplicar_curso(db, origen, datos.titulo.strip() or f"{origen.titulo} (copia)", cuenta.id, u.nombre)
+    db.commit()
+    db.refresh(c)
+    return curso_dict(c, detalle=True)
+
+
 @router.patch("/{codigo}")
 def editar(codigo: str, datos: EditarCursoIn, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
     """La IA genera; RH edita solo si quiere (objetivo, módulos, preguntas, mínimo aprobatorio)."""

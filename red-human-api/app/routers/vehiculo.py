@@ -19,6 +19,7 @@ from ..deps import cuenta_actual, usuario_actual, usuario_decisor
 from ..models import LADOS_VEHICULO, Archivo, Cuenta, Postulacion, RevisionVehiculo, Usuario, registrar
 from ..serial import nombre_empresa_candidato
 from ..services import archivos as fs
+from ..services import flujo_operativo
 from ..services import prefiltro_reglas
 from ..services import vehiculo as vehiculo_srv
 from .candidatos import _por_codigo
@@ -167,6 +168,7 @@ async def decidir(codigo: str, datos: DecisionIn, db: Session = Depends(get_db),
     if datos.accion == "excepcion" and not datos.comentario.strip():
         raise HTTPException(400, "La excepción requiere un motivo.")
     vehiculo_srv.decidir(db, p, datos.accion, u.nombre, datos.comentario, datos.lados)
+    flujo_operativo.al_decidir_vehiculo(db, p, datos.accion, u.nombre)
     envio = None
     if datos.accion == "correccion":  # se le reenvía la MISMA liga con lo que hay que corregir
         envio = await vehiculo_srv.enviar_liga(db, p, u.nombre)
@@ -202,6 +204,7 @@ async def aprobar_prefiltro(codigo: str, datos: AprobarPrefiltroIn, db: Session 
                                           "fecha": datetime.now(timezone.utc).isoformat(),
                                           "texto": f"Prefiltro aprobado por {u.nombre} (antes: {prefiltro_reglas.RESULTADOS.get(anterior, anterior)}) — {datos.motivo.strip()}"}]
     registrar(db, u.nombre, "prefiltro_reglas_aprobado_rh", "postulacion", p.codigo, {"anterior": anterior, "motivo": datos.motivo.strip()})
+    flujo_operativo.al_aprobar_prefiltro(db, p, u.nombre, vehiculo_srv.requiere_fotos(p))
     envio = None
     if vehiculo_srv.requiere_fotos(p) and not (p.revision_vehiculo and p.revision_vehiculo.estado in vehiculo_srv.ESTADOS_CITABLES):
         envio = await vehiculo_srv.enviar_liga(db, p, u.nombre)

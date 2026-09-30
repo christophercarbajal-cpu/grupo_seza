@@ -14,6 +14,7 @@ import { Aviso } from "@/components/dashboard/subida";
 import { MenuAcciones } from "@/components/dashboard/menu-acciones";
 import { usePuedeDecidir } from "@/components/sesion";
 import { usePolling } from "@/lib/use-polling";
+import { duplicarCurso } from "@/lib/api";
 import {
   archivarCurso,
   asignarCurso,
@@ -98,6 +99,16 @@ export default function FichaCurso() {
     recargar();
   }
 
+  /** Demo SEZA: copia completa del curso (módulos, evaluación y material) con otro nombre. */
+  async function duplicar() {
+    if (!curso) return;
+    const titulo = window.prompt("Nombre de la copia", `${curso.titulo} (copia)`);
+    if (!titulo?.trim()) return;
+    const r = await duplicarCurso(curso.id, titulo.trim());
+    if (!r.ok) return setAviso({ tono: "error", texto: r.error });
+    router.push(`/dashboard/capacitacion/${r.data.id}`);
+  }
+
   async function archivar() {
     if (!curso || !window.confirm(`¿Archivar «${curso.titulo}»?`)) return;
     const r = await archivarCurso(curso.id);
@@ -151,6 +162,7 @@ export default function FichaCurso() {
               { etiqueta: "Editar módulos", icono: <Pencil />, onClick: () => setEditando("modulos") },
               { etiqueta: "Editar evaluación", icono: <Pencil />, onClick: () => setEditando("evaluacion") },
               { etiqueta: "Descargar PDF del curso", icono: <Download />, onClick: () => window.open(urlPdfCurso(curso.id), "_blank") },
+              { etiqueta: "Duplicar curso…", icono: <Copy />, onClick: duplicar },
               { etiqueta: "Archivar curso", icono: <X />, peligrosa: true, onClick: archivar },
             ]}
           />

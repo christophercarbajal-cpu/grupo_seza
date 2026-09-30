@@ -8,6 +8,7 @@ import {
   BookOpen,
   Briefcase,
   Building2,
+  CalendarDays,
   ChevronDown,
   ClipboardCheck,
   ClipboardList,
@@ -49,6 +50,8 @@ const navOperacion: NavItem[] = [
   // { href: "/dashboard/requisiciones", label: "Requisiciones", icon: ClipboardList }, // Oculto temporalmente
   { href: "/dashboard/vacantes", label: "Vacantes", icon: Briefcase },
   { href: "/dashboard/candidatos", label: "Candidatos", icon: Users },
+  // Demo SEZA: capacitación en tienda con cupo (flujo operativo)
+  { href: "/dashboard/sesiones", label: "Sesiones de capacitación", icon: CalendarDays },
   { href: "/dashboard/entrevistas", label: "Entrevistas", icon: Video },
 ];
 

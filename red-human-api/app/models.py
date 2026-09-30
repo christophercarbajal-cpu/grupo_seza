@@ -37,6 +37,15 @@ PLATAFORMAS = ["Portal", "WhatsApp", "Google Empleos", "Jooble", "Talent.com"]
 # nueva que RH mueve a mano sin automatización detrás.
 ETAPAS_CANDIDATO = ["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding"]
 
+# Demo Grupo SEZA (2026-09-29): Kanban OPERATIVO (reclutamiento masivo de choferes). Lo usa la Cuenta con
+# `Cuenta.flujo_candidatos == "operativo"`; `Postulacion.etapa` guarda estos valores tal cual. Las
+# transiciones las hace services/flujo_operativo.py (nunca el agente conversacional ni el Zero-Touch).
+ETAPAS_OPERATIVO = [
+    "Nuevo", "Prefiltro", "Revisión de vehículo", "Cita para capacitación", "Capacitación realizada",
+    "Documentos y referencias", "Listo para alta", "Alta realizada",
+]
+FLUJOS_CANDIDATOS = ("rh", "operativo")
+
 # 2026-09-15 (memoria de 5 días): en estas etapas la conversación de WhatsApp conserva su contexto
 # hasta CONTEXTO_WHATSAPP_HORAS sin actividad — un "sí quiero reagendar" al día 3 debe caer en la
 # postulación en curso, nunca en el menú de vacantes. Solo el Prefiltro sigue con la ventana corta
@@ -827,6 +836,9 @@ class Expediente(Base):
     no_ingreso_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     no_ingreso_por: Mapped[str] = mapped_column(String(150), default="")
     no_ingreso_motivo: Mapped[str] = mapped_column(Text, default="")
+    # Demo SEZA (flujo operativo): 3 referencias que captura el candidato en su liga pública —
+    # [{nombre, telefono, parentesco, capturada_en, contactada, contactada_por, contactada_en, nota}]
+    referencias: Mapped[list] = mapped_column(JSON, default=list)
 
     candidato: Mapped[Optional[Candidato]] = relationship(foreign_keys=[candidato_id])
     postulacion: Mapped[Optional["Postulacion"]] = relationship(back_populates="expediente")
@@ -1018,6 +1030,8 @@ class Cuenta(Base):
     # en `whatsapp_comunicacion` para ESTA Cuenta: los mensajes que lleguen a ese número solo ven sus
     # vacantes y sus personas (ruteo dedicado, comportamiento anterior).
     whatsapp_exclusivo: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Demo SEZA: qué Kanban usa la Cuenta — "rh" (ETAPAS_CANDIDATO) | "operativo" (ETAPAS_OPERATIVO)
+    flujo_candidatos: Mapped[str] = mapped_column(String(20), default="rh")
     estado: Mapped[str] = mapped_column(String(20), default="Activa")  # Activa | Inactiva | Eliminada
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     actualizada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora, onupdate=ahora)
@@ -1663,6 +1677,7 @@ TABLAS_MODULOS_RH = (
     "plantillas_onboarding", "tareas_onboarding",  # Onboarding v2 (2026-09-28)
     "pruebas_psicometricas", "evaluaciones_candidato",  # Evaluaciones y verificaciones (2026-09-28)
     "firmas_documentos",  # Dropbox Sign (2026-09-29)
+    "sesiones_capacitacion",  # demo SEZA (2026-09-29): capacitación en tienda con cupo
 )
 
 # --- Desempeño ---
@@ -2118,6 +2133,10 @@ class EvaluacionCandidato(Base):
     resultado_cargado_por: Mapped[str] = mapped_column(String(150), default="")
     resultado_cargado_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     dictamen: Mapped[str] = mapped_column(String(30), default="")  # DICTAMENES_GENERALES | DICTAMENES_MEDICOS
+    # Demo SEZA: «Capacitación en tienda» (tipo «otra») ligada a una sesión compartida con cupo
+    sesion_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    cita_confirmada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    asistencia: Mapped[str] = mapped_column(String(20), default="")  # "" | asistio | no_asistio
     comentario_revision: Mapped[str] = mapped_column(Text, default="")
     revisada_por: Mapped[str] = mapped_column(String(150), default="")
     revisada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2157,3 +2176,38 @@ class FirmaDocumento(Base):
     creado_por: Mapped[str] = mapped_column(String(150), default="")
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     firmada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ------------------------------------------------------------
+# Demo Grupo SEZA (2026-09-29): sesión compartida de «Capacitación en tienda»
+# ------------------------------------------------------------
+# Resultado visible ↔ dictamen interno de la evaluación unificada (tipo «otra»).
+RESULTADOS_CAPACITACION = {"favorable": "Apto", "con_observaciones": "Requiere seguimiento", "desfavorable": "No apto"}
+NOMBRE_CAPACITACION_TIENDA = "Capacitación en tienda"
+
+
+class SesionCapacitacion(Base):
+    """Una sesión de capacitación en tienda con cupo: varios candidatos citados a la misma fecha y lugar. El
+    supervisor registra asistencia y resultado desde su liga (`token`), sin sesión en el sistema. Como las demás
+    tablas nuevas, `cuenta_id` es entero indexado SIN llave foránea (paso NO fatal del arranque)."""
+
+    __tablename__ = "sesiones_capacitacion"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    codigo: Mapped[str] = mapped_column(String(20), index=True)  # SES-####
+    cuenta_id: Mapped[int] = mapped_column(Integer, index=True)
+    vacante_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)  # plaza (opcional)
+    nombre: Mapped[str] = mapped_column(String(200), default=NOMBRE_CAPACITACION_TIENDA)
+    tienda: Mapped[str] = mapped_column(String(200), default="")
+    direccion: Mapped[str] = mapped_column(String(300), default="")
+    inicio: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    duracion_min: Mapped[int] = mapped_column(Integer, default=120)
+    cupo: Mapped[int] = mapped_column(Integer, default=10)
+    supervisor_nombre: Mapped[str] = mapped_column(String(150), default="")
+    supervisor_telefono: Mapped[str] = mapped_column(String(30), default="")
+    indicaciones: Mapped[str] = mapped_column(Text, default="")
+    curso_induccion_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # PDF que sale al confirmar la cita
+    token: Mapped[str] = mapped_column(String(64), index=True)  # liga del supervisor
+    estado: Mapped[str] = mapped_column(String(20), default="programada")  # programada | cerrada | cancelada
+    creada_por: Mapped[str] = mapped_column(String(150), default="")
+    creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)

@@ -12,7 +12,15 @@ export type EtapaCandidato =
   | "Evaluación"
   | "Entrevista Humana"
   | "Contratación"
-  | "Onboarding";
+  | "Onboarding"
+  // Demo SEZA: Kanban operativo (Cuenta con flujo «operativo»)
+  | "Nuevo"
+  | "Revisión de vehículo"
+  | "Cita para capacitación"
+  | "Capacitación realizada"
+  | "Documentos y referencias"
+  | "Listo para alta"
+  | "Alta realizada";
 
 export interface RespuestaPrefiltro {
   criterio?: string;
@@ -190,6 +198,8 @@ export interface Candidato {
   clienteIdVacante?: number | null;
   /** Demo SEZA: prefiltro por reglas — resultado, motivos y siguiente acción (null si la vacante no lo usa). */
   prefiltroReglas?: import("./api").ResumenPrefiltroReglas | null;
+  /** Demo SEZA: Kanban de la Cuenta de la postulación. */
+  flujo?: "rh" | "operativo";
   /* --- Puntos 3/5: síntesis global (CV + Prefiltro + Entrevista IA + Entrevista Humana),
    * calculada al vuelo en cada lectura del detalle — nunca se persiste, siempre está al día. --- */
   /** Prefiltro = SOLO status de entrada (cumple / no_cumple); no participa en la evaluación integral. */

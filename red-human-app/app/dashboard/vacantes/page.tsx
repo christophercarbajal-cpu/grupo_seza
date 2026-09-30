@@ -46,6 +46,8 @@ import {
 import { PageHeader } from "@/components/dashboard/parts";
 import { PiezaFacebookVacante } from "@/components/dashboard/vacantes/pieza-facebook";
 import { PrefiltroReglasEditor } from "@/components/dashboard/vacantes/prefiltro-reglas-editor";
+import { useEtapasCuenta } from "@/lib/use-etapas-cuenta";
+import { ordenEtapa } from "@/lib/api";
 import { MenuAcciones } from "@/components/dashboard/menu-acciones";
 import { Aviso, BotonCopiar } from "@/components/dashboard/subida";
 import type { Vacante } from "@/lib/data";
@@ -495,6 +497,7 @@ export default function Vacantes() {
                 <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
                   {Object.entries(v.embudo.etapas)
                     .filter(([, n]) => n > 0)
+                    .sort(([a], [b]) => ordenEtapa(a) - ordenEtapa(b))
                     .map(([etapa, n]) => (
                       <button
                         key={etapa}
@@ -599,6 +602,7 @@ export default function Vacantes() {
                       <div className="mt-1 flex flex-wrap gap-1">
                         {Object.entries(v.embudo.etapas)
                           .filter(([, n]) => n > 0)
+                          .sort(([a], [b]) => ordenEtapa(a) - ordenEtapa(b))
                           .map(([etapa, n]) => (
                             <button
                               key={etapa}
@@ -1650,6 +1654,7 @@ function DetalleVacante({
   }
 
   const embudo = v.embudo?.etapas ?? {};
+  const etapasCuenta = useEtapasCuenta(); // demo SEZA: 8 etapas en el flujo operativo
 
   // Regla de UI (2026-09-16): resumen compacto arriba, UNA acción principal (Publicar / Cerrar-Reabrir),
   // secundarias en «…», y todo el contenido en secciones CERRADAS (Requisitos, Prefiltros, Entrevista,
@@ -1696,8 +1701,8 @@ function DetalleVacante({
         )}
 
         {/* Embudo de esta vacante — conecta con el pipeline de candidatos (B4: clic → Kanban filtrado por vacante + etapa) */}
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
-          {["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding"].map((e) => (
+        <div className={cn("grid grid-cols-3 gap-2", etapasCuenta.length > 6 ? "sm:grid-cols-4" : "sm:grid-cols-6")}>
+          {etapasCuenta.map((e) => (
             <Link
               key={e}
               href={`/dashboard/candidatos?${new URLSearchParams({ vacante: v.id, etapa: e }).toString()}`}
