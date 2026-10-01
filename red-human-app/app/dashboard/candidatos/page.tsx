@@ -755,6 +755,8 @@ function CandidatosContenido() {
             >
               <option value="">Todas las fuentes</option>
               <option value="WhatsApp">WhatsApp</option>
+              <option value="Telegram">Telegram</option>
+              <option value="Facebook">Facebook</option>
               <option value="OCC">OCC</option>
               <option value="LinkedIn">LinkedIn</option>
               <option value="Portal">Portal</option>
@@ -1132,6 +1134,10 @@ function CandidatosContenido() {
                         <span className="inline-flex items-center gap-1 font-semibold text-good">
                           <MessageCircle className="h-3.5 w-3.5" /> WhatsApp
                         </span>
+                      ) : c.fuente === "Telegram" ? (
+                        <span className="inline-flex items-center gap-1 font-semibold text-[#229ed9]">
+                          <Send className="h-3.5 w-3.5" /> Telegram
+                        </span>
                       ) : (
                         c.fuente || "—"
                       )}
@@ -1341,6 +1347,13 @@ function FuenteChip({ fuente }: { fuente?: string | null }) {
   if (!fuente) return null;
   if (fuente === "WhatsApp") {
     return <Pastilla icon={MessageCircle} tono="good" title="Llegó por WhatsApp" />;
+  }
+  if (fuente === "Telegram") {
+    return (
+      <span title="Llegó por Telegram" className="inline-grid h-[18px] w-[18px] shrink-0 place-items-center rounded-md bg-[#229ed9]/10 text-[#229ed9]">
+        <Send className="h-3 w-3" />
+      </span>
+    );
   }
   if (fuente === "Facebook") {
     return (

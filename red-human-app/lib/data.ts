@@ -4,7 +4,7 @@
    ============================================================ */
 
 export type EstadoPrefiltro = "cumple" | "revision" | "no_cumple" | "pendiente";
-export type FuenteCandidato = "Formulario" | "WhatsApp" | "OCC" | "LinkedIn" | "Indeed" | "RH";
+export type FuenteCandidato = "Formulario" | "WhatsApp" | "Telegram" | "Facebook" | "OCC" | "LinkedIn" | "Indeed" | "RH";
 
 export type EtapaCandidato =
   | "Prefiltro"

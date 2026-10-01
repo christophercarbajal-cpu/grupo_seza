@@ -308,4 +308,5 @@ def mensaje_para_agente(msg: dict, telefono: str) -> dict:
         "media": msg.get("media"),
         "id_seleccionado": msg.get("id_seleccionado", ""),
         "numero_receptor": "",
+        "canal": "telegram",  # la persona nueva nace con fuente «Telegram» (origen en el tablero)
     }

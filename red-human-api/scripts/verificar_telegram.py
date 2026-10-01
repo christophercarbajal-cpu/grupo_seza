@@ -142,6 +142,7 @@ def main():
         p = db.query(Postulacion).join(Postulacion.candidato).filter_by(telefono="5599990001").order_by(Postulacion.id.desc()).first()
         codigo = p.codigo
         check(p.etapa == "Revisión de vehículo" and p.estado == "cumple", "la tarjeta queda en «Revisión de vehículo»")
+        check(p.candidato.fuente == "Telegram", "la persona que llegó por el bot queda con fuente «Telegram»")
         db.close()
 
         # RH: vehículo por excepción + cita con curso de inducción

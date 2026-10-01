@@ -216,7 +216,7 @@ def _personas_en_alcance(db: Session, wa_id: str, alcance) -> List[Candidato]:
     return list(por_cuenta.values())
 
 
-def _buscar_o_crear_candidato(db: Session, wa_id: str, nombre: str, cuenta_id: int, prueba: bool) -> Candidato:
+def _buscar_o_crear_candidato(db: Session, wa_id: str, nombre: str, cuenta_id: int, prueba: bool, fuente: str = "WhatsApp") -> Candidato:
     """Resuelve a la PERSONA por wa_id (exacto) O por teléfono normalizado, en UNA sola consulta,
     y se queda con la más reciente; la crea si no existe. Con Modo Prueba puede haber más de una
     persona con el mismo número (cada postulación web de prueba crea una persona nueva): la nueva
@@ -240,11 +240,13 @@ def _buscar_o_crear_candidato(db: Session, wa_id: str, nombre: str, cuenta_id: i
             existente.wa_nombre = nombre
         return existente
 
+    # `fuente` = canal por el que llegó la persona: «WhatsApp» o «Telegram» (bot, 2026-09-30) — es lo que
+    # muestra el tablero como origen.
     c = _crear_candidato(
-        db, cuenta_id, nombre or "Candidato WhatsApp", "WhatsApp", prueba,
+        db, cuenta_id, nombre or f"Candidato {fuente}", fuente, prueba,
         telefono=tel, wa_id=wa_id, wa_nombre=nombre,
     )
-    registrar(db, "sistema", "candidato_ingresado", "candidato", c.codigo, {"fuente": "WhatsApp", "wa_id": wa_id, "es_prueba": prueba})
+    registrar(db, "sistema", "candidato_ingresado", "candidato", c.codigo, {"fuente": fuente, "wa_id": wa_id, "es_prueba": prueba})
     return c
 
 
@@ -386,11 +388,13 @@ def _persona_para_cuenta(db: Session, c: Candidato, personas: List[Candidato], c
             p.cuenta_id = cuenta_id
         db.flush()
         return c
+    # la fila en la otra Cuenta conserva el origen real de la persona (WhatsApp, Telegram, Facebook…)
+    fuente = c.fuente or "WhatsApp"
     nueva = _crear_candidato(
-        db, cuenta_id, c.nombre, "WhatsApp", prueba,
+        db, cuenta_id, c.nombre, fuente, prueba,
         telefono=c.telefono, wa_id=c.wa_id, wa_nombre=c.wa_nombre, correo=c.correo,
     )
-    registrar(db, "sistema", "candidato_ingresado", "candidato", nueva.codigo, {"fuente": "WhatsApp", "wa_id": c.wa_id, "es_prueba": prueba, "desde": c.codigo, "numero_compartido": True})
+    registrar(db, "sistema", "candidato_ingresado", "candidato", nueva.codigo, {"fuente": fuente, "wa_id": c.wa_id, "es_prueba": prueba, "desde": c.codigo, "numero_compartido": True})
     db.flush()
     return nueva
 
@@ -718,7 +722,8 @@ async def procesar_entrante(db: Session, msg: dict) -> dict:
     # ── 1. Persona y postulación en conversación (dentro del alcance del número) ──
     personas = _personas_en_alcance(db, telefono, alcance_ids)
     cuenta = _cuenta_ancla(db, alcance, personas)
-    c = _buscar_o_crear_candidato(db, telefono, nombre_wa, cuenta.id, prueba) if not personas else personas[0]
+    fuente = "Telegram" if msg.get("canal") == "telegram" else "WhatsApp"
+    c = _buscar_o_crear_candidato(db, telefono, nombre_wa, cuenta.id, prueba, fuente) if not personas else personas[0]
     if not personas:
         personas = [c]
     else:
