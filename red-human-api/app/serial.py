@@ -1140,9 +1140,10 @@ def _url_psico(clave: str):
     return psi.url_candidato(clave) if clave else None
 
 
-def evaluacion_candidato_dict(ev, usuario=None) -> dict:
+def evaluacion_candidato_dict(ev, usuario=None, db=None) -> dict:
     """El informe médico COMPLETO (archivo, resumen, notas, comentario) solo viaja a quien tiene permiso; el resto
-    ve únicamente el estado y el dictamen."""
+    ve únicamente el estado y el dictamen. 2026-09-30: ligas (consentimiento → evaluador → enlace), evaluador, cita y
+    envíos; `estadoTexto` es el estado visible (Pendiente / Enviada / En curso / Resultado recibido / Revisada)."""
     from .models import ESTADOS_EVALUACION, MODOS_PRUEBA, TIPOS_EVALUACION
     from .services import evaluaciones as sev
 
@@ -1160,7 +1161,7 @@ def evaluacion_candidato_dict(ev, usuario=None) -> dict:
         "idProveedor": ev.id_proveedor or "",
         "url": ev.url or "",
         "estado": ev.estado,
-        "estadoTexto": ESTADOS_EVALUACION.get(ev.estado, ev.estado),
+        "estadoTexto": sev.estado_visible(ev),
         "pasoIntegrada": ev.paso_integrada or None,
         "siguientePaso": sev.siguiente_paso(ev) if ev.estado in ("pendiente", "en_proceso") else None,
         "motivoFallida": ev.motivo_fallida or "",
@@ -1183,6 +1184,14 @@ def evaluacion_candidato_dict(ev, usuario=None) -> dict:
         "asignadaPor": ev.asignada_por or "",
         "creada": iso(ev.creada_en),
         "historial": list(ev.historial or []),
+        "evaluador": sev.evaluador_de(ev, db),
+        "cita": iso(ev.cita_en),
+        "citaLugar": ev.cita_lugar or "",
+        "resultadoOrigen": ev.resultado_origen or "",
+        "ligaEvaluador": f"{settings.app_url}/evaluacion/{ev.evaluador_token}" if ev.evaluador_token else None,
+        # Médico: la liga del médico se habilita hasta que el candidato acepta el consentimiento expreso
+        "ligaEvaluadorHabilitada": bool(ev.evaluador_token) and ev.estado not in ("revisada", "fallida", "en_espera_consentimiento"),
+        "envios": list(reversed(ev.envios or [])),
     }
     if not restringido:
         salida.update({

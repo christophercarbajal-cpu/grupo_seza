@@ -3277,6 +3277,26 @@ export interface EvaluacionCandidato {
   claveProveedor?: string | null; urlCandidato?: string | null; conectadaProveedor?: boolean; resultadoCargadoEn: string | null; informeRestringido: boolean;
   asignadaPor: string; creada: string | null; historial: { fecha: string; usuario: string; de: string; a: string; detalle: string }[];
   resultadoResumen?: string; nombreArchivo?: string; notas?: string; comentarioRevision?: string;
+  /** 2026-09-30: evaluador (interno = Usuario de la Cuenta | externo), cita opcional, ligas y envíos. */
+  evaluador: { tipo: "" | "interno" | "externo"; usuarioId: number | null; nombre: string; telefono: string; correo: string };
+  cita: string | null; citaLugar: string;
+  /** rh | evaluador | proveedor */
+  resultadoOrigen: string;
+  ligaEvaluador: string | null;
+  /** Médico: false hasta que el candidato acepta el consentimiento expreso. */
+  ligaEvaluadorHabilitada: boolean;
+  envios: { liga: string; destinatario: string; canal: string; enviado: boolean; detalle: string; fecha: string }[];
+}
+
+export interface DatosEvaluador {
+  evaluador_tipo: "" | "interno" | "externo";
+  evaluador_usuario_id?: number | null;
+  evaluador_nombre?: string;
+  evaluador_telefono?: string;
+  evaluador_correo?: string;
+  cita_fecha?: string;
+  cita_hora?: string;
+  cita_lugar?: string;
 }
 export interface EvaluacionSugerida { tipo: TipoEvaluacion; prueba_id: number | null; nombre: string }
 export function fetchPruebasPsicometricas(incluirInactivas = false, puesto = "") {
@@ -3297,8 +3317,39 @@ export function inactivarPruebaPsicometrica(id: number) {
 export function fetchEvaluacionesCandidato(codigo: string) {
   return get<EvaluacionCandidato[]>(`/evaluaciones/postulaciones/${codigo}`);
 }
-export function agregarEvaluacionCandidato(codigo: string, datos: { tipo: TipoEvaluacion; nombre?: string; prueba_id?: number | null; modo?: string; proveedor?: string; url?: string; notas?: string }) {
+export function agregarEvaluacionCandidato(
+  codigo: string,
+  datos: { tipo: TipoEvaluacion; nombre?: string; prueba_id?: number | null; modo?: string; proveedor?: string; url?: string; notas?: string } & Partial<DatosEvaluador>,
+) {
   return post<EvaluacionCandidato>(`/evaluaciones/postulaciones/${codigo}`, datos);
+}
+export function asignarEvaluadorEvaluacion(codigo: string, datos: DatosEvaluador) {
+  return patch<EvaluacionCandidato>(`/evaluaciones/${codigo}/evaluador`, datos);
+}
+export function marcarEvaluacionEnCurso(codigo: string) {
+  return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/en-curso`, {});
+}
+export function enviarLigaEvaluador(codigo: string) {
+  return post<EvaluacionCandidato & { envios: EvaluacionCandidato["envios"] }>(`/evaluaciones/${codigo}/evaluador/enviar`, {});
+}
+export function enviarEnlaceEvaluacion(codigo: string) {
+  return post<EvaluacionCandidato & { envios: EvaluacionCandidato["envios"] }>(`/evaluaciones/${codigo}/enlace/enviar`, {});
+}
+
+/** Liga pública del evaluador (médico, socioeconómico, proveedor…). */
+export interface EvaluacionEvaluadorPublica {
+  candidato: string; empresa: string; puesto: string; evaluacion: string; tipo: TipoEvaluacion; tipoTexto: string;
+  evaluador: string; cita: string | null; citaLugar: string; habilitada: boolean; motivo: string; yaRegistrado: boolean; cancelada: boolean;
+}
+export function fetchEvaluacionEvaluador(token: string) {
+  return get<EvaluacionEvaluadorPublica>(`/evaluaciones/publica/evaluador/${token}`);
+}
+export function registrarResultadoEvaluador(token: string, datos: { resumen: string; evaluador: string; archivo?: File | null }) {
+  const form = new FormData();
+  form.append("resumen", datos.resumen);
+  form.append("evaluador", datos.evaluador);
+  if (datos.archivo) form.append("archivo", datos.archivo);
+  return subir<EvaluacionEvaluadorPublica>(`/evaluaciones/publica/evaluador/${token}/resultado`, form);
 }
 export function enviarEvaluacion(codigo: string) {
   return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/enviar`, {});
@@ -3312,8 +3363,9 @@ export function cargarResultadoEvaluacion(codigo: string, resumen: string, archi
   if (archivo) form.append("archivo", archivo);
   return subir<EvaluacionCandidato>(`/evaluaciones/${codigo}/resultado`, form);
 }
-export function revisarEvaluacion(codigo: string, dictamen: string, comentario = "") {
-  return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/revisar`, { dictamen, comentario });
+/** «Marcar como revisada»: dictamen + conclusión (queda con usuario y fecha). */
+export function revisarEvaluacion(codigo: string, dictamen: string, conclusion = "") {
+  return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/revisar`, { dictamen, comentario: conclusion, conclusion });
 }
 export function cancelarEvaluacion(codigo: string, motivo: string) {
   return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/cancelar`, { motivo });

@@ -6,8 +6,14 @@
 * Seguimiento: Pendiente → En proceso → Resultado recibido → Revisada; Fallida/Cancelada siempre con motivo.
 * Modo Integrada simulado: Asignada → Enviada → Iniciada → Completada → Resultado recibido (a mano por ahora).
 * Nada de aquí escribe `Postulacion.etapa` (no hay columnas nuevas en el pipeline) ni usa IA: RH revisa y dictamina.
+* 2026-09-30 — regla universal de ligas: toda liga (consentimiento, evaluador/médico/proveedor, enlace externo) EXISTE
+  desde que se crea la evaluación y se muestra con «Abrir / Copiar / Enviar o reenviar»; el envío automático es aparte
+  y nunca la condiciona. La liga del evaluador y la captura manual de RH alimentan la MISMA evaluación. Médico: primero
+  el consentimiento; la liga del médico se habilita al aceptarlo. Estados visibles: Pendiente → Enviada → En curso →
+  Resultado recibido → Revisada.
 """
 
+import secrets
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -130,6 +136,47 @@ def avisos_antes_onboarding(p: Postulacion, evaluaciones: List[EvaluacionCandida
 
 def etiqueta_modo(modo: str) -> str:
     return MODOS_PRUEBA.get(modo, modo)
+
+
+# ---------- 2026-09-30: estado visible, evaluador y ligas ----------
+
+
+def estado_visible(ev: EvaluacionCandidato) -> str:
+    """«En proceso» se muestra como Enviada (todavía no empieza) o En curso (ya empezó: paso iniciada/completada)."""
+    if ev.estado == "en_proceso":
+        return "En curso" if ev.paso_integrada in ("iniciada", "completada") else "Enviada"
+    return ESTADOS_EVALUACION.get(ev.estado, ev.estado)
+
+
+def asegurar_token(ev: EvaluacionCandidato) -> bool:
+    """La liga del evaluador nace con la evaluación (registros previos la reciben al leerse). True si se creó."""
+    if ev.evaluador_token:
+        return False
+    ev.evaluador_token = secrets.token_urlsafe(24)
+    return True
+
+
+def evaluador_habilitado(ev: EvaluacionCandidato, p: Optional[Postulacion]) -> bool:
+    """La liga del evaluador sirve cuando hay consentimientos (médico: el expreso ya aceptado) y sigue abierta."""
+    return ev.estado not in ("revisada", "fallida") and consentimiento_ok(ev, p)
+
+
+def evaluador_de(ev: EvaluacionCandidato, db=None) -> dict:
+    if ev.evaluador_tipo == "interno" and ev.evaluador_usuario_id and db is not None:
+        from ..models import Usuario
+
+        u = db.get(Usuario, ev.evaluador_usuario_id)
+        if u:
+            return {"tipo": "interno", "usuarioId": u.id, "nombre": u.nombre, "telefono": u.telefono or "", "correo": u.correo or ""}
+    return {"tipo": ev.evaluador_tipo or "", "usuarioId": ev.evaluador_usuario_id, "nombre": ev.evaluador_nombre or "",
+            "telefono": ev.evaluador_telefono or "", "correo": ev.evaluador_correo or ""}
+
+
+def registrar_envio(ev: EvaluacionCandidato, liga: str, destinatario: str, canal: str, envio: dict) -> dict:
+    fila = {"liga": liga, "destinatario": destinatario, "canal": canal, "enviado": bool(envio.get("enviado")),
+            "detalle": str(envio.get("detalle") or "")[:300], "fecha": datetime.now(timezone.utc).isoformat()}
+    ev.envios = [*(ev.envios or []), fila][-40:]
+    return fila
 
 
 # ---------- Psicométricas.mx (2026-09-29) ----------

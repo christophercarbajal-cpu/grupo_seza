@@ -1894,10 +1894,11 @@ function ModalCandidato({
                   <Button
                     size="sm"
                     className="flex-1"
-                    onClick={() => (siguientesEtapas[0] === "Entrevista Humana" ? setModalEntrevista(true) : enviarAEtapa(siguientesEtapas[0]))}
+                    onClick={() => (siguientesEtapas[0] === "Entrevista Humana" ? setAgregarEval(true) : enviarAEtapa(siguientesEtapas[0]))}
                     disabled={Boolean(ocupado)}
                   >
-                    <ThumbsUp className="h-4 w-4" /> Enviar a {nombreEtapa(siguientesEtapas[0])}
+                    <ThumbsUp className="h-4 w-4" />{" "}
+                    {siguientesEtapas[0] === "Entrevista Humana" ? "Agregar entrevista humana o evaluación" : `Enviar a ${nombreEtapa(siguientesEtapas[0])}`}
                   </Button>
                 )}
                 {c.expedienteId != null && c.etapa !== "Onboarding" && (
@@ -1926,7 +1927,7 @@ function ModalCandidato({
                           disabled: Boolean(ocupado),
                         }]
                       : []),
-                    { etiqueta: "Agregar evaluación o verificación", icono: <IconoEvaluacion />, onClick: () => setAgregarEval(true), disabled: Boolean(ocupado) || c.activa === false },
+                    { etiqueta: c.flujo === "operativo" ? "Agregar evaluación" : "Agregar entrevista humana o evaluación", icono: <IconoEvaluacion />, onClick: () => setAgregarEval(true), disabled: Boolean(ocupado) || c.activa === false },
                     { etiqueta: "Mover a otra etapa…", icono: <ArrowRightLeft />, onClick: () => setMoverA({ etapa: "", motivo: "" }), disabled: Boolean(ocupado) },
                     ...(c.etapa === "Entrevista Humana"
                       ? [{ etiqueta: "Agendar otra Entrevista Humana", icono: <CalendarClock />, onClick: () => setModalEntrevista(true), disabled: Boolean(ocupado) }]
@@ -2043,6 +2044,7 @@ function ModalCandidato({
           codigo={c.id}
           puesto={c.puesto}
           onClose={() => setAgregarEval(false)}
+          onEntrevistaHumana={c.flujo === "operativo" ? undefined : () => { setAgregarEval(false); setModalEntrevista(true); }}
           onAgregada={(ev) => {
             setAgregarEval(false);
             setVersionEval((x) => x + 1);

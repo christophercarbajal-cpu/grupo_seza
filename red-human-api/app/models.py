@@ -2180,6 +2180,19 @@ class EvaluacionCandidato(Base):
     asignada_por: Mapped[str] = mapped_column(String(150), default="")
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     actualizada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora, onupdate=ahora)
+    # --- 2026-09-30: evaluador asignado (médico, socioeconómico, proveedor…) y su liga ---
+    # interno = Usuario de la Cuenta (datos del perfil) | externo = datos capturados. La liga del evaluador
+    # (`/evaluacion/{evaluador_token}`) y la captura manual de RH alimentan la MISMA evaluación.
+    evaluador_tipo: Mapped[str] = mapped_column(String(20), default="")  # "" | interno | externo
+    evaluador_usuario_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    evaluador_nombre: Mapped[str] = mapped_column(String(150), default="")
+    evaluador_telefono: Mapped[str] = mapped_column(String(30), default="")
+    evaluador_correo: Mapped[str] = mapped_column(String(200), default="")
+    evaluador_token: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    cita_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # cita opcional
+    cita_lugar: Mapped[str] = mapped_column(String(300), default="")
+    resultado_origen: Mapped[str] = mapped_column(String(20), default="")  # rh | evaluador | proveedor
+    envios: Mapped[list] = mapped_column(JSON, default=list)  # [{liga, destinatario, canal, enviado, detalle, fecha}]
 
     @property
     def es_medico(self) -> bool:
