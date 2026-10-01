@@ -134,6 +134,7 @@ def vacante_dict(
         "publicaciones": v.publicaciones or {},
         "textoWhatsapp": v.texto_whatsapp or "",
         "textoBolsa": v.texto_bolsa or "",
+        "textoFacebook": v.texto_facebook or "",
         # prefiltro
         "preguntas_filtro": texto_preguntas(v.preguntas_filtro),
         "criterios": [p for p in (v.preguntas_filtro or []) if isinstance(p, dict)],

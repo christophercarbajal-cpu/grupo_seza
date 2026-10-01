@@ -681,6 +681,12 @@ export function generarVacanteIA(datos: DatosVacante) {
   return post<VacanteGenerada>("/vacantes/generar", datos);
 }
 
+export type CanalTexto = "whatsapp" | "bolsa" | "facebook";
+/** Textos de publicación con los datos FINALES del formulario (Nueva vacante o Plantilla). Nunca regresan vacíos. */
+export function generarTextosPublicacion(datos: DatosVacante & { resumen?: string; jornada_horas?: number | null; canales?: CanalTexto[] }) {
+  return post<{ ia: boolean; empresa: string; textos: Partial<Record<CanalTexto, string>> }>("/vacantes/textos", datos);
+}
+
 export function crearVacante(
   datos: DatosVacante & {
     descripcion?: string;
@@ -789,6 +795,7 @@ export interface PiezaFacebook {
   copy: string;
   copyConLiga: string;
   copyPropio: boolean;
+  horario?: string;
   imagen: {
     empresa: string;
     color: string;
@@ -802,6 +809,14 @@ export interface PiezaFacebook {
 
 export function fetchPiezaFacebook(codigo: string) {
   return get<PiezaFacebook>(`/vacantes/${codigo}/facebook`);
+}
+/** Genera / regenera el texto de Facebook con los datos finales de la vacante (no guarda). */
+export function regenerarFacebook(codigo: string) {
+  return post<PiezaFacebook & { sinGuardar: boolean; ia: boolean }>(`/vacantes/${codigo}/facebook/generar`);
+}
+/** Guarda el texto editado (vacío = se vuelve a armar con los datos de la vacante). */
+export function guardarFacebook(codigo: string, texto: string) {
+  return patch<PiezaFacebook>(`/vacantes/${codigo}/facebook`, { texto });
 }
 
 /* ============================================================
@@ -901,6 +916,8 @@ export interface Plantilla {
   ubicacionMunicipio?: string;
   textoWhatsapp: string;
   textoBolsa: string;
+  /** 2026-09-30: texto de Facebook (editable; la liga se agrega al copiar). */
+  textoFacebook?: string;
   enfoqueEntrevista?: EnfoqueEntrevista;
   creadoPor: string;
   /** Última actualización (Punto 11); igual a `creada` si nunca se editó. */

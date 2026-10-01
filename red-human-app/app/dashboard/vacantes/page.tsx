@@ -103,6 +103,8 @@ const PLATAFORMAS = [
   { clave: "google", nombre: "Google Empleos", api: "Google Empleos", nota: "Etiqueta estructurada JobPosting" },
   { clave: "jooble", nombre: "Jooble", api: "Jooble", nota: "Feed XML automático" },
   { clave: "talent", nombre: "Talent.com", api: "Talent.com", nota: "Feed XML automático" },
+  // 2026-09-30: Facebook = publicación manual (texto editable + imagen + liga con origen Facebook)
+  { clave: "facebook", nombre: "Facebook", api: "Facebook", nota: "Manual: texto, imagen y liga (origen Facebook)" },
 ] as const;
 
 /** Textos generados por plataforma (`Vacante.publicaciones`): lo que RH copia y pega. Independiente
@@ -1862,7 +1864,7 @@ function DetalleVacante({
         )}
 
         {live && (
-          <Plegable titulo="Facebook" resumen="Copy, imagen y liga única · publicación manual">
+          <Plegable titulo="Facebook" resumen="Texto editable, imagen y liga única (origen Facebook) · publicación manual">
             <PiezaFacebookVacante codigo={v.id} />
           </Plegable>
         )}

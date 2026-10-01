@@ -27,7 +27,8 @@ def slugificar(texto: str) -> str:
 # `Vacante.publicaciones`). Google Empleos, Jooble y Talent.com por ahora solo se REGISTRAN; su
 # integración (feeds XML / JobPosting) está en docs/arquitectura_bolsas_empleo.md. Valores viejos ya
 # guardados en `Vacante.plataformas` se conservan tal cual (ver routers.vacantes._unir_plataformas).
-PLATAFORMAS = ["Portal", "WhatsApp", "Google Empleos", "Jooble", "Talent.com"]
+# Facebook (2026-09-30): publicación MANUAL (copy + imagen + liga ?origen=facebook); nada llama a la API de Meta.
+PLATAFORMAS = ["Portal", "WhatsApp", "Google Empleos", "Jooble", "Talent.com", "Facebook"]
 
 # Kanban de Candidato.etapa — flujo confirmado con el cliente (documento + audio, 2026-08-29):
 # Prefiltro -> Entrevista IA -> Evaluación -> Entrevista Humana -> Contratación -> Onboarding.
@@ -95,6 +96,7 @@ class Vacante(Base):
     descripcion: Mapped[str] = mapped_column(Text, default="")
     texto_whatsapp: Mapped[str] = mapped_column(Text, default="")
     texto_bolsa: Mapped[str] = mapped_column(Text, default="")
+    texto_facebook: Mapped[str] = mapped_column(Text, default="")  # publicación de Facebook (editable; la liga se agrega al copiar)
     preguntas_filtro: Mapped[list] = mapped_column(JSON, default=list)  # [str] (legado) o [PreguntaFiltro]
     # Fase 4 (2026-09-15): preguntas del prefiltro por WhatsApp, INDEPENDIENTES de las de la postulación web
     # (`preguntas_filtro`). Vacía = el agente usa las de la web (compatibilidad con vacantes previas).
@@ -1184,6 +1186,7 @@ class Plantilla(Base):
     ubicacion_municipio: Mapped[str] = mapped_column(String(100), default="")
     texto_whatsapp: Mapped[str] = mapped_column(Text, default="")
     texto_bolsa: Mapped[str] = mapped_column(Text, default="")
+    texto_facebook: Mapped[str] = mapped_column(Text, default="")  # publicación de Facebook (editable; la liga se agrega al copiar)
     enfoque_entrevista: Mapped[str] = mapped_column(String(30), default="profesional")  # Fase 4
     prefiltro_reglas: Mapped[dict] = mapped_column(JSON, default=dict)  # demo SEZA: igual que Vacante
     cv_obligatorio: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -1207,6 +1210,7 @@ CAMPOS_PLANTILLA = [
     "sueldo_desde", "sueldo_hasta", "sueldo_moneda", "sueldo_periodicidad",  # Parte 3
     "preguntas_filtro_whatsapp", "ubicacion_estado", "ubicacion_municipio",  # Fase 4
     "prefiltro_reglas", "cv_obligatorio",  # demo SEZA (2026-09-29)
+    "texto_facebook",  # 2026-09-30: texto editable de la publicación de Facebook
 ]
 
 

@@ -5,13 +5,15 @@
    Por vacante: copy, imagen (1080×1080, color de la empresa) y liga única (`?origen=facebook`), con
    botones para copiar y descargar. NO publica nada: RH pega el texto y sube la imagen a mano. La imagen
    es un <svg> que se dibuja aquí mismo y se convierte a PNG en el navegador al descargar (sin servidor,
-   sin sesión en la URL de la imagen). Los datos salen de GET /vacantes/{codigo}/facebook. */
+   sin sesión en la URL de la imagen). Los datos salen de GET /vacantes/{codigo}/facebook.
+   2026-09-30: el texto es EDITABLE — Generar/Regenerar (con los datos finales de la vacante, sin inventar), Guardar,
+   Copiar publicación (texto + liga), Copiar liga, Generar/Descargar imagen. La liga identifica a Facebook como origen. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, ExternalLink } from "lucide-react";
+import { Download, ExternalLink, ImageIcon, RefreshCw, Save, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui";
 import { Aviso, BotonCopiar } from "@/components/dashboard/subida";
-import { fetchPiezaFacebook, type PiezaFacebook } from "@/lib/api";
+import { fetchPiezaFacebook, guardarFacebook, regenerarFacebook, type PiezaFacebook } from "@/lib/api";
 
 const LADO = 1080;
 const FUENTE = "Arial, Helvetica, sans-serif"; // fuente del sistema: el PNG se ve igual que la vista previa
@@ -140,14 +142,53 @@ function bajar(blob: Blob, nombre: string) {
 export function PiezaFacebookVacante({ codigo }: { codigo: string }) {
   const [pieza, setPieza] = useState<PiezaFacebook | null>(null);
   const [error, setError] = useState("");
+  const [aviso, setAviso] = useState("");
   const [descargando, setDescargando] = useState(false);
+  const [texto, setTexto] = useState("");
+  const [sinGuardar, setSinGuardar] = useState(false);
+  const [ocupado, setOcupado] = useState<"" | "generar" | "guardar" | "imagen">("");
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const cargar = useCallback(async () => {
     const r = await fetchPiezaFacebook(codigo);
-    if (r) setPieza(r);
-    else setError("No se pudo cargar la pieza de Facebook de esta vacante.");
+    if (r) {
+      setPieza(r);
+      setTexto(r.copy);
+      setSinGuardar(false);
+    } else setError("No se pudo cargar la pieza de Facebook de esta vacante.");
   }, [codigo]);
+
+  async function regenerar() {
+    setOcupado("generar");
+    setAviso("");
+    const r = await regenerarFacebook(codigo);
+    setOcupado("");
+    if (!r.ok) return setError(r.error);
+    setTexto(r.data.copy);
+    setSinGuardar(true);
+    setAviso("Texto regenerado con los datos actuales de la vacante. Revísalo y guárdalo.");
+  }
+
+  async function guardar() {
+    setOcupado("guardar");
+    const r = await guardarFacebook(codigo, texto);
+    setOcupado("");
+    if (!r.ok) return setError(r.error);
+    setPieza(r.data);
+    setTexto(r.data.copy);
+    setSinGuardar(false);
+    setAviso("Texto de Facebook guardado.");
+  }
+
+  async function generarImagen() {
+    setOcupado("imagen");
+    const r = await fetchPiezaFacebook(codigo);
+    setOcupado("");
+    if (r) {
+      setPieza({ ...r, copy: texto, copyConLiga: `${texto}\n\n👉 Postúlate aquí: ${r.liga}` });
+      setAviso("Imagen actualizada con los datos de la vacante.");
+    }
+  }
   useEffect(() => {
     cargar();
   }, [cargar]);
@@ -165,6 +206,7 @@ export function PiezaFacebookVacante({ codigo }: { codigo: string }) {
 
   if (error && !pieza) return <Aviso tono="error">{error}</Aviso>;
   if (!pieza) return <p className="text-sm text-ink-3">Cargando pieza de Facebook…</p>;
+  const publicacion = `${texto.trim()}\n\n👉 Postúlate aquí: ${pieza.liga}`;
 
   return (
     <div className="flex flex-col gap-4">
@@ -175,6 +217,7 @@ export function PiezaFacebookVacante({ codigo }: { codigo: string }) {
         <Aviso tono="warn">La vacante no está publicada: la liga no recibirá postulaciones hasta que la publiques.</Aviso>
       )}
       {error && <Aviso tono="error">{error}</Aviso>}
+      {aviso && <Aviso tono="ok">{aviso}</Aviso>}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div>
@@ -184,9 +227,14 @@ export function PiezaFacebookVacante({ codigo }: { codigo: string }) {
           <div className="mt-1.5">
             <ImagenFacebook datos={pieza.imagen} svgRef={svgRef} />
           </div>
-          <Button variant="secondary" size="sm" className="mt-2 w-full" onClick={descargarImagen} disabled={descargando}>
-            <Download className="h-4 w-4" /> {descargando ? "Generando…" : "Descargar imagen (PNG)"}
-          </Button>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Button variant="outline" size="sm" onClick={generarImagen} disabled={Boolean(ocupado)}>
+              <ImageIcon className="h-4 w-4" /> {ocupado === "imagen" ? "Generando…" : "Generar imagen"}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={descargarImagen} disabled={descargando}>
+              <Download className="h-4 w-4" /> {descargando ? "Generando…" : "Descargar imagen"}
+            </Button>
+          </div>
         </div>
 
         <div className="flex flex-col gap-4">
@@ -207,22 +255,36 @@ export function PiezaFacebookVacante({ codigo }: { codigo: string }) {
           </div>
 
           <div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-mono text-[11px] uppercase tracking-wider text-ink-3">Copy ({pieza.copyConLiga.length} car.)</span>
-              <div className="flex items-center gap-3">
-                <BotonCopiar texto={pieza.copyConLiga} etiqueta="Copiar texto" />
-                <button
-                  type="button"
-                  onClick={() => bajar(new Blob([pieza.copyConLiga], { type: "text/plain;charset=utf-8" }), `facebook-${codigo}.txt`)}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-brand transition hover:underline"
-                >
-                  <Download className="h-3.5 w-3.5" /> Descargar
-                </button>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-mono text-[11px] uppercase tracking-wider text-ink-3">
+                Texto ({publicacion.length} car.){sinGuardar ? " · sin guardar" : ""}
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={regenerar} disabled={Boolean(ocupado)}>
+                  {texto ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />} {ocupado === "generar" ? "Generando…" : texto ? "Regenerar" : "Generar"}
+                </Button>
+                <Button size="sm" variant={sinGuardar ? "primary" : "outline"} onClick={guardar} disabled={Boolean(ocupado)}>
+                  <Save className="h-3.5 w-3.5" /> {ocupado === "guardar" ? "Guardando…" : "Guardar"}
+                </Button>
               </div>
             </div>
-            <pre className="mt-1.5 max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-surface-2 p-3 font-sans text-[13px] leading-relaxed text-ink-2">
-              {pieza.copyConLiga}
-            </pre>
+            <textarea
+              value={texto}
+              onChange={(e) => { setTexto(e.target.value); setSinGuardar(true); }}
+              rows={12}
+              className="mt-1.5 w-full rounded-xl border border-border-soft bg-surface p-3 text-[13px] leading-relaxed text-ink-2 outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
+            />
+            <p className="mt-1 text-[11px] text-ink-3">Al copiar se agrega la liga: 👉 Postúlate aquí: {pieza.liga}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <BotonCopiar texto={publicacion} etiqueta="Copiar publicación (texto + liga)" />
+              <button
+                type="button"
+                onClick={() => bajar(new Blob([publicacion], { type: "text/plain;charset=utf-8" }), `facebook-${codigo}.txt`)}
+                className="inline-flex items-center gap-1 text-xs font-medium text-brand transition hover:underline"
+              >
+                <Download className="h-3.5 w-3.5" /> Descargar texto
+              </button>
+            </div>
           </div>
         </div>
       </div>

@@ -454,6 +454,35 @@ def generar_vacante(ficha: FichaVacante) -> Tuple[VacanteGenerada, bool]:
     return _asegurar_capturado(resp.output_parsed, ficha), True
 
 
+class TextosPublicacion(BaseModel):
+    whatsapp: str = Field(description="Mensaje breve para chat (WhatsApp/Telegram): puesto, datos clave y una invitación a responder.")
+    bolsa: str = Field(description="Texto para bolsa de trabajo / portal: puesto, resumen, datos, requisitos y prestaciones.")
+    facebook: str = Field(description="Publicación de Facebook con emojis moderados: puesto, ubicación, pago, horario, requisitos. SIN la liga.")
+
+
+def textos_publicacion(datos: dict, base: dict) -> Tuple[dict, bool]:
+    """Textos por canal redactados con los datos FINALES. Regla no negociable: nunca inventar condiciones (pago,
+    horario, ubicación, prestaciones). Sin IA (o si algo viene vacío) se usa `base` (services/difusion.textos_base)."""
+    client = _client()
+    if client is None:
+        return dict(base), False
+    try:
+        resp = client.responses.parse(
+            model=MODEL,
+            instructions=(
+                f"{_REGLAS}\n\nRedacta textos de reclutamiento en español mexicano para cada canal. Usa SOLO los datos dados: "
+                "si un dato no viene (pago, horario, ubicación, prestaciones), NO lo menciones ni lo inventes. Nunca incluyas ligas."
+            ),
+            input="Datos finales de la vacante:\n" + "\n".join(f"- {k}: {v}" for k, v in datos.items() if v),
+            text_format=TextosPublicacion,
+        )
+        salida = resp.output_parsed.model_dump()
+    except Exception as e:  # noqa: BLE001 — la IA es opcional: nunca deja textos vacíos
+        print(f"[ia] textos_publicacion falló, se usa el texto base: {e}")
+        return dict(base), False
+    return {k: (salida.get(k) or "").strip() or base[k] for k in base}, True
+
+
 def texto_preguntas(preguntas: Optional[list]) -> List[str]:
     """Normaliza preguntas de filtro: acepta la forma vieja (list[str]) y la nueva (list[PreguntaFiltro])."""
     salida: List[str] = []

@@ -330,6 +330,7 @@ export interface Vacante {
   publicaciones?: Record<string, BloquePublicacion>;
   textoWhatsapp?: string;
   textoBolsa?: string;
+  textoFacebook?: string;
   criterios?: {
     pregunta: string;
     tipo: string;

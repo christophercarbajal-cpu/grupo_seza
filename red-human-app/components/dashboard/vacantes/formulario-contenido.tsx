@@ -16,6 +16,9 @@
      5. Selección: Prefiltro (criterios con eliminatorias) → Entrevista Red Human (2 enfoques).
      Vacantes agrega después Gestión (Responsable → Colaboradores) y Publicación; Plantillas agrega
      encima Nombre/Alcance.
+     2026-09-30: «Textos de publicación» (chat, bolsa/portal y Facebook) visibles: se generan con los datos
+     FINALES del formulario (con los cambios), se editan, se regeneran por canal, se copian y se guardan con la
+     vacante o la plantilla; el servidor rellena cualquiera que quede vacío.
 
    Dos reglas NO NEGOCIABLES (también garantizadas en el servidor, ia._asegurar_capturado):
    - Red Human no inventa condiciones reales (sueldo, periodicidad, ubicación, modalidad, horario,
@@ -24,17 +27,20 @@
      solo complementa lo vacío. `contenidoDesdeGenerado` aplica exactamente eso del lado del cliente. */
 
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Sparkles, X } from "lucide-react";
+import { ChevronDown, ChevronUp, RefreshCw, Sparkles, X } from "lucide-react";
+import { BotonCopiar } from "@/components/dashboard/subida";
 import { Button, Eyebrow } from "@/components/ui";
 import { Area, CampoSueldo, Field, ListaEditable, Selector } from "@/components/dashboard/campos";
 import { ESTADOS_MX, municipiosDe, parsearUbicacion, textoUbicacion } from "@/lib/ubicacion";
 import type { Vacante } from "@/lib/data";
 import {
+  generarTextosPublicacion,
   generarVacanteIA,
   ENFOQUES_ENTREVISTA,
   MONEDAS_SUELDO,
   PERIODICIDADES_SUELDO,
   SENIORITIES,
+  type CanalTexto,
   type CriterioFiltro,
   type EnfoqueEntrevista,
   type PeriodicidadSueldo,
@@ -78,6 +84,8 @@ export interface ContenidoVacante {
   avisos_cumplimiento: string[];
   texto_whatsapp: string;
   texto_bolsa: string;
+  /** 2026-09-30: publicación de Facebook (editable; la liga de origen Facebook se agrega al copiar). */
+  texto_facebook: string;
 }
 
 export const CONTENIDO_VACIO: ContenidoVacante = {
@@ -106,6 +114,7 @@ export const CONTENIDO_VACIO: ContenidoVacante = {
   avisos_cumplimiento: [],
   texto_whatsapp: "",
   texto_bolsa: "",
+  texto_facebook: "",
 };
 
 export const MODALIDADES = ["Presencial", "Híbrido", "Remoto"];
@@ -181,6 +190,7 @@ export function contenidoDesdePlantilla(p: Plantilla): ContenidoVacante {
     avisos_cumplimiento: [...(p.avisosCumplimiento ?? [])],
     texto_whatsapp: p.textoWhatsapp,
     texto_bolsa: p.textoBolsa,
+    texto_facebook: p.textoFacebook ?? "",
   };
 }
 
@@ -212,6 +222,7 @@ export function contenidoDesdeVacante(v: Vacante): ContenidoVacante {
     avisos_cumplimiento: [...(v.avisosCumplimiento ?? [])],
     texto_whatsapp: v.textoWhatsapp ?? "",
     texto_bolsa: v.textoBolsa ?? "",
+    texto_facebook: v.textoFacebook ?? "",
   };
 }
 
@@ -286,6 +297,7 @@ export function contenidoComoPayload(c: ContenidoVacante) {
     avisos_cumplimiento: c.avisos_cumplimiento,
     texto_whatsapp: c.texto_whatsapp,
     texto_bolsa: c.texto_bolsa,
+    texto_facebook: c.texto_facebook,
   };
 }
 
@@ -475,7 +487,7 @@ export function FormularioContenidoVacante({
         value.responsabilidades.length ? `${value.responsabilidades.length} responsabilidades` : "",
         nPrefiltro ? `${nPrefiltro} preguntas de prefiltro` : "",
         value.perfil_ideal ? "perfil ideal" : "",
-        value.texto_whatsapp || value.texto_bolsa ? "textos de publicación" : "",
+        value.avisos_cumplimiento.length ? "avisos de cumplimiento" : "",
       ].filter(Boolean).join(" · ")
     : "Red Human genera todo esto al presionar el botón; ábrelo solo si quieres ajustarlo a mano.";
 
@@ -562,6 +574,9 @@ export function FormularioContenidoVacante({
         </div>
       )}
 
+      {/* Textos de publicación (2026-09-30): visibles, con los datos finales del formulario */}
+      <TextosPublicacion value={value} onChange={onChange} clienteId={clienteId} mostrarCliente={mostrarCliente} />
+
       {/* 4. Configuración avanzada — acordeón CERRADO por defecto: todo lo que la IA genera sola */}
       <section className="rounded-xl border border-border-soft">
         <button
@@ -589,13 +604,81 @@ export function FormularioContenidoVacante({
           <Seccion titulo="Prefiltro · WhatsApp" ayuda="Puntos críticos que Red Human confirma por chat (experiencia, ubicación…). Vacío = el agente usa las de la web.">
             <CriteriosEditor items={value.preguntas_filtro_whatsapp} onChange={set("preguntas_filtro_whatsapp")} />
           </Seccion>
-          <Seccion titulo="Textos de publicación">
-            <Area label="Texto para WhatsApp" value={value.texto_whatsapp} onChange={set("texto_whatsapp")} rows={3} />
-            <Area label="Texto para bolsa de trabajo" value={value.texto_bolsa} onChange={set("texto_bolsa")} rows={4} />
-            <ListaEditable label="Avisos de cumplimiento" items={value.avisos_cumplimiento} onChange={set("avisos_cumplimiento")} />
+          <Seccion titulo="Avisos de cumplimiento">
+            <ListaEditable label="Avisos" items={value.avisos_cumplimiento} onChange={set("avisos_cumplimiento")} />
           </Seccion>
         </div>
       </section>
     </div>
+  );
+}
+
+const CANALES_TEXTO: { canal: CanalTexto; campo: "texto_whatsapp" | "texto_bolsa" | "texto_facebook"; titulo: string; ayuda: string; filas: number }[] = [
+  { canal: "whatsapp", campo: "texto_whatsapp", titulo: "Chat (WhatsApp / Telegram)", ayuda: "Mensaje breve con invitación a responder.", filas: 4 },
+  { canal: "bolsa", campo: "texto_bolsa", titulo: "Bolsa de trabajo / portal", ayuda: "Texto completo para bolsas y el portal.", filas: 6 },
+  { canal: "facebook", campo: "texto_facebook", titulo: "Facebook", ayuda: "Puesto, ubicación, pago, horario y requisitos. La liga (origen Facebook) se agrega al copiar desde la vacante.", filas: 7 },
+];
+
+/** Textos de publicación por canal: generar / regenerar con los datos FINALES del formulario, editar, copiar y
+ *  guardar (se guardan con la vacante o la plantilla). Nunca quedan vacíos: si RH deja uno vacío, el servidor lo arma. */
+function TextosPublicacion({
+  value, onChange, clienteId, mostrarCliente,
+}: { value: ContenidoVacante; onChange: (c: ContenidoVacante) => void; clienteId?: number | null; mostrarCliente: boolean }) {
+  const [ocupado, setOcupado] = useState<CanalTexto | "todos" | "">("");
+  const [error, setError] = useState("");
+  const hayTextos = Boolean(value.texto_whatsapp || value.texto_bolsa || value.texto_facebook);
+
+  async function generar(canales: CanalTexto[], clave: CanalTexto | "todos") {
+    if (!value.titulo.trim()) return setError("Escribe el puesto para generar los textos.");
+    setOcupado(clave);
+    setError("");
+    const p = contenidoComoPayload(value);
+    const r = await generarTextosPublicacion({
+      titulo: p.titulo, area: p.area, seniority: p.seniority, ubicacion: p.ubicacion, ubicacion_estado: p.ubicacion_estado,
+      ubicacion_municipio: p.ubicacion_municipio, modalidad: p.modalidad, sueldo_desde: p.sueldo_desde, sueldo_hasta: p.sueldo_hasta,
+      sueldo_moneda: p.sueldo_moneda, sueldo_periodicidad: p.sueldo_periodicidad, descripcion: p.descripcion, resumen: p.resumen,
+      requisitos_indispensables: p.requisitos_indispensables, requisitos_deseables: p.requisitos_deseables, beneficios: p.beneficios,
+      cliente_id: clienteId ?? null, mostrar_cliente_candidato: mostrarCliente, canales,
+    });
+    setOcupado("");
+    if (!r.ok) return setError(r.error);
+    const nuevo = { ...value };
+    for (const c of CANALES_TEXTO) {
+      const t = r.data.textos[c.canal];
+      if (t) nuevo[c.campo] = t;
+    }
+    onChange(nuevo);
+  }
+
+  return (
+    <section className="flex flex-col gap-3 rounded-xl border border-border-soft p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <Eyebrow>Textos de publicación</Eyebrow>
+          <p className="mt-0.5 text-xs text-ink-3">Se generan con los datos finales de arriba (incluidos tus cambios). Edítalos, cópialos y se guardan con {""}
+            la vacante o plantilla. Ninguno queda vacío.</p>
+        </div>
+        <Button type="button" size="sm" variant={hayTextos ? "outline" : "primary"} disabled={Boolean(ocupado)}
+          onClick={() => generar(CANALES_TEXTO.map((c) => c.canal), "todos")}>
+          <Sparkles className="h-4 w-4" /> {ocupado === "todos" ? "Generando…" : hayTextos ? "Regenerar todos" : "Generar textos"}
+        </Button>
+      </div>
+      {error && <p className="text-xs text-bad">{error}</p>}
+      {CANALES_TEXTO.map((c) => (
+        <div key={c.canal} className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-ink">{c.titulo}</span>
+            <span className="flex items-center gap-1">
+              {value[c.campo] && <BotonCopiar texto={value[c.campo]} etiqueta="Copiar" />}
+              <button type="button" disabled={Boolean(ocupado)} onClick={() => generar([c.canal], c.canal)}
+                className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-[12px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">
+                <RefreshCw className="h-3.5 w-3.5" /> {ocupado === c.canal ? "…" : value[c.campo] ? "Regenerar" : "Generar"}
+              </button>
+            </span>
+          </div>
+          <Area label="" value={value[c.campo]} onChange={(t) => onChange({ ...value, [c.campo]: t })} rows={c.filas} placeholder={c.ayuda} />
+        </div>
+      ))}
+    </section>
   );
 }

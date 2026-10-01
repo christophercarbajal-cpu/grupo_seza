@@ -328,10 +328,43 @@ def _aplicar_generado(v: Vacante, g: ia.VacanteGenerada) -> None:
 # ------------------------------------------------------------
 
 
+class TextosIn(GenerarIn):
+    """Generar textos de publicación con los datos FINALES del formulario (Nueva vacante o Plantilla, con cambios)."""
+    resumen: str = ""
+    horario: str = ""  # jornada/horario capturado (si existe)
+    jornada_horas: Optional[int] = None
+    canales: List[str] = ["whatsapp", "bolsa", "facebook"]
+
+
+@router.post("/textos")
+def generar_textos(datos: TextosIn, db: Session = Depends(get_db), _: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    """Textos para chat, bolsa/portal y Facebook. Nunca regresa vacíos (base determinista con lo capturado) y nunca
+    inventa condiciones. No guarda nada: RH edita y guarda con la vacante o la plantilla."""
+    from ..services import difusion
+
+    _validar_sueldo(datos)
+    empresa = _empresa_resuelta(db, cuenta, datos.cliente_id, datos.mostrar_cliente_candidato)
+    sueldo = datos.sueldo_texto()
+    d = {
+        "titulo": datos.titulo.strip(), "empresa": empresa, "ubicacion": datos.ubicacion_texto(), "modalidad": datos.modalidad,
+        "sueldo": "" if sueldo in ("", "A convenir") else sueldo,
+        "horario": datos.horario.strip() or (f"Jornada de {datos.jornada_horas} horas" if datos.jornada_horas else ""),
+        "requisitos": datos.indispensables(), "beneficios": [b for b in datos.beneficios if b.strip()],
+        "resumen": datos.resumen.strip() or datos.descripcion.strip(),
+    }
+    if not d["titulo"]:
+        raise HTTPException(400, "Escribe el puesto para generar los textos.")
+    base = difusion.textos_base(d)
+    textos, con_ia = ia.textos_publicacion({k: (", ".join(v) if isinstance(v, list) else v) for k, v in d.items()}, base)
+    canales = [c for c in datos.canales if c in base] or list(base)
+    return {"ia": con_ia, "empresa": empresa, "textos": {c: textos[c] for c in canales}}
+
+
 class CrearIn(GenerarIn):
     descripcion: str = ""
     texto_whatsapp: str = ""
     texto_bolsa: str = ""
+    texto_facebook: str = ""
     preguntas_filtro: List[dict] = []
     preguntas_filtro_whatsapp: List[dict] = []  # Fase 4: independientes de las de la web
     publicaciones: Dict[str, dict] = {}
@@ -413,6 +446,7 @@ def crear(
         descripcion=datos.descripcion,
         texto_whatsapp=datos.texto_whatsapp,
         texto_bolsa=datos.texto_bolsa,
+        texto_facebook=datos.texto_facebook,
         preguntas_filtro=datos.preguntas_filtro,
         preguntas_filtro_whatsapp=datos.preguntas_filtro_whatsapp,
         plataformas=plataformas,
@@ -440,6 +474,9 @@ def crear(
         entrada_generador = GenerarIn(**datos.model_dump(include=set(GenerarIn.model_fields)))
         generado, con_ia = _generar(entrada_generador, v.empresa)
         _aplicar_generado(v, generado)
+    from ..services import difusion
+
+    difusion.completar_textos(v, v.empresa)  # 2026-09-30: ningún texto de publicación queda vacío
 
     db.add(v)
     db.flush()
@@ -583,6 +620,7 @@ class ActualizarIn(BaseModel):
     seniority: Optional[str] = None
     texto_whatsapp: Optional[str] = None
     texto_bolsa: Optional[str] = None  # CRUD: el formulario de edición manda el contenido completo
+    texto_facebook: Optional[str] = None
     avisos_cumplimiento: Optional[List[str]] = None
     preguntas_filtro: Optional[List[dict]] = None
     preguntas_filtro_whatsapp: Optional[List[dict]] = None  # Fase 4
@@ -663,6 +701,9 @@ def actualizar(
         v.slug = _slug_unico(db, v.titulo, v.id)
     if datos.publicaciones:
         v.texto_bolsa = (datos.publicaciones.get("occ") or {}).get("page", v.texto_bolsa)
+    from ..services import difusion
+
+    difusion.completar_textos(v, v.empresa)
 
     registrar(db, u.nombre, "vacante_editada", "vacante", v.codigo, {"campos": sorted(cambios)})
     db.commit()
@@ -811,6 +852,39 @@ def pieza_facebook(
     """Demo SEZA (2026-09-29): copy, datos de la imagen y liga ÚNICA para publicar A MANO en Facebook.
     No publica nada: RH copia el texto y descarga la imagen (ver services/difusion.py)."""
     return difusion.pieza(_por_codigo(db, codigo, cuenta.id))
+
+
+class FacebookIn(BaseModel):
+    texto: str
+
+
+@router.post("/{codigo}/facebook/generar")
+def regenerar_facebook(codigo: str, db: Session = Depends(get_db), _: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    """Genera/regenera el texto de Facebook con los datos FINALES de la vacante (IA opcional, nunca inventa). No
+    guarda: RH lo edita y lo guarda con PATCH /vacantes/{codigo}/facebook."""
+    from ..services import difusion
+
+    v = _por_codigo(db, codigo, cuenta.id)
+    d = difusion.datos_de(v, nombre_empresa_candidato(v))
+    base = difusion.textos_base(d)
+    textos, con_ia = ia.textos_publicacion({k: (", ".join(x) if isinstance(x, list) else x) for k, x in d.items()}, base)
+    pieza = difusion.pieza(v)
+    return {**pieza, "copy": textos["facebook"], "copyConLiga": f"{textos['facebook']}\n\n👉 Postúlate aquí: {pieza['liga']}", "ia": con_ia, "sinGuardar": True}
+
+
+@router.patch("/{codigo}/facebook")
+def guardar_facebook(codigo: str, datos: FacebookIn, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    """Guarda el texto editado de Facebook (vacío = se vuelve a armar con los datos de la vacante)."""
+    from ..services import difusion
+
+    v = _por_codigo(db, codigo, cuenta.id)
+    v.texto_facebook = datos.texto.strip()[:5000]
+    difusion.completar_textos(v, nombre_empresa_candidato(v))
+    if "Facebook" not in (v.plataformas or []):
+        v.plataformas = [*(v.plataformas or []), "Facebook"]
+    registrar(db, u.nombre, "facebook_texto_guardado", "vacante", v.codigo, {"caracteres": len(v.texto_facebook)})
+    db.commit()
+    return difusion.pieza(v)
 
 
 @router.get("/{codigo}/publicacion/{plataforma}")

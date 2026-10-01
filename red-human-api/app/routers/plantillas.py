@@ -52,6 +52,7 @@ def _plantilla_dict(p: Plantilla) -> dict:
         "ubicacionMunicipio": p.ubicacion_municipio or "",
         "textoWhatsapp": p.texto_whatsapp,
         "textoBolsa": p.texto_bolsa,
+        "textoFacebook": p.texto_facebook or "",
         "enfoqueEntrevista": p.enfoque_entrevista or "profesional",
         "creadoPor": p.creado_por,
         "creada": p.creada_en.isoformat(),
@@ -127,6 +128,7 @@ class PlantillaIn(BaseModel):
     ubicacion_municipio: str = ""
     texto_whatsapp: str = ""
     texto_bolsa: str = ""
+    texto_facebook: str = ""
     enfoque_entrevista: str = "profesional"
     prefiltro_reglas: dict = {}  # demo SEZA
     cv_obligatorio: bool = True
@@ -148,6 +150,9 @@ def _crear_plantilla(db: Session, cuenta: Cuenta, u: Usuario, datos: PlantillaIn
         campos["sueldo"] = texto_sueldo(datos.sueldo_desde, datos.sueldo_hasta, datos.sueldo_moneda, datos.sueldo_periodicidad)
     campos["ubicacion"] = texto_ubicacion(datos.ubicacion_estado, datos.ubicacion_municipio, datos.ubicacion)
     p = Plantilla(cuenta_id=cuenta.id, creado_por=u.nombre, **campos)
+    from ..services import difusion
+
+    difusion.completar_textos(p)  # 2026-09-30: ningún texto de publicación queda vacío
     db.add(p)
     db.flush()
     registrar(
@@ -266,6 +271,7 @@ class ActualizarIn(BaseModel):
     ubicacion_municipio: Optional[str] = None
     texto_whatsapp: Optional[str] = None
     texto_bolsa: Optional[str] = None
+    texto_facebook: Optional[str] = None
     enfoque_entrevista: Optional[str] = None
 
 
@@ -294,6 +300,9 @@ def actualizar(
         p.ubicacion = texto_ubicacion(p.ubicacion_estado, p.ubicacion_municipio, p.ubicacion)
 
     if cambios:
+        from ..services import difusion
+
+        difusion.completar_textos(p)
         registrar(db, u.nombre, "plantilla_editada", "plantilla", str(p.id), {"campos": sorted(cambios)})
         db.commit()
     return _plantilla_dict(p)
