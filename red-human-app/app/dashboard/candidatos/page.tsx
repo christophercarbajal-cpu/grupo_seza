@@ -150,13 +150,16 @@ const etapaColor: Record<EtapaCandidato, string> = {
   "Entrevista Humana": "var(--brand-2)",
   Contratación: "var(--warn)",
   Onboarding: "var(--good)",
-  Nuevo: "var(--ink-3)",
   "Revisión de vehículo": "var(--warn)",
-  "Cita para capacitación": "var(--brand)",
-  "Capacitación realizada": "var(--human)",
-  "Documentos y referencias": "var(--brand-2)",
-  "Listo para alta": "var(--good)",
-  "Alta realizada": "var(--good)",
+  Entrevista: "var(--brand-2)",
+};
+
+const TONO_SUBESTADO: Record<string, string> = {
+  neutral: "bg-surface-2 text-ink-3",
+  warn: "bg-warn-soft text-warn",
+  good: "bg-good-soft text-good",
+  bad: "bg-bad-soft text-bad",
+  brand: "bg-brand-soft text-brand",
 };
 
 /** Zero-touch: la IA ya avanzó sola al candidato hasta aquí; esto es solo el siguiente
@@ -1298,7 +1301,14 @@ function TarjetaKanban({
 
         {/* Estado del prefiltro / validación */}
         <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1">
-          {c.prefiltroReglas ? <BadgePrefiltroReglas r={c.prefiltroReglas} /> : <EstadoBadge estado={c.estado} />}
+          {c.operativo?.texto && (
+            <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-bold", TONO_SUBESTADO[c.operativo.tono] ?? TONO_SUBESTADO.neutral)} title="Estado en esta columna">
+              {c.operativo.texto}
+            </span>
+          )}
+          {c.prefiltroReglas
+            ? (c.flujo !== "operativo" || c.prefiltroReglas.completo) && <BadgePrefiltroReglas r={c.prefiltroReglas} />
+            : <EstadoBadge estado={c.estado} />}
           {c.resultadoApto === true && (
             <span className="rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold text-good">Apto</span>
           )}
@@ -1442,13 +1452,17 @@ function ModalCandidato({
   }
   // Demo SEZA: con prefiltro por reglas, en Prefiltro la ficha abre directo en «Prefiltro / Vehículo»
   const [tab, setTab] = useState<TabCandidato>(() =>
-    c.etapa === "Contratación"
-      ? "contratacion"
-      : c.flujo === "operativo" && ["Cita para capacitación", "Capacitación realizada", "Documentos y referencias", "Listo para alta", "Alta realizada"].includes(c.etapa)
-        ? "operativo"
-        : c.prefiltroReglas && ["Nuevo", "Prefiltro", "Revisión de vehículo"].includes(c.etapa)
-          ? "vehiculo"
-          : "resumen",
+    c.flujo === "operativo"
+      ? c.prefiltroReglas && ["Prefiltro", "Revisión de vehículo"].includes(c.etapa)
+        ? "vehiculo"
+        : c.etapa === "Evaluación"
+          ? "evaluaciones"
+          : ["Entrevista", "Contratación", "Onboarding"].includes(c.etapa)
+            ? "operativo"
+            : "resumen"
+      : c.etapa === "Contratación"
+        ? "contratacion"
+        : "resumen",
   );
   // Si el candidato ENTRA a Contratación mientras el modal ya está abierto (p.ej. RH lo mueve
   // de etapa sin cerrar la ficha), salta solo a esa pestaña para que no se pierda entre las
@@ -1456,7 +1470,7 @@ function ModalCandidato({
   const etapaAnterior = useRef(c.etapa);
   useEffect(() => {
     if (c.etapa === "Contratación" && etapaAnterior.current !== "Contratación") {
-      setTab("contratacion");
+      setTab(c.flujo === "operativo" ? "operativo" : "contratacion");
     }
     etapaAnterior.current = c.etapa;
   }, [c.etapa]);
@@ -1740,13 +1754,14 @@ function ModalCandidato({
               [
                 { id: "resumen", label: "Resumen", icon: User, tone: "brand" },
                 ...(c.prefiltroReglas ? [{ id: "vehiculo", label: "Prefiltro / Vehículo", icon: Car, tone: "warn" }] : []),
-                ...(c.flujo === "operativo" ? [{ id: "operativo", label: "Capacitación y alta", icon: GraduationCap, tone: "human" }] : []),
+                ...(c.flujo === "operativo" ? [{ id: "operativo", label: "Entrevista, contratación y alta", icon: GraduationCap, tone: "human" }] : []),
                 { id: "evaluaciones", label: "Evaluación integral", icon: Sparkles, tone: "human" },
                 { id: "documentos", label: "CV y documentos", icon: FileText, tone: "brand" },
                 { id: "whatsapp", label: "WhatsApp", icon: MessageCircle, tone: "good", badge: c.mensajes },
                 // 2026-09-17: la pestaña del expediente (checklist de documentos) vive en Contratación Y
                 // Onboarding — antes desaparecía al pasar a Onboarding y RH ya no veía qué faltaba.
-                ...(c.etapa === "Contratación" || c.etapa === "Onboarding"
+                // Flujo operativo: Contratación y Onboarding viven en su propio panel (simplificado)
+                ...((c.etapa === "Contratación" || c.etapa === "Onboarding") && c.flujo !== "operativo"
                   ? [{ id: "contratacion", label: c.etapa === "Onboarding" ? "Expediente" : "Contratación", icon: Briefcase, tone: "warn" }]
                   : []),
               ] as { id: TabCandidato; label: string; icon: typeof User; tone: string; badge?: number }[]
@@ -1815,7 +1830,7 @@ function ModalCandidato({
           {tab === "evaluaciones" && <PestanaEvaluaciones c={c} live={live} onCambio={onCambio} versionEval={versionEval} />}
           {tab === "documentos" && <PestanaDocumentos c={c} live={live} onCambio={onCambio} setAviso={setAviso} />}
           {tab === "whatsapp" && <PestanaWhatsApp c={c} live={live} onCambio={onCambio} />}
-          {tab === "contratacion" && (c.etapa === "Contratación" || c.etapa === "Onboarding") && (
+          {tab === "contratacion" && (c.etapa === "Contratación" || c.etapa === "Onboarding") && c.flujo !== "operativo" && (
             <PanelContratacion c={c} live={live} onCambio={onCambio} setAviso={setAviso} onDocumentos={setConfirmacion} onDescartar={descartar} />
           )}
         </div>
@@ -2051,7 +2066,7 @@ function ModalCandidato({
                   className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
                 >
                   <option value="">Elige…</option>
-                  {(c.flujo === "operativo" ? ETAPAS_OPERATIVO_KANBAN.filter((e) => e !== "Alta realizada") : ETAPAS_RH)
+                  {(c.flujo === "operativo" ? ETAPAS_OPERATIVO_KANBAN : ETAPAS_RH)
                     .filter((e) => e !== c.etapa)
                     .map((e) => (
                       <option key={e} value={e}>{nombreEtapa(e)}</option>

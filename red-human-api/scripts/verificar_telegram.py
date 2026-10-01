@@ -152,10 +152,10 @@ def main():
         c.post(f"/candidatos/{codigo}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Revisado en persona"}, headers=h)
         cursos = c.get("/capacitacion", headers=h).json()
         induccion = next(x for x in (cursos if isinstance(cursos, list) else cursos.get("cursos", [])) if x.get("titulo") == "Inducción SEZA")
-        s = c.post("/sesiones-capacitacion", json={"tienda": "Tienda TG", "inicio": "2030-03-01T09:00", "cupo": 5, "supervisor_nombre": "Sup",
-                                                  "vacante": puebla.codigo, "curso_induccion": induccion["id"]}, headers=h).json()
         i = len(LLAMADAS)
-        c.post(f"/candidatos/{codigo}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
+        c.post(f"/candidatos/{codigo}/operativo/entrevista", json={"tienda": "Tienda TG", "fecha": "2030-03-01", "hora": "09:00",
+                                                                     "capacitador_tipo": "externo", "capacitador_nombre": "Sup",
+                                                                     "curso_induccion": induccion["id"]}, headers=h)
         env = enviados_desde(i)
         check(any("¿Confirmas tu asistencia?" in x["json"].get("text", "") and x["json"].get("chat_id") == str(CHAT) for x in env),
               "RH cita → el aviso sale al chat de Telegram del candidato (envío por teléfono → chat)")

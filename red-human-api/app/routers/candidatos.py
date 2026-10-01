@@ -114,8 +114,6 @@ def crear_postulacion(
 ) -> Postulacion:
     """ÚNICO lugar donde nace una Postulación (webhooks, entrevistas y scripts la reutilizan):
     el código P-#### siempre sale del id de la postulación, nunca del de la persona."""
-    if etapa == "Prefiltro" and flujo_operativo.es_operativa(db.get(Cuenta, cuenta_id)):
-        etapa = flujo_operativo.NUEVO  # demo SEZA: el Kanban operativo arranca en «Nuevo»
     p = Postulacion(
         codigo="TMP",
         candidato_id=c.id,
@@ -1528,11 +1526,11 @@ async def _turno_prefiltro_reglas(db: Session, p: Postulacion, texto: str, canal
 
 
 async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
-    """Demo SEZA: WhatsApp en el Kanban operativo. Prefiltro por reglas mientras no termine; con una cita de
-    capacitación sin confirmar, un «Sí» la confirma (y sale el PDF de inducción simulado); en lo demás el
+    """Demo SEZA: chat (Telegram/WhatsApp) en el Kanban operativo. Prefiltro por reglas mientras no termine; con
+    una cita de capacitación sin confirmar, un «Sí» la confirma (y sale el PDF de inducción); en lo demás el
     candidato recibe en qué va su proceso. Nunca pasa por el agente conversacional ni por el Zero-Touch."""
     v = p.vacante
-    if v and prefiltro_reglas.activo(v.prefiltro_reglas) and p.etapa in (flujo_operativo.NUEVO, flujo_operativo.PREFILTRO, flujo_operativo.VEHICULO):
+    if v and prefiltro_reglas.activo(v.prefiltro_reglas) and p.etapa in (flujo_operativo.PREFILTRO, flujo_operativo.VEHICULO):
         return await _turno_prefiltro_reglas(db, p, texto, canal)
 
     async def decir(msg: str) -> dict:
@@ -1543,21 +1541,23 @@ async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) 
         return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": envio}
 
     nombre = nombre_ficha(p)
-    if p.etapa == flujo_operativo.CITA:
-        ev = flujo_operativo.evaluacion_capacitacion(db, p)
-        if ev and ev.sesion_id and not ev.cita_confirmada_en and ev.estado not in ("revisada", "fallida"):
+    if p.etapa == flujo_operativo.ENTREVISTA:
+        ev = flujo_operativo.entrevista_actual(p)
+        if ev and not ev.confirmada_en and not ev.asistencia and not ev.realizada:
             if prefiltro_reglas.interpretar({"id": "x", "tipo": "si_no"}, texto) == "si" or "confirm" in texto.lower():
                 r = await flujo_operativo.confirmar_cita(db, p, "candidato")
                 extra = " Te acabamos de compartir el material de inducción para que lo revises antes." if r.get("induccion") else ""
                 return await decir(f"¡Listo, {nombre}! Tu asistencia quedó confirmada. Te esperamos.{extra}")
             return await decir(f"{nombre}, ¿confirmas tu asistencia a la capacitación? Responde *Sí*. Si necesitas otra fecha, dinos y RH te reprograma.")
-        if ev and ev.cita_confirmada_en:
+        if ev and ev.confirmada_en and not ev.asistencia:
             return await decir(f"Tu cita ya está confirmada, {nombre}. Si necesitas cambiarla, RH te contactará por aquí.")
+        if ev and ev.asistencia:
+            return await decir(f"Gracias, {nombre}. RH revisa el resultado de tu capacitación y te avisa por este medio.")
         return await decir(f"Gracias, {nombre}. En breve RH te comparte la fecha de tu capacitación.")
-    if p.etapa in (flujo_operativo.DOCUMENTOS, flujo_operativo.CAPACITADO) and p.expediente:
+    if p.etapa == flujo_operativo.ONBOARDING and p.expediente:
+        if not flujo_operativo.faltantes_para_alta(p):
+            return await decir(f"¡Gracias, {nombre}! Tu expediente está completo; RH te confirma tu fecha de ingreso por este medio.")
         return await decir(f"{nombre}, puedes subir tus documentos y tus 3 referencias aquí: {flujo_operativo.liga_expediente(p.expediente)}")
-    if p.etapa in (flujo_operativo.LISTO, flujo_operativo.ALTA):
-        return await decir(f"¡Gracias, {nombre}! Tu expediente está completo; RH te confirma tu fecha de ingreso por este medio.")
     return await decir(f"Gracias, {nombre}. Tu información está con el equipo de RH; te contactamos por este medio.")
 
 
@@ -1994,7 +1994,10 @@ async def mover_etapa(
             raise HTTPException(409, f"La postulación ya está en {datos.etapa}.")
         if not p.activa:
             p.activa, p.motivo_cierre, p.cerrada_en = True, "", None
-        flujo_operativo.mover(db, p, datos.etapa, u.nombre, (datos.comentario or "Movimiento manual").strip())
+        if datos.etapa == flujo_operativo.ONBOARDING:  # mismo efecto que «Enviar a Onboarding»: pide documentos
+            await flujo_operativo.enviar_a_onboarding(db, p, u.nombre, True)
+        else:
+            flujo_operativo.mover(db, p, datos.etapa, u.nombre, (datos.comentario or "Movimiento manual").strip())
         db.commit()
         return postulacion_dict(p, detalle=True)
     await aplicar_movimiento(db, p, datos, u, forzar_prueba)

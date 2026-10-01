@@ -1,12 +1,13 @@
-"""Demo Grupo SEZA — puntos 5 a 8 (2026-09-29). Lo usa `cargar_demo_seza.py` (no se corre solo).
+"""Demo Grupo SEZA — flujo operativo v2 (2026-09-30). Lo usa `cargar_demo_seza.py` (no se corre solo).
 
-* Kanban operativo en la Cuenta (`Cuenta.flujo_candidatos = "operativo"`).
+* Kanban operativo en la Cuenta (`Cuenta.flujo_candidatos = "operativo"`), 6 columnas: Prefiltro → Revisión de
+  vehículo → Entrevista → Evaluación → Contratación → Onboarding.
 * «Inducción SEZA»: DUPLICADO de un curso existente (el primero con módulos de cualquier Cuenta; si la base no
   tiene ninguno se crea antes un curso base de inducción para choferes y se duplica ese).
-* Sesiones de «Capacitación en tienda» por plaza: una ya realizada y una próxima, con cupo y supervisor.
-* Candidatos FICTICIOS que recorren las 8 etapas con las funciones reales del flujo (prefiltro por reglas,
-  fotos del vehículo, cita, asistencia del supervisor, documentos, referencias y alta), para probar el tablero y
-  sus contadores. Sin teléfono y con correo `@demo.invalid`: ningún mensaje puede salir. Idempotente por correo.
+* Candidatos FICTICIOS que recorren las 6 columnas con las funciones reales del flujo (prefiltro por reglas, fotos
+  y documentos del vehículo, capacitación en tienda con su capacitador, condiciones y contrato, documentos,
+  referencias y alta). Sin teléfono y con correo `@demo.invalid`: ningún mensaje puede salir. Idempotente por
+  correo. Uno queda dado de alta (postulación cerrada como `contratado`: se ve con «Mostrar cerradas»).
 """
 
 import asyncio
@@ -14,9 +15,7 @@ import struct
 import zlib
 from datetime import datetime, timedelta, timezone
 
-from app.models import (
-    Archivo, Candidato, Curso, Documento, ModuloCurso, Postulacion, SesionCapacitacion, registrar,
-)
+from app.models import DOCUMENTOS_VEHICULO, Archivo, Candidato, Curso, ModuloCurso, registrar
 from app.routers.candidatos import _crear_candidato, cerrar_prefiltro_reglas, crear_postulacion
 from app.routers.capacitacion import duplicar_curso
 from app.services import archivos as fs
@@ -92,43 +91,12 @@ def induccion(db, cuenta, admin) -> Curso:
     return copia
 
 
-# ------------------------------------------------------------ sesiones
+# ------------------------------------------------------------ capacitadores por plaza
 
 
-SUPERVISORES = {"Puebla": ("Rocío Hernández", "Tienda SEZA Angelópolis", "Blvd. del Niño Poblano 2510, Puebla"),
-                "San José del Cabo": ("Martín Castro", "Tienda SEZA San José", "Blvd. Mijares 1200, San José del Cabo"),
-                "CDMX": ("Laura Méndez", "Tienda SEZA Iztapalapa", "Calz. Ermita Iztapalapa 3016, CDMX")}
-
-
-def _nueva_sesion(db, cuenta, v, plaza, cuando, cupo, curso, estado) -> SesionCapacitacion:
-    import secrets
-
-    sup, tienda, direccion = SUPERVISORES[plaza]
-    s = SesionCapacitacion(codigo="TMP", cuenta_id=cuenta.id, vacante_id=v.id, tienda=tienda, direccion=direccion, inicio=cuando,
-                           duracion_min=180, cupo=cupo, supervisor_nombre=sup, curso_induccion_id=curso.id, token=secrets.token_urlsafe(24),
-                           indicaciones="Llega 15 minutos antes con tu INE y licencia. Viste ropa cómoda y zapato cerrado.",
-                           estado=estado, creada_por=ACTOR)
-    db.add(s)
-    db.flush()
-    s.codigo = f"SES-{300 + s.id}"
-    return s
-
-
-def sesiones(db, cuenta, vacantes_por_plaza, curso) -> dict:
-    """{plaza: (pasada, proxima)} — idempotente por vacante."""
-    hoy = datetime.now(TZ_MEXICO).replace(hour=9, minute=0, second=0, microsecond=0)
-    salida = {}
-    for plaza, v in vacantes_por_plaza.items():
-        previas = db.query(SesionCapacitacion).filter(SesionCapacitacion.cuenta_id == cuenta.id, SesionCapacitacion.vacante_id == v.id).order_by(SesionCapacitacion.inicio).all()
-        if len(previas) >= 2:
-            salida[plaza] = (previas[0], previas[-1])
-            print(f"  = Sesiones de {plaza} ya existían ({previas[0].codigo}, {previas[-1].codigo})")
-            continue
-        pasada = _nueva_sesion(db, cuenta, v, plaza, (hoy - timedelta(days=3)).astimezone(timezone.utc), 12, curso, "cerrada")
-        proxima = _nueva_sesion(db, cuenta, v, plaza, (hoy + timedelta(days=2)).astimezone(timezone.utc), 8, curso, "programada")
-        salida[plaza] = (pasada, proxima)
-        print(f"  + Sesiones {plaza}: {pasada.codigo} (realizada, cupo 12) y {proxima.codigo} (próxima, cupo 8)")
-    return salida
+CAPACITADORES = {"Puebla": ("Rocío Hernández", "Tienda SEZA Angelópolis", "Blvd. del Niño Poblano 2510, Puebla"),
+                 "San José del Cabo": ("Martín Castro", "Tienda SEZA San José", "Blvd. Mijares 1200, San José del Cabo"),
+                 "CDMX": ("Laura Méndez", "Tienda SEZA Iztapalapa", "Calz. Ermita Iztapalapa 3016, CDMX")}
 
 
 # ------------------------------------------------------------ candidatos ficticios
@@ -144,36 +112,39 @@ BASE = {"jornada": "si", "experiencia": "si", "vehiculo_propio": "si", "taxi": "
 
 # (nombre, plaza, etapa objetivo, variante, fuente)
 FICTICIOS = [
-    ("Jorge Luis Ramírez Soto", "Puebla", "Nuevo", "", "WhatsApp"),
-    ("María Guadalupe Flores", "CDMX", "Nuevo", "", "Facebook"),
-    ("Enrique Salazar Vega", "San José del Cabo", "Nuevo", "", "WhatsApp"),
-    ("Óscar Martínez Luna", "CDMX", "Prefiltro", "en_curso", "WhatsApp"),
+    ("Jorge Luis Ramírez Soto", "Puebla", "Prefiltro", "sin_iniciar", "WhatsApp"),
+    ("María Guadalupe Flores", "CDMX", "Prefiltro", "sin_iniciar", "Facebook"),
+    ("Enrique Salazar Vega", "San José del Cabo", "Prefiltro", "sin_iniciar", "Telegram"),
+    ("Óscar Martínez Luna", "CDMX", "Prefiltro", "en_curso", "Telegram"),
     ("Brenda Aguilar Ríos", "Puebla", "Prefiltro", "revision_anio", "Facebook"),
     ("Raúl Domínguez Paz", "CDMX", "Prefiltro", "revision_licencia", "Formulario"),
     ("Sergio Navarro Cruz", "San José del Cabo", "Prefiltro", "no_cumple", "Facebook"),
     ("Luis Fernando Ortega", "Puebla", "Revisión de vehículo", "sin_fotos", "Facebook"),
-    ("Adriana Torres Mejía", "CDMX", "Revisión de vehículo", "por_revisar", "WhatsApp"),
+    ("Adriana Torres Mejía", "CDMX", "Revisión de vehículo", "por_revisar", "Telegram"),
     ("Carlos Eduardo Reyes", "San José del Cabo", "Revisión de vehículo", "correccion", "Formulario"),
     ("Daniel Herrera Campos", "CDMX", "Revisión de vehículo", "por_revisar", "Facebook"),
-    ("Miguel Ángel Rosas", "Puebla", "Cita para capacitación", "confirmada", "Facebook"),
-    ("Verónica Castillo Díaz", "CDMX", "Cita para capacitación", "por_confirmar", "WhatsApp"),
-    ("Javier Morales Peña", "San José del Cabo", "Cita para capacitación", "confirmada", "Facebook"),
-    ("Hugo Sánchez Ibarra", "CDMX", "Cita para capacitación", "por_confirmar", "Formulario"),
-    ("Alejandro Vázquez Gil", "Puebla", "Capacitación realizada", "favorable", "Facebook"),
-    ("Patricia León Trejo", "CDMX", "Capacitación realizada", "con_observaciones", "WhatsApp"),
-    ("Fernando Ruiz Olvera", "San José del Cabo", "Capacitación realizada", "desfavorable", "Facebook"),
-    ("Ricardo Jiménez Mora", "CDMX", "Documentos y referencias", "sin_nada", "Facebook"),
-    ("Claudia Romero Estrada", "Puebla", "Documentos y referencias", "parcial", "WhatsApp"),
-    ("Armando Gutiérrez Silva", "CDMX", "Documentos y referencias", "refs_sin_contactar", "Facebook"),
-    ("Gabriela Medina Luján", "San José del Cabo", "Listo para alta", "", "Formulario"),
-    ("Roberto Cervantes Paredes", "CDMX", "Listo para alta", "", "Facebook"),
-    ("Iván Delgado Fuentes", "Puebla", "Alta realizada", "", "Facebook"),
-    ("Tomás Guerrero Álvarez", "CDMX", "Alta realizada", "", "WhatsApp"),
+    ("Miguel Ángel Rosas", "Puebla", "Entrevista", "por_citar", "Facebook"),
+    ("Verónica Castillo Díaz", "CDMX", "Entrevista", "por_confirmar", "Telegram"),
+    ("Javier Morales Peña", "San José del Cabo", "Entrevista", "confirmada", "Facebook"),
+    ("Hugo Sánchez Ibarra", "CDMX", "Entrevista", "favorable", "Formulario"),
+    ("Alejandro Vázquez Gil", "Puebla", "Entrevista", "con_observaciones", "Facebook"),
+    ("Patricia León Trejo", "CDMX", "Entrevista", "desfavorable", "Telegram"),
+    ("Fernando Ruiz Olvera", "San José del Cabo", "Evaluación", "", "Facebook"),
+    ("Ricardo Jiménez Mora", "CDMX", "Evaluación", "", "Facebook"),
+    ("Claudia Romero Estrada", "Puebla", "Contratación", "sin_condiciones", "Telegram"),
+    ("Armando Gutiérrez Silva", "CDMX", "Contratación", "contrato_despues", "Facebook"),
+    ("Gabriela Medina Luján", "San José del Cabo", "Onboarding", "sin_nada", "Formulario"),
+    ("Roberto Cervantes Paredes", "CDMX", "Onboarding", "refs_sin_contactar", "Facebook"),
+    ("Iván Delgado Fuentes", "Puebla", "Onboarding", "listo", "Facebook"),
+    ("Tomás Guerrero Álvarez", "CDMX", "Onboarding", "alta", "Telegram"),
 ]
 REFS = [("Ana Soto", "Familiar"), ("Pedro Luna", "Exjefe o excompañero"), ("Rosa Vega", "Amistad")]
+SUELDOS = {"Puebla": "$650 MXN diarios, pago semanal", "San José del Cabo": "$800 MXN diarios, pago quincenal",
+           "CDMX": "$780 MXN diarios, pago quincenal"}
 
 
 def _fotos(db, p, faltantes=0):
+    """4 fotos + los 3 documentos del vehículo (Recibidos, falta que RH los revise)."""
     r = vehiculo_srv.obtener_o_crear(db, p)
     colores = {"frente": (70, 110, 170), "atras": (90, 90, 100), "izquierdo": (120, 130, 140), "derecho": (140, 120, 110)}
     for lado in list(colores)[: 4 - faltantes]:
@@ -183,18 +154,23 @@ def _fotos(db, p, faltantes=0):
         db.add(a)
         db.flush()
         vehiculo_srv.registrar_foto(db, r, lado, a.id)
+    for clave in DOCUMENTOS_VEHICULO:
+        d = vehiculo_srv.documento(p, clave)
+        d.archivo = fs.guardar_bytes(PDF_DEMO, f"expedientes/{p.expediente.id}", f"{clave}.pdf")
+        d.estado, d.revisado_por, d.recibido_canal = "recibido", "", "liga"
+        vehiculo_srv.registrar_documento_subido(db, r, clave)
+    db.flush()
     return r
 
 
-def _documentos(db, p, cuantos_aprobados):
-    e = flujo.abrir_expediente(db, p, ACTOR)
-    for i, d in enumerate([d for d in e.documentos if not d.interno]):
-        if i >= cuantos_aprobados:
-            break
+def _documentos(db, p, cuantos):
+    """Sube y aprueba los primeros `cuantos` documentos PENDIENTES del expediente (los de Onboarding)."""
+    e = p.expediente
+    pendientes = [d for d in e.documentos if not d.interno and not d.aprobado]
+    for d in pendientes[:cuantos]:
         d.archivo = fs.guardar_bytes(PDF_DEMO, f"expedientes/{e.id}", f"{d.tipo[:30]}.pdf")
         d.estado, d.revisado_por = "recibido", "RH demo"
-        if hasattr(d, "recibido_canal"):
-            d.recibido_canal = "liga"
+        d.recibido_canal = "liga"
     db.flush()
     return e
 
@@ -206,15 +182,14 @@ def _referencias(db, p, contactadas, admin):
         flujo.marcar_referencia(e, i, True, "Confirma que lo conoce y lo recomienda.", admin.nombre, resultado="Favorable")
 
 
-async def _llevar(db, p, plaza, etapa, variante, admin, sesion_pasada, sesion_proxima):
+async def _llevar(db, p, plaza, etapa, variante, admin, curso):
     orden = flujo.ETAPAS_OPERATIVO.index(etapa)
-    if etapa == "Nuevo":
-        return
     resp = {**BASE, **RESP_OK[plaza]}
-    if variante == "en_curso":  # contestó las primeras 4 por WhatsApp
+    if variante == "sin_iniciar":
+        return
+    if variante == "en_curso":  # contestó las primeras 4 por chat
         p.analisis = {"prefiltro_reglas": {"respuestas": {k: resp[k] for k in ("municipio", "jornada", "experiencia", "vehiculo_propio")},
                                            "textos": {}, "pendiente": "tipo_vehiculo", "canal": "whatsapp"}}
-        flujo.mover(db, p, flujo.PREFILTRO, "agente-ia", "El candidato empezó el prefiltro")
         return
     if variante == "revision_anio":
         resp["anio_vehiculo"] = "2015"
@@ -224,47 +199,70 @@ async def _llevar(db, p, plaza, etapa, variante, admin, sesion_pasada, sesion_pr
         resp["jornada"] = "no"
     textos = {k: ({"si": "Sí", "no": "No"}.get(v, v)) for k, v in resp.items()}
     await cerrar_prefiltro_reglas(db, p, resp, textos, "web")
-    if orden <= 1:
+    if orden == 0:
         return
     # Revisión de vehículo
     if variante == "sin_fotos":
+        vehiculo_srv.obtener_o_crear(db, p)
         return
     _fotos(db, p)
     if variante == "correccion":
         vehiculo_srv.decidir(db, p, "correccion", admin.nombre, "La foto de atrás no muestra las placas.", ["atras"])
         return
-    if orden == 2:
+    if orden == 1:
         return
     vehiculo_srv.decidir(db, p, "aprobar", admin.nombre)
     flujo.al_decidir_vehiculo(db, p, "aprobar", admin.nombre)
-    # Cita
-    sesion = sesion_proxima if orden == 3 else sesion_pasada
-    await flujo.citar(db, p, sesion, admin.nombre)
-    if orden == 3 and variante == "por_confirmar":
+    # Entrevista (capacitación en tienda)
+    if variante == "por_citar":
+        return
+    sup, tienda, direccion = CAPACITADORES[plaza]
+    hoy = datetime.now(TZ_MEXICO)
+    pasada = variante in ("favorable", "con_observaciones", "desfavorable") or orden > 2
+    cuando = (hoy - timedelta(days=3)) if pasada else (hoy + timedelta(days=2))
+    await flujo.programar_entrevista(db, p, {
+        "tienda": tienda, "direccion": direccion, "fecha": cuando.strftime("%Y-%m-%d"), "hora": "09:00",
+        "capacitador_tipo": "externo", "capacitador_nombre": sup, "curso_induccion": curso.codigo,
+        "indicaciones": "Llega 15 minutos antes con tu INE y licencia. Viste ropa cómoda y zapato cerrado.",
+    }, admin.nombre)
+    if variante == "por_confirmar":
         return
     await flujo.confirmar_cita(db, p, "candidato")
-    if orden == 3:
+    if variante == "confirmada":
         return
-    ev = flujo.evaluacion_capacitacion(db, p)
     resultado = variante if variante in ("favorable", "con_observaciones", "desfavorable") else "favorable"
     comentario = {"con_observaciones": "Buen manejo, pero le costó usar la aplicación; reforzar en su primera semana.",
                   "desfavorable": "Llegó 40 minutos tarde y no siguió las indicaciones de seguridad."}.get(resultado, "Muy buena actitud y manejo.")
-    flujo.registrar_asistencia(db, ev, True, resultado, comentario, sesion.supervisor_nombre)
+    flujo.registrar_resultado(db, p, flujo.entrevista_actual(p), True, resultado, comentario, f"{sup} (capacitador)", "entrevistador")
+    if orden == 2:
+        return
+    flujo.mover(db, p, flujo.EVALUACION, admin.nombre, "Capacitación aprobada")
+    if orden == 3:
+        return
+    flujo.mover(db, p, flujo.CONTRATACION, admin.nombre, "Evaluaciones revisadas")
+    if variante == "sin_condiciones":
+        return
+    e = p.expediente
+    e.puesto = p.vacante.titulo
+    e.sueldo = SUELDOS[plaza]
+    e.tipo_contratacion = "Prestación de servicios"
+    e.fecha_ingreso = (datetime.now(timezone.utc) + timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    e.ubicacion = p.vacante.ubicacion or ""
+    e.condiciones_guardadas_en = datetime.now(timezone.utc)
+    flujo.decidir_contrato(db, p, "despues" if variante == "contrato_despues" else "ahora", admin.nombre)
     if orden == 4:
         return
-    await flujo.solicitar_documentos_referencias(db, p, admin.nombre)
+    await flujo.enviar_a_onboarding(db, p, admin.nombre, prueba=False)
     if variante == "sin_nada":
         return
-    total_docs = len(flujo.DOCUMENTOS_OPERATIVO)
-    _documentos(db, p, 4 if variante == "parcial" else total_docs)
-    _referencias(db, p, 0 if variante in ("parcial", "refs_sin_contactar") else 3, admin)
-    db.flush()  # (refresh(p) recargaría el expediente en cascada y perdería lo no escrito)
-    flujo.revisar_listo(db, p, admin.nombre)
-    if orden == 7:
+    _documentos(db, p, len(flujo.DOCUMENTOS_ONBOARDING))
+    _referencias(db, p, 0 if variante == "refs_sin_contactar" else 3, admin)
+    db.flush()
+    if variante == "alta":
         flujo.registrar_alta(db, p, admin, prueba=False)
 
 
-def candidatos(db, cuenta, admin, vacantes_por_plaza, ses) -> int:
+def candidatos(db, cuenta, admin, vacantes_por_plaza, curso) -> int:
     creados = 0
     for i, (nombre, plaza, etapa, variante, fuente) in enumerate(FICTICIOS, start=1):
         correo = f"seza.demo.{i:02d}@{DOMINIO}"
@@ -272,9 +270,8 @@ def candidatos(db, cuenta, admin, vacantes_por_plaza, ses) -> int:
             continue
         v = vacantes_por_plaza[plaza]
         c = _crear_candidato(db, cuenta.id, nombre, fuente, False, correo=correo)
-        p = crear_postulacion(db, c, v, cuenta.id, "whatsapp" if fuente == "WhatsApp" else "formulario", consentimiento=True)
-        pasada, proxima = ses[plaza]
-        asyncio.run(_llevar(db, p, plaza, etapa, variante, admin, pasada, proxima))
+        p = crear_postulacion(db, c, v, cuenta.id, "whatsapp" if fuente in ("WhatsApp", "Telegram") else "formulario", consentimiento=True)
+        asyncio.run(_llevar(db, p, plaza, etapa, variante, admin, curso))
         db.flush()
         if p.etapa != etapa:
             raise RuntimeError(f"{nombre}: quedó en «{p.etapa}», se esperaba «{etapa}» — faltan: {flujo.faltantes_para_alta(p)}")

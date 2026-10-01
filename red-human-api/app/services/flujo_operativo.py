@@ -1,25 +1,29 @@
-"""Flujo OPERATIVO de candidatos (demo Grupo SEZA, 2026-09-29) — el Kanban de 8 etapas:
+"""Flujo OPERATIVO de candidatos (demo Grupo SEZA) — v2 (2026-09-30), Kanban de 6 columnas:
 
-    Nuevo → Prefiltro → Revisión de vehículo → Cita para capacitación → Capacitación realizada
-          → Documentos y referencias → Listo para alta → Alta realizada
+    Prefiltro → Revisión de vehículo → Entrevista → Evaluación → Contratación → Onboarding
 
-Lo usa la Cuenta con `Cuenta.flujo_candidatos == "operativo"`. Aquí viven TODAS las transiciones (nada
-de Zero-Touch ni del agente conversacional) y sus candados:
+Lo usa la Cuenta con `Cuenta.flujo_candidatos == "operativo"`. Aquí viven TODAS las transiciones (nada de
+Zero-Touch ni del agente conversacional) y sus candados:
 
-* Nuevo → Prefiltro: el candidato empieza a contestar (WhatsApp) o manda el formulario web.
-* Prefiltro → Revisión de vehículo: «Cumple perfil» (o RH aprueba un «Requiere revisión»).
-* Revisión de vehículo → Cita para capacitación: RH aprueba el vehículo o marca excepción.
-* Cita → Capacitación realizada: el SUPERVISOR registra asistencia y resultado en su liga. El resultado se
-  ve como Apto / Requiere seguimiento / No apto y se guarda como dictamen Favorable / Con observaciones /
-  Desfavorable de la evaluación unificada «Otra» llamada «Capacitación en tienda».
-* → Documentos y referencias: RH pide documentos + 3 referencias (liga pública del expediente).
-* → Listo para alta: automático cuando los documentos están Aprobados y las 3 referencias contactadas.
-* → Alta realizada: RH registra el alta (crea el Colaborador). La postulación sigue ACTIVA en esa columna.
+* Todo candidato nuevo entra a Prefiltro: «Sin iniciar» → «En curso» → «Completado»; el RESULTADO (Cumple perfil /
+  Requiere revisión / No cumple) se muestra aparte (`estado_prefiltro` vs `Postulacion.estado`).
+* Prefiltro → Revisión de vehículo: «Cumple perfil» (o RH aprueba un «Requiere revisión»). El candidato sube 4 fotos
+  + licencia, tarjeta de circulación y póliza (los 3 documentos quedan en el EXPEDIENTE).
+* Revisión de vehículo → Entrevista: RH aprueba el vehículo o marca excepción.
+* Entrevista = capacitación en tienda sobre `EntrevistaHumana` (tienda, fecha/hora, capacitador; sin grupos ni
+  cupos). El capacitador registra asistencia + Apto / Requiere seguimiento / No apto en su liga, o RH a mano.
+  El envío de la cita (Telegram/WhatsApp) y el aviso al capacitador se registran aparte: un fallo NO bloquea.
+* Evaluación: el módulo de Evaluaciones; recibir un resultado nunca mueve la tarjeta (RH la mueve).
+* Contratación: condiciones (puesto, sueldo, tipo, fecha) + «Generar contrato» (ahora) o «Generar después de
+  Onboarding». «Enviar a Onboarding» pide los 6 documentos personales y 3 referencias.
+* Onboarding: documentos + referencias (registro de llamadas) → «Dar de alta» crea el Colaborador y CIERRA la
+  postulación (`contratado`).
 
-Toda decisión la toma una persona (RH o el supervisor) y queda en `Postulacion.historial` + bitácora. Modo
-Prueba se salta los candados, como el resto de la plataforma.
+Toda decisión la toma una persona (RH o el capacitador) y queda en `Postulacion.historial` + bitácora. Modo Prueba
+se salta los candados, como el resto de la plataforma.
 """
 
+import secrets
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -27,26 +31,23 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import (
+    DOCUMENTOS_VEHICULO,
     ETAPAS_OPERATIVO,
-    NOMBRE_CAPACITACION_TIENDA,
     RESULTADOS_CAPACITACION,
     Cuenta,
     Documento,
-    EvaluacionCandidato,
+    EntrevistaHumana,
     Postulacion,
-    SesionCapacitacion,
+    Usuario,
     registrar,
 )
-from . import evaluaciones as sev
 
-NUEVO, PREFILTRO, VEHICULO, CITA, CAPACITADO, DOCUMENTOS, LISTO, ALTA = ETAPAS_OPERATIVO
+PREFILTRO, VEHICULO, ENTREVISTA, EVALUACION, CONTRATACION, ONBOARDING = ETAPAS_OPERATIVO
 
-# Expediente de un chofer con unidad propia (se abre al pedir documentos y referencias)
-DOCUMENTOS_OPERATIVO = [
+# Lo que pide Onboarding. Los del vehículo (licencia, tarjeta, póliza) ya están en el expediente desde la
+# revisión del vehículo: NO se vuelven a pedir.
+DOCUMENTOS_ONBOARDING = [
     "Identificación oficial (INE)",
-    "Licencia de conducir vigente",
-    "Tarjeta de circulación",
-    "Póliza de seguro vigente",
     "Comprobante de domicilio",
     "CURP",
     "Constancia de Situación Fiscal / RFC",
@@ -64,6 +65,11 @@ RESULTADOS_REFERENCIA = {
     True: ["Favorable", "Con observaciones", "Desfavorable"],
     False: ["No contestó", "Número equivocado", "Buzón o fuera de servicio"],
 }
+
+# Subestado del Prefiltro (columna), separado del resultado.
+PREFILTRO_SIN_INICIAR, PREFILTRO_EN_CURSO, PREFILTRO_COMPLETADO = "Sin iniciar", "En curso", "Completado"
+
+CONTRATO_GENERADO, CONTRATO_DESPUES = "generado", "despues"
 
 
 def estado_documento(d: Documento) -> str:
@@ -111,141 +117,319 @@ def mover(db: Session, p: Postulacion, etapa: str, actor: str, motivo: str = "")
     registrar(db, actor, "etapa_operativa", "postulacion", p.codigo, {"de": anterior, "a": etapa, "motivo": motivo[:300]})
 
 
-# ------------------------------------------------------------ ganchos del prefiltro y del vehículo
+def _indice(etapa: str) -> int:
+    return ETAPAS_OPERATIVO.index(etapa) if etapa in ETAPAS_OPERATIVO else 0
+
+
+# ------------------------------------------------------------ prefiltro y vehículo
+
+
+def estado_prefiltro(p: Postulacion) -> str:
+    """Sin iniciar / En curso / Completado (la columna). El resultado va aparte en `Postulacion.estado`."""
+    if p.prefiltro_completo:
+        return PREFILTRO_COMPLETADO
+    respuestas = ((p.analisis or {}).get("prefiltro_reglas") or {}).get("respuestas") or {}
+    return PREFILTRO_EN_CURSO if respuestas else PREFILTRO_SIN_INICIAR
 
 
 def al_iniciar_prefiltro(db: Session, p: Postulacion) -> None:
-    if es_operativo(p) and p.etapa == NUEVO:
-        mover(db, p, PREFILTRO, "agente-ia", "El candidato empezó el prefiltro")
+    """Gancho del primer turno del prefiltro (la tarjeta ya nace en Prefiltro: solo queda en historial)."""
+    if es_operativo(p) and p.etapa == PREFILTRO and not (p.historial or []):
+        nota(p, "prefiltro_iniciado", "El candidato empezó el prefiltro", "agente-ia")
 
 
 def al_cerrar_prefiltro(db: Session, p: Postulacion, requiere_fotos: bool) -> None:
-    if not es_operativo(p) or p.etapa not in (NUEVO, PREFILTRO):
+    if not es_operativo(p) or p.etapa != PREFILTRO:
         return
     if p.estado == "cumple":
-        mover(db, p, VEHICULO if requiere_fotos else CITA, "agente-ia", "Prefiltro: Cumple perfil")
+        mover(db, p, VEHICULO if requiere_fotos else ENTREVISTA, "agente-ia", "Prefiltro: Cumple perfil")
     else:
-        mover(db, p, PREFILTRO, "agente-ia", "Prefiltro terminado; RH revisa el resultado")
+        nota(p, "prefiltro_completado", "Prefiltro completado; RH revisa el resultado", "agente-ia")
 
 
 def al_aprobar_prefiltro(db: Session, p: Postulacion, actor: str, requiere_fotos: bool) -> None:
-    if es_operativo(p) and p.etapa in (NUEVO, PREFILTRO):
-        mover(db, p, VEHICULO if requiere_fotos else CITA, actor, "Prefiltro aprobado por RH")
+    if es_operativo(p) and p.etapa == PREFILTRO:
+        mover(db, p, VEHICULO if requiere_fotos else ENTREVISTA, actor, "Prefiltro aprobado por RH")
 
 
 def al_decidir_vehiculo(db: Session, p: Postulacion, accion: str, actor: str) -> None:
     if not es_operativo(p):
         return
-    if accion in ("aprobar", "excepcion") and p.etapa in (NUEVO, PREFILTRO, VEHICULO):
-        mover(db, p, CITA, actor, "Vehículo aprobado" if accion == "aprobar" else "Vehículo aprobado por excepción")
-    elif accion == "correccion" and p.etapa in (NUEVO, PREFILTRO):
-        mover(db, p, VEHICULO, actor, "Corrección de fotos solicitada")
+    if accion in ("aprobar", "excepcion") and p.etapa in (PREFILTRO, VEHICULO):
+        mover(db, p, ENTREVISTA, actor, "Vehículo aprobado" if accion == "aprobar" else "Vehículo aprobado por excepción")
+    elif accion == "correccion" and p.etapa == PREFILTRO:
+        mover(db, p, VEHICULO, actor, "Corrección solicitada")
 
 
-# ------------------------------------------------------------ capacitación en tienda (evaluación unificada «Otra»)
+# ------------------------------------------------------------ expediente (vive desde la revisión del vehículo)
 
 
-def evaluacion_capacitacion(db: Session, p: Postulacion) -> Optional[EvaluacionCandidato]:
-    """La evaluación «Capacitación en tienda» más reciente de la postulación."""
-    return (
-        db.query(EvaluacionCandidato)
-        .filter(EvaluacionCandidato.postulacion_id == p.id, EvaluacionCandidato.tipo == "otra",
-                EvaluacionCandidato.nombre == NOMBRE_CAPACITACION_TIENDA)
-        .order_by(EvaluacionCandidato.id.desc())
-        .first()
-    )
+def expediente(db: Session, p: Postulacion, actor: str, tipos: Optional[List[str]] = None):
+    """Expediente de la postulación (lo crea si no existe) con los documentos `tipos` (idempotente: solo agrega
+    los que falten; nunca borra ni duplica)."""
+    from ..models import Expediente
+
+    e = p.expediente
+    if e is None:
+        e = Expediente(candidato_id=p.candidato_id, puesto=p.vacante.titulo if p.vacante else "", seleccionado_por=actor,
+                       token=secrets.token_urlsafe(24), referencias=[])
+        p.expediente = e
+        db.add(e)
+        db.flush()
+        registrar(db, actor, "expediente_abierto", "postulacion", p.codigo, {"expediente": e.id, "flujo": "operativo"})
+    existentes = {d.tipo for d in e.documentos}
+    nuevos = [t for t in (tipos or []) if t not in existentes]
+    for tipo in nuevos:
+        db.add(Documento(expediente_id=e.id, tipo=tipo, obligatorio=True))
+    if nuevos:
+        db.flush()
+        db.refresh(e)
+    return e
 
 
-def inscritos(db: Session, s: SesionCapacitacion) -> List[EvaluacionCandidato]:
-    """Citados vigentes de la sesión (una cita cancelada o «no asistió» libera el lugar para otra sesión,
-    pero sigue ocupando el suyo en la lista de asistencia de ESTA sesión)."""
-    return (
-        db.query(EvaluacionCandidato)
-        .filter(EvaluacionCandidato.sesion_id == s.id)
-        .order_by(EvaluacionCandidato.id)
-        .all()
-    )
+def abrir_expediente(db: Session, p: Postulacion, actor: str):
+    """Expediente completo de un chofer: documentos del vehículo + los de Onboarding."""
+    return expediente(db, p, actor, [*DOCUMENTOS_VEHICULO.values(), *DOCUMENTOS_ONBOARDING])
 
 
-def lugares_ocupados(db: Session, s: SesionCapacitacion) -> int:
-    return sum(1 for ev in inscritos(db, s) if not (ev.estado == "fallida" and ev.asistencia != "no_asistio"))
+def liga_expediente(e) -> str:
+    return f"{settings.app_url}/expediente/{e.token}"
 
 
-def texto_cita(p: Postulacion, s: SesionCapacitacion) -> str:
+# ------------------------------------------------------------ Entrevista = capacitación en tienda (EntrevistaHumana)
+
+
+def entrevista_actual(p: Postulacion) -> Optional[EntrevistaHumana]:
+    """La entrevista vigente (la más reciente no cancelada) de la postulación."""
+    vivas = [eh for eh in (p.entrevistas_humanas or []) if not eh.cancelada]
+    return vivas[-1] if vivas else None
+
+
+def estado_entrevista(eh: Optional[EntrevistaHumana]) -> Tuple[str, str]:
+    """(etiqueta, tono) del subestado de la columna Entrevista."""
+    if eh is None:
+        return "Por citar", "neutral"
+    if eh.asistencia == "no_asistio":
+        return "No asistió", "bad"
+    if eh.resultado in RESULTADOS_CAPACITACION:
+        tono = {"favorable": "good", "con_observaciones": "warn", "desfavorable": "bad"}[eh.resultado]
+        return f"Realizada · {RESULTADOS_CAPACITACION[eh.resultado]}", tono
+    if eh.confirmada_en:
+        return "Cita confirmada", "brand"
+    return "Citado · por confirmar", "warn"
+
+
+def capacitador_de(eh: EntrevistaHumana, db: Session) -> dict:
+    """Nombre, teléfono y correo del capacitador (interno = perfil del Usuario; externo = lo capturado)."""
+    if eh.tipo == "interno" and eh.usuario_id:
+        u = db.get(Usuario, eh.usuario_id)
+        if u:
+            return {"tipo": "interno", "usuarioId": u.id, "nombre": u.nombre, "telefono": u.telefono or "", "correo": u.correo or ""}
+    return {"tipo": "externo", "usuarioId": None, "nombre": eh.entrevistador or "", "telefono": eh.whatsapp_externo or "", "correo": eh.correo_externo or ""}
+
+
+def liga_capacitador(eh: EntrevistaHumana) -> str:
+    return f"{settings.app_url}/entrevista-humana/{eh.token}"
+
+
+def _cuando(eh: EntrevistaHumana) -> str:
     from .notificaciones import TZ_MEXICO
 
+    return eh.fecha.astimezone(TZ_MEXICO).strftime("%d/%m/%Y a las %H:%M") if eh.fecha else "por confirmar"
+
+
+def texto_cita(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
     nombre = (p.nombre or "").split(" ")[0] or "hola"
-    cuando = s.inicio.astimezone(TZ_MEXICO).strftime("%d/%m/%Y a las %H:%M") if s.inicio else "por confirmar"
+    cap = capacitador_de(eh, db)
     partes = [
-        f"¡Hola {nombre}! Tu vehículo quedó aprobado 🚗. Te citamos a la *{s.nombre}*:",
-        f"📅 {cuando} h",
-        f"📍 {s.tienda}" + (f" — {s.direccion}" if s.direccion else ""),
+        f"¡Hola {nombre}! Te citamos a tu *capacitación en tienda*:",
+        f"📅 {_cuando(eh)} h",
+        f"📍 {eh.tienda}" + (f" — {eh.ubicacion}" if eh.ubicacion else ""),
     ]
-    if s.supervisor_nombre:
-        partes.append(f"👤 Te recibe: {s.supervisor_nombre}")
-    if s.indicaciones:
-        partes.append(f"📝 {s.indicaciones}")
+    if cap["nombre"]:
+        partes.append(f"👤 Te recibe: {cap['nombre']}")
+    if eh.comentario:
+        partes.append(f"📝 {eh.comentario}")
     partes.append("\n¿Confirmas tu asistencia? Responde *Sí*.")
     return "\n".join(partes)
 
 
-async def citar(db: Session, p: Postulacion, s: SesionCapacitacion, actor: str) -> dict:
-    """Cita al candidato a una sesión compartida (respeta el cupo) con la evaluación «Capacitación en tienda»
-    (tipo «Otra»). Si ya tenía una cita abierta se REPROGRAMA a la nueva sesión (misma evaluación)."""
+def texto_capacitador(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
+    cap = capacitador_de(eh, db)
+    vac = p.vacante.titulo if p.vacante else "la vacante"
+    return (
+        f"Hola {cap['nombre'].split(' ')[0] if cap['nombre'] else ''}, tienes una capacitación en tienda:\n"
+        f"👤 {p.nombre} · {vac}\n📅 {_cuando(eh)} h\n📍 {eh.tienda}" + (f" — {eh.ubicacion}" if eh.ubicacion else "")
+        + f"\n\nAl terminar registra la asistencia y el resultado aquí: {liga_capacitador(eh)}"
+    )
+
+
+def _registrar_envio(eh: EntrevistaHumana, destinatario: str, canal: str, envio: dict, detalle_extra: str = "") -> dict:
+    fila = {"destinatario": destinatario, "canal": canal, "enviado": bool(envio.get("enviado")),
+            "detalle": str(envio.get("detalle") or detalle_extra or "")[:300], "fecha": _ahora().isoformat()}
+    eh.envios = [*(eh.envios or []), fila][-30:]
+    return fila
+
+
+async def enviar_cita_candidato(db: Session, p: Postulacion, eh: EntrevistaHumana) -> dict:
+    """Manda la cita al candidato (Telegram / WhatsApp). Nunca lanza: el resultado queda en `eh.envios`."""
     from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje
 
-    ev = evaluacion_capacitacion(db, p)
-    if ev and ev.estado == "revisada":
-        ev = None  # ya se capacitó: una nueva cita es una evaluación nueva
-    if ev is None or ev.estado == "fallida":
-        ev = EvaluacionCandidato(
-            codigo="TMP", cuenta_id=p.cuenta_id, postulacion_id=p.id, tipo="otra", nombre=NOMBRE_CAPACITACION_TIENDA,
-            modo="manual", asignada_por=actor, estado="en_espera_consentimiento", historial=[],
-        )
-        db.add(ev)
-        db.flush()
-        ev.codigo = f"EVA-{7000 + ev.id}"
-        sev.mover(ev, "en_espera_consentimiento", actor, "Asignada")
-        sev.refrescar_consentimiento(ev, p, actor)
-    anterior = ev.sesion_id
-    ev.sesion_id, ev.cita_confirmada_en, ev.asistencia = s.id, None, ""
-    sev.mover(ev, ev.estado, actor, f"Citado a {s.codigo} ({s.tienda})" + (" — reprogramada" if anterior and anterior != s.id else ""))
-    texto = texto_cita(p, s)
-    envio = await _enviar_whatsapp(p, texto)
-    guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
-    nota(p, "cita_capacitacion", f"Citado a {s.nombre} {s.codigo} ({s.tienda})", actor)
-    registrar(db, actor, "cita_capacitacion", "postulacion", p.codigo, {"sesion": s.codigo, "evaluacion": ev.codigo, "whatsapp": envio.get("enviado", False)})
-    if p.etapa in (NUEVO, PREFILTRO, VEHICULO):
-        mover(db, p, CITA, actor, f"Citado a {s.codigo}")
-    return {"evaluacion": ev, "whatsapp": envio}
+    texto = texto_cita(p, eh, db)
+    try:
+        envio = await _enviar_whatsapp(p, texto)
+        guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+    except Exception as e:  # noqa: BLE001 — un fallo de envío nunca bloquea la cita
+        envio = {"enviado": False, "detalle": str(e)}
+    if not p.telefono:
+        envio = {**envio, "detalle": envio.get("detalle") or "El candidato no tiene teléfono registrado."}
+    return _registrar_envio(eh, "candidato", "mensaje", envio)
+
+
+async def enviar_aviso_capacitador(db: Session, p: Postulacion, eh: EntrevistaHumana) -> List[dict]:
+    """Aviso al capacitador con su liga (mensaje y/o correo, lo que tenga). Nunca lanza."""
+    from . import whatsapp
+    from .correo import enviar_correo
+    from .plantillas_correo import html_aviso
+
+    cap = capacitador_de(eh, db)
+    salida = []
+    texto = texto_capacitador(p, eh, db)
+    if cap["telefono"]:
+        try:
+            envio = await whatsapp.enviar_mensaje(cap["telefono"], texto)
+        except Exception as e:  # noqa: BLE001
+            envio = {"enviado": False, "detalle": str(e)}
+        salida.append(_registrar_envio(eh, "capacitador", "mensaje", envio))
+    if cap["correo"]:
+        try:
+            asunto, html = html_aviso(
+                "Capacitación en tienda asignada",
+                f"Tienes una capacitación en tienda con {p.nombre}. Al terminar registra la asistencia y el resultado.",
+                filas=[("Candidato", p.nombre), ("Vacante", p.vacante.titulo if p.vacante else ""), ("Fecha", f"{_cuando(eh)} h"),
+                       ("Tienda", eh.tienda), ("Dirección", eh.ubicacion or "—")],
+                cta=("Registrar resultado", liga_capacitador(eh)),
+            )
+            envio = await enviar_correo(cap["correo"], asunto, html)
+        except Exception as e:  # noqa: BLE001
+            envio = {"enviado": False, "detalle": str(e)}
+        salida.append(_registrar_envio(eh, "capacitador", "correo", envio))
+    if not salida:
+        salida.append(_registrar_envio(eh, "capacitador", "—", {"enviado": False},
+                                       "El capacitador no tiene teléfono ni correo: comparte su liga a mano."))
+    return salida
+
+
+def _datos_entrevista(db: Session, p: Postulacion, eh: EntrevistaHumana, datos: dict) -> None:
+    """Valida y aplica tienda, fecha/hora, capacitador, curso de inducción e indicaciones. ValueError si falta algo."""
+    from ..models import Curso
+    from .notificaciones import TZ_MEXICO
+
+    tienda = (datos.get("tienda") or "").strip()
+    if not tienda:
+        raise ValueError("Indica la tienda de la capacitación.")
+    try:
+        fecha = datetime.fromisoformat(f"{datos.get('fecha')}T{datos.get('hora')}").replace(tzinfo=TZ_MEXICO).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        raise ValueError("Fecha u hora inválida (fecha: 2026-10-02, hora: 09:00).")
+    tipo = datos.get("capacitador_tipo") or "interno"
+    if tipo == "interno":
+        u = db.query(Usuario).filter(Usuario.id == datos.get("capacitador_usuario_id"), Usuario.activo.is_(True)).first()
+        if not u:
+            raise ValueError("Elige al capacitador (usuario de la Cuenta) o captura uno externo.")
+        eh.tipo, eh.usuario_id, eh.entrevistador = "interno", u.id, u.nombre
+        eh.correo_externo, eh.whatsapp_externo = "", ""
+    else:
+        nombre = (datos.get("capacitador_nombre") or "").strip()
+        if not nombre:
+            raise ValueError("Escribe el nombre del capacitador.")
+        eh.tipo, eh.usuario_id, eh.entrevistador = "externo", None, nombre[:150]
+        eh.whatsapp_externo = "".join(ch for ch in (datos.get("capacitador_telefono") or "") if ch.isdigit())[-10:]
+        eh.correo_externo = (datos.get("capacitador_correo") or "").strip()[:200]
+    curso_id = None
+    if datos.get("curso_induccion"):
+        c = db.query(Curso).filter(Curso.codigo == datos["curso_induccion"], Curso.cuenta_id == p.cuenta_id).first()
+        if not c:
+            raise ValueError("El curso de inducción no existe en esta Cuenta.")
+        curso_id = c.id
+    eh.tienda = tienda[:200]
+    eh.ubicacion = (datos.get("direccion") or "").strip()[:300]
+    eh.fecha = fecha
+    eh.modalidad = "Presencial"
+    eh.comentario = (datos.get("indicaciones") or "").strip()[:1000]
+    eh.curso_induccion_id = curso_id
+
+
+async def programar_entrevista(db: Session, p: Postulacion, datos: dict, actor: str) -> dict:
+    """Cita a la capacitación en tienda (una EntrevistaHumana nueva; una cita anterior abierta se cancela). Mueve
+    la tarjeta a Entrevista si venía de antes. El envío al candidato y el aviso al capacitador van APARTE y nunca
+    bloquean: regresa {entrevista, envioCandidato, envioCapacitador}."""
+    previa = entrevista_actual(p)
+    if previa and not previa.realizada and not previa.asistencia:
+        previa.cancelada = True
+    eh = EntrevistaHumana(candidato_id=p.candidato_id, token=secrets.token_urlsafe(24), envios=[])
+    _datos_entrevista(db, p, eh, datos)
+    p.entrevistas_humanas.append(eh)
+    db.flush()
+    nota(p, "entrevista_programada", f"Capacitación en tienda: {eh.tienda}, {_cuando(eh)} h — capacitador {eh.entrevistador}", actor)
+    registrar(db, actor, "capacitacion_tienda_programada", "postulacion", p.codigo,
+              {"tienda": eh.tienda, "fecha": eh.fecha.isoformat(), "capacitador": eh.entrevistador, "tipo": eh.tipo})
+    if _indice(p.etapa) < _indice(ENTREVISTA):
+        mover(db, p, ENTREVISTA, actor, "Citado a capacitación en tienda")
+    envio_c = await enviar_cita_candidato(db, p, eh)
+    envio_k = await enviar_aviso_capacitador(db, p, eh)
+    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k}
+
+
+async def reprogramar_entrevista(db: Session, p: Postulacion, datos: dict, actor: str) -> dict:
+    eh = entrevista_actual(p)
+    if eh is None:
+        raise ValueError("No hay una capacitación programada.")
+    if eh.resultado or eh.asistencia:
+        raise ValueError("Esta capacitación ya tiene resultado; programa una nueva.")
+    _datos_entrevista(db, p, eh, datos)
+    eh.confirmada_en = None
+    nota(p, "entrevista_reprogramada", f"Capacitación reprogramada: {eh.tienda}, {_cuando(eh)} h", actor)
+    registrar(db, actor, "capacitacion_tienda_reprogramada", "postulacion", p.codigo, {"fecha": eh.fecha.isoformat(), "tienda": eh.tienda})
+    envio_c = await enviar_cita_candidato(db, p, eh)
+    envio_k = await enviar_aviso_capacitador(db, p, eh)
+    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k}
+
+
+def cancelar_entrevista(db: Session, p: Postulacion, motivo: str, actor: str) -> None:
+    eh = entrevista_actual(p)
+    if eh is None:
+        raise ValueError("No hay una capacitación programada.")
+    if eh.resultado or eh.asistencia:
+        raise ValueError("Esta capacitación ya tiene resultado.")
+    eh.cancelada = True
+    nota(p, "entrevista_cancelada", "Capacitación cancelada" + (f" — {motivo}" if motivo else ""), actor)
+    registrar(db, actor, "capacitacion_tienda_cancelada", "postulacion", p.codigo, {"motivo": motivo[:300]})
 
 
 async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
-    """El candidato (o RH por él) confirma la cita → se asigna el curso de inducción de la sesión y se SIMULA
-    el envío de su PDF por WhatsApp (queda en el chat marcado como simulado; no sale por Meta)."""
+    """El candidato (por Telegram/WhatsApp) o RH por él confirma la cita → se asigna el curso de inducción y sale su
+    PDF (por Telegram como archivo; con otro proveedor queda simulado en el chat). Si la inducción falla, la cita
+    queda confirmada igual."""
     from ..models import Curso
     from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje
     from ..routers.capacitacion import asignar_a_postulacion
     from . import whatsapp
 
-    ev = evaluacion_capacitacion(db, p)
-    if not ev or not ev.sesion_id or ev.estado in ("revisada", "fallida"):
+    eh = entrevista_actual(p)
+    if eh is None or eh.realizada or eh.asistencia:
         raise ValueError("El candidato no tiene una cita de capacitación abierta.")
-    if ev.cita_confirmada_en:
-        return {"evaluacion": ev, "induccion": None, "ya_confirmada": True}
-    ev.cita_confirmada_en = _ahora()
-    sev.mover(ev, "en_proceso" if ev.estado == "pendiente" else ev.estado, actor, "Cita confirmada")
-    s = db.get(SesionCapacitacion, ev.sesion_id)
+    if eh.confirmada_en:
+        return {"entrevista": eh, "induccion": None, "ya_confirmada": True}
+    eh.confirmada_en = _ahora()
     induccion = None
-    curso = db.get(Curso, s.curso_induccion_id) if s and s.curso_induccion_id else None
+    curso = db.get(Curso, eh.curso_induccion_id) if eh.curso_induccion_id else None
     if curso:
-        # La inducción es material de apoyo: si su asignación truena, la cita queda confirmada igual y el
-        # supervisor puede registrar la asistencia (savepoint para no dejar la sesión de BD rota).
         try:
             with db.begin_nested():
                 a = await asignar_a_postulacion(db, p, curso, actor=actor, notificar=False)
                 liga = f"{settings.app_url}/capacitacion/{a.token}"
-                real = whatsapp.proveedor() == "telegram"  # 2026-09-30: por Telegram el PDF sale de verdad
+                real = whatsapp.proveedor() == "telegram"  # por Telegram el PDF sale de verdad
                 texto = (
                     ("" if real else "[Simulado · demo] ") + f"📄 {curso.titulo} (PDF)\n"
                     f"Antes de tu capacitación revisa este material. Descárgalo aquí: {liga}"
@@ -259,15 +443,15 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
                 guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
                 induccion = {"curso": curso.codigo, "titulo": curso.titulo, "asignacion": a.codigo, "liga": liga, "simulado": not real,
                              "enviado": bool(envio.get("enviado"))}
-                registrar(db, actor, "induccion_pdf_simulado", "postulacion", p.codigo, induccion)
+                registrar(db, actor, "induccion_pdf_enviado" if real else "induccion_pdf_simulado", "postulacion", p.codigo, induccion)
         except Exception as e:  # noqa: BLE001
             import traceback
 
             traceback.print_exc()
             induccion = None
             registrar(db, actor, "induccion_pdf_fallido", "postulacion", p.codigo, {"curso": curso.codigo, "error": str(e)[:300]})
-    nota(p, "cita_confirmada", "Cita de capacitación confirmada" + (f"; se simuló el envío del PDF «{curso.titulo}»" if induccion else ""), actor)
-    return {"evaluacion": ev, "induccion": induccion, "ya_confirmada": False}
+    nota(p, "cita_confirmada", "Cita de capacitación confirmada" + (f"; se envió el PDF «{curso.titulo}»" if induccion else ""), actor)
+    return {"entrevista": eh, "induccion": induccion, "ya_confirmada": False}
 
 
 async def _pdf_induccion(curso, asignacion) -> Optional[bytes]:
@@ -282,81 +466,99 @@ async def _pdf_induccion(curso, asignacion) -> Optional[bytes]:
         return None
 
 
-def registrar_asistencia(db: Session, ev: EvaluacionCandidato, asistio: bool, resultado: str, comentario: str, supervisor: str) -> None:
-    """Lo captura el SUPERVISOR en su liga. Asistió → dictamen (Apto / Requiere seguimiento / No apto =
-    Favorable / Con observaciones / Desfavorable) y la postulación pasa a «Capacitación realizada». No asistió →
-    la evaluación queda Fallida con motivo y la postulación sigue en «Cita para capacitación» para reprogramar."""
-    p = db.get(Postulacion, ev.postulacion_id)
-    quien = f"{supervisor} (supervisor)"
-    if not asistio:
-        ev.asistencia = "no_asistio"
-        ev.motivo_fallida = "No asistió a la capacitación" + (f": {comentario}" if comentario else "")
-        sev.mover(ev, "fallida", quien, ev.motivo_fallida)
-        if p:
-            nota(p, "capacitacion_no_asistio", ev.motivo_fallida, quien)
-            registrar(db, quien, "capacitacion_no_asistio", "postulacion", p.codigo, {"evaluacion": ev.codigo})
-        return
-    ev.asistencia = "asistio"
-    ev.resultado_resumen = f"Asistió · {RESULTADOS_CAPACITACION[resultado]}" + (f" — {comentario}" if comentario else "")
-    ev.resultado_cargado_por, ev.resultado_cargado_en = quien, _ahora()
-    sev.mover(ev, "resultado_recibido", quien, "Asistencia registrada")
-    ev.dictamen, ev.comentario_revision = resultado, comentario[:2000]
-    ev.revisada_por, ev.revisada_en = quien, _ahora()
-    sev.mover(ev, "revisada", quien, f"Resultado: {RESULTADOS_CAPACITACION[resultado]}")
-    if p:
-        nota(p, "capacitacion_realizada", f"Capacitación: {RESULTADOS_CAPACITACION[resultado]}" + (f" — {comentario}" if comentario else ""), quien)
-        registrar(db, quien, "capacitacion_resultado", "postulacion", p.codigo, {"evaluacion": ev.codigo, "resultado": resultado})
-        if es_operativo(p) and p.etapa in (NUEVO, PREFILTRO, VEHICULO, CITA):
-            mover(db, p, CAPACITADO, quien, RESULTADOS_CAPACITACION[resultado])
+def validar_resultado(asistio: bool, resultado: str, comentario: str) -> None:
+    if asistio and resultado not in RESULTADOS_CAPACITACION:
+        raise ValueError("Elige el resultado: Apto, Requiere seguimiento o No apto.")
+    if asistio and resultado in ("con_observaciones", "desfavorable") and not comentario.strip():
+        raise ValueError("Escribe un comentario que explique el resultado.")
 
 
-# ------------------------------------------------------------ documentos y referencias
+def registrar_resultado(db: Session, p: Postulacion, eh: EntrevistaHumana, asistio: bool, resultado: str, comentario: str,
+                        quien: str, capturado_por: str) -> None:
+    """Asistencia + resultado de la capacitación (capacitador en su liga o RH a mano: alimentan lo MISMO). No mueve
+    la tarjeta: RH la pasa a Evaluación. «No asistió» deja la cita lista para reprogramar."""
+    validar_resultado(asistio, resultado, comentario)
+    eh.asistencia = "asistio" if asistio else "no_asistio"
+    eh.realizada = asistio
+    eh.resultado = resultado if asistio else ""
+    eh.comentario = comentario.strip()[:2000] or eh.comentario
+    eh.resultado_capturado_por = capturado_por
+    eh.evaluada_en = _ahora()
+    if asistio:
+        texto = f"Capacitación: {RESULTADOS_CAPACITACION[resultado]}" + (f" — {comentario.strip()}" if comentario.strip() else "")
+        p.resultado_apto = resultado != "desfavorable"
+    else:
+        texto = "No asistió a la capacitación" + (f": {comentario.strip()}" if comentario.strip() else "")
+    nota(p, "capacitacion_resultado", texto, quien)
+    registrar(db, quien, "capacitacion_tienda_resultado", "postulacion", p.codigo,
+              {"asistio": asistio, "resultado": resultado, "capturado_por": capturado_por})
 
 
-def abrir_expediente(db: Session, p: Postulacion, actor: str):
-    """Expediente de la postulación con los documentos de un chofer (idempotente: agrega los que falten)."""
-    import secrets
+# ------------------------------------------------------------ contratación
 
-    from ..models import Expediente
 
+def condiciones_completas(e) -> bool:
+    return bool(e and e.puesto and e.sueldo and e.tipo_contratacion and e.fecha_ingreso)
+
+
+def requisitos_onboarding(p: Postulacion) -> List[str]:
+    """Lo que falta para «Enviar a Onboarding»: condiciones guardadas + decisión del contrato + consentimiento."""
     e = p.expediente
-    if e is None:
-        e = Expediente(candidato_id=p.candidato_id, puesto=p.vacante.titulo if p.vacante else "", seleccionado_por=actor,
-                       token=secrets.token_urlsafe(24), referencias=[])
-        p.expediente = e
-        db.add(e)
-        db.flush()
-        registrar(db, actor, "expediente_abierto", "postulacion", p.codigo, {"expediente": e.id, "flujo": "operativo"})
-    tipos = {d.tipo for d in e.documentos}
-    for tipo in DOCUMENTOS_OPERATIVO:
-        if tipo not in tipos:
-            db.add(Documento(expediente_id=e.id, tipo=tipo, obligatorio=True))
-    db.flush()
-    db.refresh(e)
-    return e
+    faltan = []
+    if not condiciones_completas(e):
+        faltan.append("Guardar condiciones (puesto, sueldo, tipo de contratación y fecha de ingreso)")
+    if not (e and e.contrato_operativo in (CONTRATO_GENERADO, CONTRATO_DESPUES)):
+        faltan.append("Elegir «Generar contrato» o «Generar después de Onboarding»")
+    if not p.consentimiento:
+        faltan.append("Consentimiento de privacidad del candidato")
+    return faltan
 
 
-def liga_expediente(e) -> str:
-    return f"{settings.app_url}/expediente/{e.token}"
+def decidir_contrato(db: Session, p: Postulacion, cuando: str, actor: str) -> None:
+    """«ahora» = el contrato se genera ya (vista previa del PDF); «despues» = queda pendiente para Onboarding."""
+    if cuando not in ("ahora", "despues"):
+        raise ValueError("Elige «ahora» o «despues».")
+    e = expediente(db, p, actor)
+    if cuando == "ahora" and not condiciones_completas(e):
+        raise ValueError("Guarda primero las condiciones (puesto, sueldo, tipo y fecha de ingreso).")
+    e.contrato_operativo = CONTRATO_GENERADO if cuando == "ahora" else CONTRATO_DESPUES
+    e.contrato_operativo_por, e.contrato_operativo_en = actor, _ahora()
+    texto = "Contrato generado" if cuando == "ahora" else "Contrato pendiente: se generará después de Onboarding"
+    nota(p, "contrato_operativo", texto, actor)
+    registrar(db, actor, "contrato_operativo_" + e.contrato_operativo, "postulacion", p.codigo, {"expediente": e.id})
+
+
+# ------------------------------------------------------------ onboarding: documentos, referencias y alta
 
 
 async def solicitar_documentos_referencias(db: Session, p: Postulacion, actor: str) -> dict:
+    """Asegura los documentos de Onboarding y manda la liga (documentos + 3 referencias). Nunca lanza por el envío."""
     from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje
 
-    e = abrir_expediente(db, p, actor)
+    e = expediente(db, p, actor, DOCUMENTOS_ONBOARDING)
     liga = liga_expediente(e)
     nombre = (p.nombre or "").split(" ")[0] or "hola"
     texto = (
-        f"¡Hola {nombre}! Para continuar con tu alta necesitamos tus documentos y 3 referencias personales "
-        f"(nombre, teléfono y parentesco). Súbelos aquí, puedes volver las veces que necesites:\n📂 {liga}"
+        f"¡Hola {nombre}! Para continuar con tu alta necesitamos tus documentos (INE, comprobante de domicilio, CURP, "
+        f"constancia fiscal, NSS y cuenta bancaria) y 3 referencias personales (nombre, teléfono y parentesco). "
+        f"Súbelos aquí, puedes volver las veces que necesites:\n📂 {liga}"
     )
-    envio = await _enviar_whatsapp(p, texto)
-    guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+    try:
+        envio = await _enviar_whatsapp(p, texto)
+        guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+    except Exception as ex:  # noqa: BLE001
+        envio = {"enviado": False, "detalle": str(ex)}
     nota(p, "documentos_referencias_solicitados", "Se pidieron documentos y 3 referencias", actor)
     registrar(db, actor, "documentos_referencias_solicitados", "postulacion", p.codigo, {"expediente": e.id, "whatsapp": envio.get("enviado", False)})
-    if p.etapa in (CAPACITADO,):
-        mover(db, p, DOCUMENTOS, actor, "Documentos y referencias solicitados")
     return {"liga": liga, "whatsapp": envio}
+
+
+async def enviar_a_onboarding(db: Session, p: Postulacion, actor: str, prueba: bool) -> dict:
+    faltan = requisitos_onboarding(p)
+    if faltan and not prueba:
+        raise ValueError("Antes de enviar a Onboarding: " + "; ".join(faltan) + ".")
+    mover(db, p, ONBOARDING, actor, "Enviado a Onboarding")
+    return await solicitar_documentos_referencias(db, p, actor)
 
 
 def referencias_completas(e) -> bool:
@@ -365,6 +567,7 @@ def referencias_completas(e) -> bool:
 
 
 def faltantes_para_alta(p: Postulacion) -> List[str]:
+    """Documentos (todos los del expediente, incluidos los del vehículo) Revisados + 3 referencias contactadas."""
     e = p.expediente
     if not e:
         return ["Pedir documentos y referencias"]
@@ -377,19 +580,6 @@ def faltantes_para_alta(p: Postulacion) -> List[str]:
         if sin_contactar:
             faltan.append("Referencias por contactar: " + ", ".join(sin_contactar))
     return faltan
-
-
-def revisar_listo(db: Session, p: Postulacion, actor: str) -> bool:
-    """Si ya no falta nada, pasa sola a «Listo para alta» (y regresa a «Documentos y referencias» si algo
-    dejó de cumplirse, p. ej. RH rechazó un documento)."""
-    if not es_operativo(p) or p.etapa not in (DOCUMENTOS, LISTO):
-        return False
-    listo = not faltantes_para_alta(p)
-    if listo and p.etapa == DOCUMENTOS:
-        mover(db, p, LISTO, actor, "Documentos aprobados y 3 referencias contactadas")
-    elif not listo and p.etapa == LISTO:
-        mover(db, p, DOCUMENTOS, actor, "Falta algo del expediente")
-    return listo
 
 
 def guardar_referencias(db: Session, e, referencias: List[dict]) -> None:
@@ -422,12 +612,9 @@ def marcar_referencia(e, indice: int, contactada: bool, nota_rh: str, usuario: s
     return r
 
 
-# ------------------------------------------------------------ alta
-
-
 def registrar_alta(db: Session, p: Postulacion, u, prueba: bool) -> Tuple[object, object]:
-    """Crea el Colaborador con la función de siempre (`contratacion._crear_colaborador`) y deja la tarjeta en
-    «Alta realizada» (la postulación NO se cierra: así la columna cuenta a quienes ya se dieron de alta)."""
+    """«Dar de alta»: solo en Onboarding con documentos y referencias listos (Modo Prueba lo omite). Crea el
+    Colaborador con la función de siempre y CIERRA la postulación como `contratado` (sale del Kanban activo)."""
     from ..routers.contratacion import _crear_colaborador
 
     e = p.expediente
@@ -435,8 +622,12 @@ def registrar_alta(db: Session, p: Postulacion, u, prueba: bool) -> Tuple[object
         e = abrir_expediente(db, p, u.nombre)
     if e.estado == "alta":
         raise ValueError(f"Ya se dio de alta (por {e.alta_autorizada_por}).")
-    if not prueba and p.etapa != LISTO:
-        raise ValueError("Primero debe estar en «Listo para alta»: " + "; ".join(faltantes_para_alta(p) or ["mueve la tarjeta"]))
+    if not prueba:
+        if p.etapa != ONBOARDING:
+            raise ValueError("«Dar de alta» se habilita en Onboarding.")
+        faltan = faltantes_para_alta(p)
+        if faltan:
+            raise ValueError("Aún no se puede dar de alta: " + "; ".join(faltan))
     v = p.vacante
     e.puesto = e.puesto or (v.titulo if v else "")
     e.sueldo = e.sueldo or (v.sueldo if v else "")
@@ -446,34 +637,73 @@ def registrar_alta(db: Session, p: Postulacion, u, prueba: bool) -> Tuple[object
     e.estado, e.alta_autorizada_por, e.alta_fecha = "alta", u.nombre, _ahora()
     colaborador = _crear_colaborador(db, e, u)
     registrar(db, u.nombre, "alta_autorizada", "expediente", str(e.id), {"postulacion": p.codigo, "flujo": "operativo"})
-    mover(db, p, ALTA, u.nombre, f"Alta registrada ({colaborador.codigo if colaborador else ''})")
+    if p.etapa != ONBOARDING:
+        mover(db, p, ONBOARDING, u.nombre, "Alta (Modo Prueba)")
+    nota(p, "alta", f"Alta realizada ({colaborador.codigo if colaborador else ''}); proceso cerrado", u.nombre)
     p.estado = "cumple"
     p.resultado_apto = True
+    p.cerrar("contratado")
     return e, colaborador
 
 
-# ------------------------------------------------------------ movimiento manual (Kanban)
+# ------------------------------------------------------------ subestado de la tarjeta y movimiento manual
+
+
+def subestado(p: Postulacion) -> dict:
+    """Lo que muestra la tarjeta del Kanban bajo el nombre: {texto, tono}."""
+    if p.etapa == PREFILTRO:
+        texto = estado_prefiltro(p)
+        return {"texto": f"Prefiltro: {texto}", "tono": {"Sin iniciar": "neutral", "En curso": "warn"}.get(texto, "brand")}
+    if p.etapa == VEHICULO:
+        from ..models import ESTADOS_VEHICULO
+
+        r = p.revision_vehiculo
+        return {"texto": ESTADOS_VEHICULO.get(r.estado, r.estado) if r else "Liga sin enviar",
+                "tono": {"por_revisar": "warn", "correccion": "warn", "aprobado": "good", "excepcion": "good"}.get(r.estado if r else "", "neutral")}
+    if p.etapa == ENTREVISTA:
+        texto, tono = estado_entrevista(entrevista_actual(p))
+        return {"texto": texto, "tono": tono}
+    if p.etapa == EVALUACION:
+        return {"texto": "Evaluaciones", "tono": "neutral"}
+    e = p.expediente
+    if p.etapa == CONTRATACION:
+        if not condiciones_completas(e):
+            return {"texto": "Condiciones pendientes", "tono": "warn"}
+        if e.contrato_operativo == CONTRATO_GENERADO:
+            return {"texto": "Contrato generado", "tono": "good"}
+        if e.contrato_operativo == CONTRATO_DESPUES:
+            return {"texto": "Contrato después de Onboarding", "tono": "brand"}
+        return {"texto": "Falta decidir el contrato", "tono": "warn"}
+    if p.etapa == ONBOARDING:
+        if e and e.estado == "alta":
+            return {"texto": "Alta realizada", "tono": "good"}
+        faltan = faltantes_para_alta(p)
+        if not faltan:
+            return {"texto": "Listo para dar de alta", "tono": "good"}
+        docs = [d for d in (e.obligatorios if e else [])]
+        listos = sum(1 for d in docs if d.aprobado)
+        refs = sum(1 for r in ((e.referencias if e else None) or []) if r.get("contactada"))
+        return {"texto": f"Docs {listos}/{len(docs)} · Refs {refs}/{REFERENCIAS_REQUERIDAS}", "tono": "warn"}
+    return {"texto": "", "tono": "neutral"}
 
 
 def validar_movimiento(db: Session, p: Postulacion, destino: str, prueba: bool) -> None:
-    """Candados del Kanban operativo para mover a mano. Hacia atrás siempre se puede; hacia adelante no se
-    brinca lo que exige una decisión humana registrada. Modo Prueba los omite."""
+    """Candados del Kanban operativo para mover a mano. Hacia atrás siempre se puede; hacia adelante no se brinca
+    lo que exige una decisión humana registrada. Modo Prueba los omite."""
     from . import vehiculo as vehiculo_srv
 
     if destino not in ETAPAS_OPERATIVO:
         raise ValueError(f"Etapa inválida. Usa una de: {', '.join(ETAPAS_OPERATIVO)}")
-    if destino == ALTA:
-        raise ValueError("A «Alta realizada» solo se llega con «Registrar alta».")
-    if prueba or ETAPAS_OPERATIVO.index(destino) <= ETAPAS_OPERATIVO.index(p.etapa if p.etapa in ETAPAS_OPERATIVO else NUEVO):
+    if prueba or _indice(destino) <= _indice(p.etapa):
         return
-    orden = ETAPAS_OPERATIVO.index(destino)
-    if orden > ETAPAS_OPERATIVO.index(VEHICULO):
+    orden = _indice(destino)
+    if orden > _indice(VEHICULO):
         citable, motivo = vehiculo_srv.puede_citar(p)
         if not citable:
             raise ValueError(motivo)
-    if orden > ETAPAS_OPERATIVO.index(CITA):
-        ev = evaluacion_capacitacion(db, p)
-        if not (ev and ev.estado == "revisada"):
-            raise ValueError("Antes, el supervisor debe registrar la asistencia y el resultado de la capacitación.")
-    if destino == LISTO and faltantes_para_alta(p):
-        raise ValueError("Aún no está listo para alta: " + "; ".join(faltantes_para_alta(p)))
+    if orden > _indice(ENTREVISTA):
+        eh = entrevista_actual(p)
+        if not (eh and eh.asistencia == "asistio" and eh.resultado):
+            raise ValueError("Antes, el capacitador (o RH) debe registrar la asistencia y el resultado de la capacitación.")
+    if destino == ONBOARDING and requisitos_onboarding(p):
+        raise ValueError("Antes de enviar a Onboarding: " + "; ".join(requisitos_onboarding(p)) + ".")

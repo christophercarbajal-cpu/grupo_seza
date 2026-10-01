@@ -92,7 +92,13 @@ def listar(
     # Onboarding v2 (Fase 3): los Onboardings CERRADOS salen del tablero (salvo `cerrados=true`)
     if not cerrados:
         q = q.filter(Expediente.onboarding_cerrado_en.is_(None))
-    expedientes = q.all()
+    # Flujo operativo v2: el expediente nace en la revisión del vehículo; al tablero de Onboarding solo llega en
+    # Onboarding (o ya dado de alta).
+    expedientes = [
+        e for e in q.all()
+        if not (e.postulacion and e.postulacion.cuenta and e.postulacion.cuenta.flujo_candidatos == "operativo"
+                and e.postulacion.etapa != "Onboarding" and e.postulacion.motivo_cierre != "contratado")
+    ]
     return [{**expediente_dict(e), "onboarding": r} for e, r in zip(expedientes, _resumenes_onboarding(db, expedientes))]
 
 
@@ -890,7 +896,10 @@ def contrato(
     """Contrato individual de trabajo (PDF) con las condiciones FINALES guardadas (2026-09-19). Solo cuando
     los documentos requeridos ya están (expediente al 100 %), salvo Modo Prueba."""
     e = _expediente(db, exp_id, cuenta.id)
-    if not _documentos_listos(e) and not modo_prueba_activo(db):
+    # Flujo operativo v2 (2026-09-30): el contrato se puede generar en Contratación (antes de los documentos de
+    # Onboarding) — RH lo decide con «Generar contrato» / «Generar después de Onboarding».
+    operativo = bool(e.postulacion and e.postulacion.cuenta and e.postulacion.cuenta.flujo_candidatos == "operativo")
+    if not operativo and not _documentos_listos(e) and not modo_prueba_activo(db):
         raise HTTPException(409, f"El contrato se genera cuando el expediente está al 100 % de documentos Aprobados (hoy {e.progreso} %). Faltan: {', '.join(e.no_aprobados)}.")
     d = _datos_carta_intencion(e)
     if not (e.puesto and e.sueldo and e.tipo_contratacion and e.fecha_ingreso) and not modo_prueba_activo(db):

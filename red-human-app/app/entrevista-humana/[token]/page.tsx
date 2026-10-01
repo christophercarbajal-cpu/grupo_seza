@@ -4,18 +4,24 @@
    candidato (CV extraído y archivo, análisis de Luna, Entrevista Red Human, capacitación, documentos)
    para que el entrevistador vea el proceso antes de evaluar; abajo, el formulario de un solo envío
    (Resultado, Recomendación, Comentarios opcionales). Al enviar, la entrevista queda realizada y
-   confirmada y se cierra el ciclo (autocierre en el backend). */
+   confirmada y se cierra el ciclo (autocierre en el backend).
+
+   Flujo operativo v2 (2026-09-30): la misma liga sirve al CAPACITADOR de la capacitación en tienda (`tipo:
+   "capacitacion"`): asistencia + Apto / Requiere seguimiento / No apto. Alimenta el mismo resultado que la captura
+   manual de RH; no mueve la tarjeta. */
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { AlertTriangle, Award, Bot, Briefcase, CheckCircle2, ChevronDown, FileText, GraduationCap, Loader2, Sparkles, User } from "lucide-react";
+import { AlertTriangle, Award, Bot, Briefcase, CheckCircle2, ChevronDown, FileText, GraduationCap, Loader2, MapPin, Sparkles, User } from "lucide-react";
 import { Logo, Button, Card, Badge } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 import {
   enviarEvaluacionEntrevistaHumana,
   fetchEntrevistaHumanaPublica,
+  registrarCapacitacionPublica,
   urlArchivoEntrevistaHumanaPublica,
+  type CapacitacionPublica,
   type EntrevistaHumanaPublica,
 } from "@/lib/api";
 import type { ResultadoEntrevistaHumana, RecomendacionEntrevistaHumana } from "@/lib/data";
@@ -33,10 +39,13 @@ export default function EvaluacionEntrevistaHumana() {
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
 
+  const [capacitacion, setCapacitacion] = useState<CapacitacionPublica | null>(null);
+
   useEffect(() => {
     fetchEntrevistaHumanaPublica(token).then((i) => {
       if (!i) return setFase("no_disponible");
-      setInfo(i);
+      if ((i as unknown as { tipo?: string }).tipo === "capacitacion") setCapacitacion(i as unknown as CapacitacionPublica);
+      else setInfo(i);
       setFase("formulario");
     });
   }, [token]);
@@ -90,6 +99,8 @@ export default function EvaluacionEntrevistaHumana() {
             <p className="mt-2 text-sm text-ink-2">La liga no es válida. Si crees que es un error, contacta al equipo de RH.</p>
           </Card>
         )}
+
+        {fase === "formulario" && capacitacion && <SalaCapacitador token={token} inicial={capacitacion} />}
 
         {fase === "formulario" && info && (
           <>
@@ -285,5 +296,95 @@ function Lista({ titulo, items, tono }: { titulo: string; items: string[]; tono?
         {items.slice(0, 12).map((x, i) => <li key={i}>• {x}</li>)}
       </ul>
     </div>
+  );
+}
+
+const OPCION = "h-12 rounded-xl border text-sm font-semibold transition totem:min-h-16 totem:text-xl";
+
+function SalaCapacitador({ token, inicial }: { token: string; inicial: CapacitacionPublica }) {
+  const [info, setInfo] = useState(inicial);
+  const [asistio, setAsistio] = useState<boolean | null>(null);
+  const [resultado, setResultado] = useState("");
+  const [comentario, setComentario] = useState("");
+  const [capacitador, setCapacitador] = useState(inicial.capacitador);
+  const [error, setError] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const pideComentario = asistio === true && resultado !== "" && resultado !== "favorable";
+  const listo = asistio === false || (asistio === true && resultado !== "" && (!pideComentario || comentario.trim() !== ""));
+
+  async function enviar() {
+    if (asistio === null) return;
+    setEnviando(true);
+    setError("");
+    const r = await registrarCapacitacionPublica(token, { asistio, resultado, comentario, capacitador });
+    setEnviando(false);
+    if (!r.ok) return setError(r.error);
+    setInfo(r.data);
+  }
+
+  return (
+    <>
+      <div className="text-center">
+        <Badge tone="brand" dot>{info.empresa || "Red Human"} · Capacitación en tienda</Badge>
+        <h1 className="font-display mt-3 text-2xl font-bold sm:text-3xl">{info.candidato}</h1>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-2">
+          {info.puesto && `${info.puesto}. `}
+          {info.fecha ? `${new Date(info.fecha).toLocaleString("es-MX", { dateStyle: "long", timeStyle: "short" })}.` : ""}
+        </p>
+        <p className="mt-1 inline-flex items-center gap-1 text-sm text-ink-3">
+          <MapPin className="h-4 w-4" /> {info.tienda}{info.direccion ? ` — ${info.direccion}` : ""}
+        </p>
+      </div>
+
+      {info.yaEvaluada ? (
+        <Card className="mt-6 p-6 text-center">
+          <CheckCircle2 className="mx-auto h-8 w-8 text-good" />
+          <p className="mt-2 text-sm text-ink-2">
+            {info.asistencia === "no_asistio" ? "Registraste que no asistió." : `Registraste: ${info.resultadoEtiqueta}.`} ¡Gracias! RH ya lo ve en el expediente.
+          </p>
+        </Card>
+      ) : (
+        <Card className="mt-6 flex flex-col gap-4 p-5">
+          <div>
+            <p className="text-sm font-semibold text-ink">¿Asistió a la capacitación?</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {[true, false].map((v) => (
+                <button key={String(v)} type="button" onClick={() => { setAsistio(v); if (!v) setResultado(""); }}
+                  className={cn(OPCION, asistio === v ? "border-brand bg-brand-soft text-brand" : "border-border-soft text-ink-2")}>
+                  {v ? "Sí asistió" : "No asistió"}
+                </button>
+              ))}
+            </div>
+          </div>
+          {asistio && (
+            <div>
+              <p className="text-sm font-semibold text-ink">Resultado</p>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {info.resultados.map((o) => (
+                  <button key={o.valor} type="button" onClick={() => setResultado(o.valor)}
+                    className={cn(OPCION, resultado === o.valor ? "border-brand bg-brand-soft text-brand" : "border-border-soft text-ink-2")}>
+                    {o.texto}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-semibold text-ink">Comentario {pideComentario ? "(obligatorio)" : "(opcional)"}</span>
+            <textarea rows={3} value={comentario} onChange={(e) => setComentario(e.target.value)}
+              className="rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-semibold text-ink">Tu nombre</span>
+            <input value={capacitador} onChange={(e) => setCapacitador(e.target.value)}
+              className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
+          </label>
+          {error && <p className="rounded-xl border border-bad/25 bg-bad-soft px-3.5 py-2.5 text-[13px] text-bad">{error}</p>}
+          <Button onClick={enviar} disabled={!listo || !capacitador.trim() || enviando} className="totem:min-h-16 totem:text-xl">
+            {enviando ? "Guardando…" : "Registrar"}
+          </Button>
+        </Card>
+      )}
+    </>
   );
 }

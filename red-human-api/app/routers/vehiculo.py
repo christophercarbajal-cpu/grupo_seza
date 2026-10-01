@@ -1,7 +1,8 @@
 """Revisión de vehículo y decisiones del prefiltro por reglas (demo Grupo SEZA, 2026-09-29).
 
-Liga pública (sin sesión, el token es el secreto): el candidato ve qué fotos faltan y las sube una por
-una — frente, atrás y ambos costados. Rutas de RH (con sesión y Cuenta): ver la revisión y las fotos,
+Liga pública (sin sesión, el token es el secreto): el candidato ve qué falta y lo sube uno por uno — 4 fotos
+(frente, atrás y ambos costados) y 3 documentos (licencia vigente, tarjeta de circulación y póliza de seguro), que
+quedan en el expediente de la postulación. Rutas de RH (con sesión y Cuenta): ver la revisión y las fotos,
 reenviar la liga, aprobar / pedir corrección / marcar excepción, y aprobar a mano un prefiltro que quedó
 en «Requiere revisión» o «No cumple». Toda decisión queda con el nombre de quien la tomó (HITL).
 """
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import cuenta_actual, usuario_actual, usuario_decisor
-from ..models import LADOS_VEHICULO, Archivo, Cuenta, Postulacion, RevisionVehiculo, Usuario, registrar
+from ..models import DOCUMENTOS_VEHICULO, LADOS_VEHICULO, Archivo, Cuenta, Postulacion, RevisionVehiculo, Usuario, registrar
 from ..serial import nombre_empresa_candidato
 from ..services import archivos as fs
 from ..services import flujo_operativo
@@ -54,6 +55,11 @@ def _publica_dict(r: RevisionVehiculo) -> dict:
             {"clave": l, "nombre": n, "cargada": l in (r.fotos or {}), "pendiente": abierta and l in faltan}
             for l, n in LADOS_VEHICULO.items()
         ],
+        "documentos": [
+            {"clave": d["clave"], "nombre": d["tipo"], "cargado": d["cargado"], "estado": d["estadoSimple"],
+             "motivo": d["notas"] if d["estadoSimple"] == "Requiere corrección" else "", "pendiente": abierta and d["pendiente"]}
+            for d in vehiculo_srv.documentos_dict(p, r)
+        ],
     }
 
 
@@ -82,6 +88,27 @@ async def subir_foto(token: str, lado: str = Form(...), archivo: UploadFile = Fi
     db.add(a)
     db.flush()
     vehiculo_srv.registrar_foto(db, r, lado, a.id)
+    db.commit()
+    return _publica_dict(r)
+
+
+@router.post("/vehiculo/publica/{token}/documento")
+async def subir_documento(token: str, clave: str = Form(...), archivo: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Licencia, tarjeta de circulación o póliza (foto o PDF): se guarda como Documento del expediente con la
+    misma validación que la liga del expediente (Modo Prueba en el flujo operativo: queda «Recibido»)."""
+    from .contratacion import subir_documento_interno
+
+    r = _por_token(db, token)
+    if clave not in DOCUMENTOS_VEHICULO:
+        raise HTTPException(400, "Documento inválido.")
+    if r.estado not in ("pendiente", "correccion"):
+        raise HTTPException(409, "Tu información ya está en revisión. Si necesitas cambiar algo, RH te lo pedirá por este medio.")
+    if r.estado == "correccion" and clave not in vehiculo_srv.documentos_faltantes(r):
+        raise HTTPException(409, "Ese documento no necesita corrección.")
+    p = r.postulacion
+    vehiculo_srv.obtener_o_crear(db, p)  # asegura el expediente con los 3 documentos
+    await subir_documento_interno(db, p.expediente, DOCUMENTOS_VEHICULO[clave], archivo, "candidato")
+    vehiculo_srv.registrar_documento_subido(db, r, clave)
     db.commit()
     return _publica_dict(r)
 
@@ -160,9 +187,13 @@ async def decidir(codigo: str, datos: DecisionIn, db: Session = Depends(get_db),
         raise HTTPException(400, "Acción inválida: usa aprobar, correccion o excepcion.")
     if datos.accion == "aprobar" and not (r and all(l in (r.fotos or {}) for l in LADOS_VEHICULO)):
         raise HTTPException(409, "Faltan fotos del vehículo. Pide corrección o marca excepción con motivo.")
+    if datos.accion == "aprobar" and vehiculo_srv.documentos_faltantes(r):
+        faltan = ", ".join(DOCUMENTOS_VEHICULO[c] for c in vehiculo_srv.documentos_faltantes(r))
+        raise HTTPException(409, f"Faltan documentos del vehículo ({faltan}). Pide corrección o marca excepción con motivo.")
     if datos.accion == "correccion":
-        if not r or not r.fotos:
-            raise HTTPException(409, "Todavía no hay fotos que corregir; reenvía la liga.")
+        hay_docs = any(vehiculo_srv.documento(p, c) and vehiculo_srv.documento(p, c).archivo for c in DOCUMENTOS_VEHICULO)
+        if not r or not (r.fotos or hay_docs):
+            raise HTTPException(409, "Todavía no hay nada que corregir; reenvía la liga.")
         if not datos.comentario.strip():
             raise HTTPException(400, "Escribe qué debe corregir el candidato.")
     if datos.accion == "excepcion" and not datos.comentario.strip():

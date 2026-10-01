@@ -1,9 +1,11 @@
-"""Revisión de vehículo (demo Grupo SEZA, 2026-09-29).
+"""Revisión de vehículo (demo Grupo SEZA, 2026-09-29; v2 2026-09-30).
 
 Tras el prefiltro, el candidato recibe una liga pública (`/vehiculo/{token}`) para subir 4 fotos de su
-vehículo: frente, atrás y ambos costados. RH las ve en la ficha («Prefiltro / Revisión de vehículo») y
-decide: aprobar, pedir corrección (de ciertos lados, con comentario; se le reenvía la misma liga) o
-marcar excepción (con motivo). La decisión la toma SIEMPRE una persona de RH con su nombre en bitácora.
+vehículo (frente, atrás y ambos costados) y 3 documentos: licencia vigente, tarjeta de circulación y póliza de
+seguro (`DOCUMENTOS_VEHICULO`). Los documentos se guardan como `Documento` del EXPEDIENTE de la postulación, así ya
+están ahí en Onboarding y no se vuelven a pedir. RH ve todo en la ficha («Prefiltro / Vehículo») y decide: aprobar
+(revisa también los 3 documentos), pedir corrección (de ciertas fotos o documentos, con comentario; se le reenvía
+la misma liga) o marcar excepción (con motivo). La decisión es SIEMPRE de una persona de RH, con su nombre.
 
 Regla: no se cita al candidato (capacitación) mientras el vehículo no esté «aprobado» o «excepcion»
 (`puede_citar`). Nada se envía si no hay teléfono; que WhatsApp falle nunca bloquea el flujo.
@@ -16,7 +18,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import ESTADOS_VEHICULO, LADOS_VEHICULO, Postulacion, RevisionVehiculo, registrar
+from ..models import DOCUMENTOS_VEHICULO, ESTADOS_VEHICULO, LADOS_VEHICULO, Documento, Postulacion, RevisionVehiculo, registrar
 from ..serial import iso, nombre_empresa_candidato
 from . import prefiltro_reglas
 
@@ -49,20 +51,53 @@ def _nota(r: RevisionVehiculo, evento: str, texto: str, usuario: str) -> None:
 
 
 def obtener_o_crear(db: Session, p: Postulacion) -> RevisionVehiculo:
+    """La revisión del vehículo de la postulación + su expediente con los 3 documentos del vehículo."""
+    from . import flujo_operativo
+
     r = p.revision_vehiculo
     if r is None:
         r = RevisionVehiculo(postulacion_id=p.id, token=secrets.token_urlsafe(24), estado="pendiente", fotos={})
         db.add(r)
         p.revision_vehiculo = r
         db.flush()
+    flujo_operativo.expediente(db, p, "sistema", list(DOCUMENTOS_VEHICULO.values()))
     return r
 
 
+def documento(p: Postulacion, clave: str) -> Optional[Documento]:
+    """Documento del expediente para la clave del vehículo (licencia | tarjeta | poliza)."""
+    tipo = DOCUMENTOS_VEHICULO.get(clave)
+    e = p.expediente
+    return next((d for d in (e.documentos if e else []) if d.tipo == tipo), None) if tipo else None
+
+
+def _doc_cargado(d: Optional[Documento]) -> bool:
+    return bool(d and d.archivo and d.estado != "rechazado")
+
+
 def lados_faltantes(r: RevisionVehiculo) -> list:
-    """Lados que el candidato aún debe subir: los que no tienen foto o los que RH pidió corregir."""
+    """Fotos que el candidato aún debe subir: las que no tiene o las que RH pidió corregir."""
     if r.estado == "correccion":
-        return [l for l in (r.lados_corregir or []) if l in LADOS_VEHICULO] or list(LADOS_VEHICULO)
+        pedidos = [l for l in (r.lados_corregir or []) if l in LADOS_VEHICULO]
+        if pedidos or any(l in DOCUMENTOS_VEHICULO for l in (r.lados_corregir or [])):
+            return pedidos
+        return list(LADOS_VEHICULO)
     return [l for l in LADOS_VEHICULO if l not in (r.fotos or {})]
+
+
+def documentos_faltantes(r: RevisionVehiculo) -> list:
+    """Documentos (claves) que faltan: sin archivo, rechazados o pedidos en la corrección."""
+    p = r.postulacion
+    pedidos = [l for l in (r.lados_corregir or []) if l in DOCUMENTOS_VEHICULO] if r.estado == "correccion" else []
+    return [c for c in DOCUMENTOS_VEHICULO if c in pedidos or not _doc_cargado(documento(p, c))]
+
+
+def completo(r: RevisionVehiculo) -> bool:
+    return all(l in (r.fotos or {}) for l in LADOS_VEHICULO) and not lados_faltantes_corr(r) and not documentos_faltantes(r)
+
+
+def lados_faltantes_corr(r: RevisionVehiculo) -> list:
+    return [l for l in (r.lados_corregir or []) if l in LADOS_VEHICULO] if r.estado == "correccion" else []
 
 
 def texto_liga(p: Postulacion, r: RevisionVehiculo) -> str:
@@ -70,16 +105,17 @@ def texto_liga(p: Postulacion, r: RevisionVehiculo) -> str:
     vac = p.vacante
     empresa = nombre_empresa_candidato(vac) if vac else ""
     if r.estado == "correccion":
-        lados = ", ".join(LADOS_VEHICULO[l].lower() for l in lados_faltantes(r))
+        lados = ", ".join([LADOS_VEHICULO[l].lower() for l in lados_faltantes(r)] + [DOCUMENTOS_VEHICULO[c].lower() for c in documentos_faltantes(r)])
         return (
-            f"Hola {nombre}, revisamos las fotos de tu vehículo y necesitamos que vuelvas a subir: {lados}."
+            f"Hola {nombre}, revisamos la información de tu vehículo y necesitamos que vuelvas a subir: {lados}."
             + (f"\nComentario: {r.comentario}" if r.comentario else "")
             + f"\n\nUsa la misma liga: {liga(r)}"
         )
     return (
         f"¡Gracias, {nombre}! Para continuar con tu postulación a *{vac.titulo if vac else 'la vacante'}*"
         + (f" de {empresa}" if empresa else "")
-        + ", sube 4 fotos de tu vehículo: frente, atrás y ambos costados. Toma cada foto completa y con buena luz."
+        + ", sube 4 fotos de tu vehículo (frente, atrás y ambos costados) y una foto o PDF de tu licencia vigente, "
+        "tarjeta de circulación y póliza de seguro. Toma cada foto completa y con buena luz."
         + f"\n\n📷 {liga(r)}"
     )
 
@@ -94,7 +130,7 @@ async def enviar_liga(db: Session, p: Postulacion, actor: str) -> dict:
     guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
     r.liga_enviada_en = datetime.now(timezone.utc)
     r.envios = (r.envios or 0) + 1
-    _nota(r, "liga_enviada", "Liga de fotos enviada" + ("" if envio.get("enviado") else " (WhatsApp no salió: compártela a mano)"), actor)
+    _nota(r, "liga_enviada", "Liga del vehículo enviada" + ("" if envio.get("enviado") else " (el mensaje no salió: compártela a mano)"), actor)
     registrar(db, actor, "vehiculo_liga_enviada", "postulacion", p.codigo, {"enviado": envio.get("enviado", False)})
     return {"liga": liga(r), "whatsapp": envio}
 
@@ -105,10 +141,20 @@ def registrar_foto(db: Session, r: RevisionVehiculo, lado: str, archivo_id: int)
     r.fotos = fotos
     if r.estado == "correccion":
         r.lados_corregir = [l for l in (r.lados_corregir or []) if l != lado]
-    completo = all(l in fotos for l in LADOS_VEHICULO) and not (r.estado == "correccion" and r.lados_corregir)
-    if completo and r.estado in ("pendiente", "correccion"):
+    revisar_completo(db, r)
+
+
+def registrar_documento_subido(db: Session, r: RevisionVehiculo, clave: str) -> None:
+    if r.estado == "correccion":
+        r.lados_corregir = [l for l in (r.lados_corregir or []) if l != clave]
+    revisar_completo(db, r)
+
+
+def revisar_completo(db: Session, r: RevisionVehiculo) -> None:
+    """Con las 4 fotos y los 3 documentos cargados (y nada pendiente de corregir) pasa a «por revisar»."""
+    if r.estado in ("pendiente", "correccion") and completo(r):
         r.estado = "por_revisar"
-        _nota(r, "fotos_completas", "El candidato subió todas las fotos", "candidato")
+        _nota(r, "fotos_completas", "El candidato subió las 4 fotos y los 3 documentos", "candidato")
         registrar(db, "candidato", "vehiculo_fotos_completas", "postulacion", r.postulacion.codigo, {})
 
 
@@ -117,11 +163,20 @@ def decidir(db: Session, p: Postulacion, accion: str, usuario: str, comentario: 
     r = obtener_o_crear(db, p)
     ahora = datetime.now(timezone.utc)
     if accion == "aprobar":
-        r.estado, texto = "aprobado", "Vehículo aprobado"
+        r.estado, texto = "aprobado", "Vehículo aprobado (fotos, licencia, tarjeta y póliza revisadas)"
+        for c in DOCUMENTOS_VEHICULO:  # RH revisó los 3 documentos en el mismo panel
+            d = documento(p, c)
+            if d and d.archivo and not d.aprobado:
+                d.estado, d.revisado_por = "recibido", usuario
     elif accion == "correccion":
         r.estado = "correccion"
-        r.lados_corregir = [l for l in (lados or []) if l in LADOS_VEHICULO] or list(LADOS_VEHICULO)
-        texto = "Corrección solicitada: " + ", ".join(LADOS_VEHICULO[l] for l in r.lados_corregir)
+        validos = {**LADOS_VEHICULO, **DOCUMENTOS_VEHICULO}
+        r.lados_corregir = [l for l in (lados or []) if l in validos] or list(LADOS_VEHICULO)
+        for c in r.lados_corregir:
+            d = documento(p, c) if c in DOCUMENTOS_VEHICULO else None
+            if d:  # el candidato lo ve como «Requiere corrección» con el comentario
+                d.estado, d.revisado_por, d.notas_ia = "rechazado", usuario, comentario.strip()[:1000]
+        texto = "Corrección solicitada: " + ", ".join(validos[l] for l in r.lados_corregir)
     else:
         r.estado, texto = "excepcion", "Aprobado por excepción"
     r.comentario = comentario.strip()
@@ -129,6 +184,18 @@ def decidir(db: Session, p: Postulacion, accion: str, usuario: str, comentario: 
     _nota(r, accion, texto + (f" — {r.comentario}" if r.comentario else ""), usuario)
     registrar(db, usuario, f"vehiculo_{accion}", "postulacion", p.codigo, {"comentario": r.comentario, "lados": r.lados_corregir})
     return r
+
+
+def documentos_dict(p: Postulacion, r: Optional[RevisionVehiculo]) -> list:
+    from .flujo_operativo import estado_documento
+
+    salida = []
+    for c, tipo in DOCUMENTOS_VEHICULO.items():
+        d = documento(p, c)
+        salida.append({"clave": c, "tipo": tipo, "cargado": bool(d and d.archivo), "estadoSimple": estado_documento(d) if d else "Pendiente",
+                       "notas": (d.notas_ia or "") if d else "", "revisadoPor": (d.revisado_por or "") if d else "",
+                       "pendiente": bool(r) and c in documentos_faltantes(r)})
+    return salida
 
 
 def revision_dict(p: Postulacion, url_foto) -> Optional[dict]:
@@ -139,7 +206,8 @@ def revision_dict(p: Postulacion, url_foto) -> Optional[dict]:
     citable, motivo = puede_citar(p)
     base = {"requerida": True, "puedeCitar": citable, "motivoBloqueo": motivo}
     if r is None:
-        return {**base, "estado": "sin_liga", "etiqueta": "Liga de fotos sin enviar", "liga": "", "fotos": [], "historial": []}
+        return {**base, "estado": "sin_liga", "etiqueta": "Liga del vehículo sin enviar", "liga": "", "fotos": [], "documentos": documentos_dict(p, None),
+                "expedienteId": p.expediente.id if p.expediente else None, "historial": []}
     return {
         **base,
         "estado": r.estado,
@@ -156,6 +224,9 @@ def revision_dict(p: Postulacion, url_foto) -> Optional[dict]:
              "url": url_foto(l) if l in (r.fotos or {}) else ""}
             for l, n in LADOS_VEHICULO.items()
         ],
+        "documentos": documentos_dict(p, r),
+        "expedienteId": p.expediente.id if p.expediente else None,
+        "completo": completo(r),
         "historial": list(reversed(r.historial or [])),
     }
 
@@ -172,8 +243,10 @@ def resumen_prefiltro(p: Postulacion) -> Optional[dict]:
     respuestas = estado.get("respuestas") or {}
     if not ev:
         total = len(prefiltro_reglas.aplicables(cfg, respuestas))
-        accion = f"Esperando respuestas del candidato ({len(respuestas)}/{total})"
-        return {"completo": False, "resultado": "pendiente", "etiqueta": "Prefiltro en curso", "motivos": [],
+        sin_iniciar = not respuestas
+        accion = "Esperando que el candidato empiece el prefiltro" if sin_iniciar else f"Esperando respuestas del candidato ({len(respuestas)}/{total})"
+        return {"completo": False, "resultado": "pendiente", "etiqueta": "Sin resultado", "motivos": [],
+                "estadoPrefiltro": "Sin iniciar" if sin_iniciar else "En curso",
                 "siguienteAccion": accion, "respondidas": len(respuestas), "total": total}
     # RH puede haber aprobado a mano un «Requiere revisión»: manda el estado vigente de la postulación
     resultado = p.estado if p.estado in prefiltro_reglas.RESULTADOS else ev["resultado"]
@@ -184,17 +257,18 @@ def resumen_prefiltro(p: Postulacion) -> Optional[dict]:
     elif not requiere_fotos(p):
         accion = "Listo para citar"
     elif r is None:
-        accion = "Enviar liga de fotos del vehículo"
+        accion = "Enviar liga del vehículo (fotos y documentos)"
     else:
         accion = {
-            "pendiente": "Esperando fotos del vehículo",
-            "correccion": "Esperando fotos corregidas del vehículo",
-            "por_revisar": "Revisar fotos del vehículo: aprobar, pedir corrección o marcar excepción",
-            "aprobado": "Listo para citar a capacitación",
-            "excepcion": "Listo para citar a capacitación (vehículo por excepción)",
+            "pendiente": "Esperando fotos y documentos del vehículo",
+            "correccion": "Esperando la corrección del candidato",
+            "por_revisar": "Revisar fotos y documentos: aprobar, pedir corrección o marcar excepción",
+            "aprobado": "Listo para citar a la capacitación en tienda (Entrevista)",
+            "excepcion": "Listo para citar a la capacitación en tienda (vehículo por excepción)",
         }.get(r.estado, "")
     return {
         "completo": True,
+        "estadoPrefiltro": "Completado",
         "resultado": resultado,
         "etiqueta": prefiltro_reglas.RESULTADOS.get(resultado, resultado),
         "resultadoOriginal": ev["resultado"],

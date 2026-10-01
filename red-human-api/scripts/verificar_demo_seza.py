@@ -1,11 +1,12 @@
-"""Regresión de la demo Grupo SEZA (puntos 1-8, 2026-09-29) sobre una base DESECHABLE.
+"""Regresión de la demo Grupo SEZA (flujo operativo v2, 2026-09-30) sobre una base DESECHABLE.
 
-Carga el ambiente (`cargar_demo_seza.py`) y comprueba: sueldo por día, pieza de Facebook con liga única
-y fuente «Facebook», prefiltro por reglas por la web (reglas distintas por plaza) y por WhatsApp
-(cuestionario con repregunta), CV opcional, fotos del vehículo (subida, corrección, aprobación,
-excepción), que nadie salga de Prefiltro sin el vehículo aprobado, y el flujo operativo: Kanban de 8 etapas y
-sus contadores, sesión de capacitación con cupo, liga del supervisor (Apto / Requiere seguimiento / No apto),
-inducción simulada, documentos + 3 referencias contactadas → Listo para alta → Alta realizada.
+Carga el ambiente (`cargar_demo_seza.py`) y comprueba: sueldo por día, pieza de Facebook con liga única y fuente
+«Facebook», prefiltro por reglas por la web (reglas distintas por plaza) y por chat (cuestionario con repregunta),
+CV opcional, revisión del vehículo (4 fotos + licencia, tarjeta y póliza; corrección, aprobación, excepción), que
+nadie pase a Entrevista sin el vehículo aprobado, y el flujo operativo de 6 columnas: subestado del Prefiltro,
+contadores, capacitación en tienda sobre la entrevista humana (sin cupos; envío aparte; liga del capacitador y
+captura manual de RH), inducción, condiciones + tipos de contratación + contrato ahora/después, Onboarding con 6
+documentos + 3 referencias (registro de llamadas) y «Dar de alta» que cierra el proceso.
 
 Uso (desde red-human-api/):  python scripts/verificar_demo_seza.py
 """
@@ -112,29 +113,43 @@ def main():
                                                  "respuestas_reglas": json.dumps({**R_OK, "licencia": ""})})
         check(r.status_code == 400, "respuestas incompletas → 400")
 
+
         # Bloqueo de citación
         check(c.get(f"/candidatos/{ana}", headers=h).json()["etapa"] == "Revisión de vehículo", "Cumple perfil → columna «Revisión de vehículo»")
-        r = c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Cita para capacitación", "manual": True}, headers=h)
-        check(r.status_code == 409, "no se puede citar sin vehículo aprobado (ni moviendo a mano)")
+        r = c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Entrevista", "manual": True}, headers=h)
+        check(r.status_code == 409, "no se puede pasar a Entrevista sin vehículo aprobado (ni moviendo a mano)")
 
-        # Fotos
-        tok = c.get(f"/candidatos/{ana}/vehiculo", headers=h).json()["vehiculo"]["liga"].rsplit("/", 1)[1]
+        # Fotos + documentos del vehículo
+        veh = c.get(f"/candidatos/{ana}/vehiculo", headers=h).json()["vehiculo"]
+        tok = veh["liga"].rsplit("/", 1)[1]
+        check([d["clave"] for d in veh["documentos"]] == ["licencia", "tarjeta", "poliza"],
+              "el vehículo pide licencia, tarjeta de circulación y póliza (sin comprobante de propiedad)")
         for lado in ("frente", "atras", "izquierdo", "derecho"):
             r = c.post(f"/vehiculo/publica/{tok}/foto", data={"lado": lado}, files={"archivo": (f"{lado}.jpg", JPG, "image/jpeg")})
-        check(r.json()["estado"] == "por_revisar", "4 fotos → por revisar")
-        r = c.post(f"/candidatos/{ana}/vehiculo/decision", json={"accion": "correccion", "comentario": "Atrás borrosa", "lados": ["atras"]}, headers=h)
-        check(r.json()["vehiculo"]["estado"] == "correccion", "pedir corrección")
+        check(r.json()["estado"] == "pendiente" and all(d["pendiente"] for d in r.json()["documentos"]), "4 fotos sin documentos → sigue pendiente")
+        check(c.post(f"/candidatos/{ana}/vehiculo/decision", json={"accion": "aprobar"}, headers=h).status_code == 409,
+              "no se aprueba el vehículo sin los 3 documentos")
+        for clave in ("licencia", "tarjeta", "poliza"):
+            r = c.post(f"/vehiculo/publica/{tok}/documento", data={"clave": clave}, files={"archivo": (f"{clave}.pdf", PDF, "application/pdf")})
+        check(r.json()["estado"] == "por_revisar", "4 fotos + 3 documentos → por revisar")
+        r = c.post(f"/candidatos/{ana}/vehiculo/decision", json={"accion": "correccion", "comentario": "Atrás borrosa y póliza vencida", "lados": ["atras", "poliza"]}, headers=h)
+        check(r.json()["vehiculo"]["estado"] == "correccion", "pedir corrección de una foto y un documento")
+        pub = c.get(f"/vehiculo/publica/{tok}").json()
+        pol = next(d for d in pub["documentos"] if d["clave"] == "poliza")
+        check(pol["pendiente"] and pol["estado"] == "Requiere corrección" and pol["motivo"], "la liga muestra la póliza «Requiere corrección» con el motivo")
         check(c.post(f"/vehiculo/publica/{tok}/foto", data={"lado": "frente"}, files={"archivo": ("x.jpg", JPG, "image/jpeg")}).status_code == 409,
-              "en corrección solo se sube el lado pedido")
-        r = c.post(f"/vehiculo/publica/{tok}/foto", data={"lado": "atras"}, files={"archivo": ("x.jpg", JPG, "image/jpeg")})
-        check(r.json()["estado"] == "por_revisar", "lado corregido → por revisar")
+              "en corrección solo se sube lo pedido")
+        c.post(f"/vehiculo/publica/{tok}/foto", data={"lado": "atras"}, files={"archivo": ("x.jpg", JPG, "image/jpeg")})
+        r = c.post(f"/vehiculo/publica/{tok}/documento", data={"clave": "poliza"}, files={"archivo": ("poliza2.pdf", PDF, "application/pdf")})
+        check(r.json()["estado"] == "por_revisar", "foto y documento corregidos → por revisar")
         r = c.post(f"/candidatos/{ana}/vehiculo/decision", json={"accion": "aprobar"}, headers=h).json()
-        check(r["vehiculo"]["puedeCitar"] and r["prefiltro"]["siguienteAccion"].startswith("Listo para citar"), "aprobar vehículo → listo para citar")
-        check(c.get(f"/candidatos/{ana}", headers=h).json()["etapa"] == "Cita para capacitación", "vehículo aprobado → «Cita para capacitación»")
+        check(r["vehiculo"]["puedeCitar"] and all(d["estadoSimple"] == "Revisado" for d in r["vehiculo"]["documentos"]),
+              "aprobar vehículo → los 3 documentos quedan «Revisado» y ya se puede citar")
+        check(c.get(f"/candidatos/{ana}", headers=h).json()["etapa"] == "Entrevista", "vehículo aprobado → «Entrevista»")
 
         check(c.post(f"/candidatos/{fer}/prefiltro-reglas/aprobar", json={"motivo": " "}, headers=h).status_code == 400, "aprobar prefiltro exige motivo")
         r = c.post(f"/candidatos/{fer}/prefiltro-reglas/aprobar", json={"motivo": "Póliza en trámite"}, headers=h).json()
-        check(r["prefiltro"]["resultado"] == "cumple" and r["vehiculo"]["estado"] == "pendiente", "RH aprueba prefiltro → sale liga de fotos")
+        check(r["prefiltro"]["resultado"] == "cumple" and r["vehiculo"]["estado"] == "pendiente", "RH aprueba prefiltro → sale liga del vehículo")
         check(c.post(f"/candidatos/{fer}/vehiculo/decision", json={"accion": "excepcion"}, headers=h).status_code == 400, "excepción exige motivo")
         r = c.post(f"/candidatos/{fer}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Revisado en persona"}, headers=h).json()
         check(r["vehiculo"]["puedeCitar"], "excepción con motivo → se puede citar")
@@ -144,18 +159,30 @@ def main():
     asyncio.run(_whatsapp())
 
 
+PDF = b"%PDF-1.4\n" + b"0" * 900
+
+
 def _flujo_operativo(c, h, ana, fer):
     from collections import Counter
 
     fl = c.get("/candidatos-flujo", headers=h).json()
-    check(fl["flujo"] == "operativo" and fl["etapas"][0] == "Nuevo" and fl["etapas"][-1] == "Alta realizada" and len(fl["etapas"]) == 8,
-          "Kanban operativo de 8 etapas (Nuevo → Alta realizada)")
+    check(fl["flujo"] == "operativo" and fl["etapas"] == ["Prefiltro", "Revisión de vehículo", "Entrevista", "Evaluación", "Contratación", "Onboarding"],
+          "Kanban operativo de 6 columnas (Prefiltro → Onboarding)")
     tarjetas = c.get("/candidatos", headers=h).json()
     lista = tarjetas if isinstance(tarjetas, list) else tarjetas.get("candidatos", [])
     por_etapa = Counter(t["etapa"] for t in lista)
-    minimos = {"Nuevo": 3, "Prefiltro": 4, "Revisión de vehículo": 4, "Cita para capacitación": 4, "Capacitación realizada": 3,
-               "Documentos y referencias": 3, "Listo para alta": 2, "Alta realizada": 2}
-    check(all(por_etapa.get(e, 0) >= n for e, n in minimos.items()), f"candidatos ficticios en las 8 columnas {dict(por_etapa)}")
+    minimos = {"Prefiltro": 7, "Revisión de vehículo": 4, "Entrevista": 6, "Evaluación": 2, "Contratación": 2, "Onboarding": 3}
+    check(all(por_etapa.get(e, 0) >= n for e, n in minimos.items()) and set(por_etapa) <= set(minimos),
+          f"candidatos ficticios solo en las 6 columnas {dict(por_etapa)}")
+    sub = Counter((t.get("operativo") or {}).get("texto") for t in lista if t["etapa"] == "Prefiltro")
+    check(sub["Prefiltro: Sin iniciar"] >= 3 and sub["Prefiltro: En curso"] >= 1 and sub["Prefiltro: Completado"] >= 3,
+          f"Prefiltro con subestado Sin iniciar / En curso / Completado {dict(sub)}")
+    completados = [t for t in lista if (t.get("operativo") or {}).get("texto") == "Prefiltro: Completado"]
+    check({t["prefiltroReglas"]["resultado"] for t in completados} >= {"revision", "no_cumple"}, "el resultado del prefiltro se muestra aparte del subestado")
+    cerradas = c.get("/candidatos?mostrar_cerradas=true", headers=h).json()
+    lista_c = cerradas if isinstance(cerradas, list) else cerradas.get("candidatos", [])
+    check(any(t["nombre"] == "Tomás Guerrero Álvarez" and t["activa"] is False and t["motivoCierre"] == "contratado" for t in lista_c),
+          "el candidato dado de alta queda CERRADO como contratado (se ve con «Mostrar cerradas»)")
     vacs = c.get("/vacantes", headers=h).json()
     suma_vacantes = Counter()
     for v in vacs:
@@ -163,47 +190,66 @@ def _flujo_operativo(c, h, ana, fer):
             suma_vacantes[e] += n
     check(all(suma_vacantes.get(e, 0) == por_etapa.get(e, 0) for e in minimos), "contadores de las vacantes = columnas del Kanban")
 
-    # Sesión con cupo 1 (Puebla) → citar a Ana; Fer (CDMX, vehículo por excepción) ya no cabe
-    puebla = next(v for v in vacs if v["ubicacionEstado"] == "Puebla")
-    s = c.post("/sesiones-capacitacion", json={"tienda": "Tienda prueba", "inicio": "2030-01-15T09:00", "cupo": 1,
-                                              "supervisor_nombre": "Sup Prueba", "vacante": puebla["id"]}, headers=h).json()
-    r = c.post(f"/candidatos/{ana}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
-    check(r.status_code == 200 and r.json()["capacitacion"]["nombre"] == "Capacitación en tienda", "citar a sesión compartida (evaluación «Otra» · Capacitación en tienda)")
-    r = c.post(f"/candidatos/{fer}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
-    check(r.status_code == 409 and "cupo" in r.json()["detail"], "la sesión respeta el cupo")
-    evs = c.get(f"/evaluaciones/postulaciones/{ana}", headers=h).json()
-    lista_ev = evs if isinstance(evs, list) else evs.get("evaluaciones", [])
-    check(any(e.get("tipo") == "otra" and e.get("nombre") == "Capacitación en tienda" for e in lista_ev), "aparece en Evaluaciones como tipo «Otra»")
-
-    # Inducción SEZA: duplicada y enviada (simulada) al confirmar la cita
+    # Entrevista = capacitación en tienda (sin grupos ni cupos)
     cursos = c.get("/capacitacion", headers=h).json()
-    lista_cursos = cursos if isinstance(cursos, list) else cursos.get("cursos", [])
-    induccion = next((x for x in lista_cursos if x.get("titulo") == "Inducción SEZA"), None)
+    induccion = next((x for x in (cursos if isinstance(cursos, list) else cursos.get("cursos", [])) if x.get("titulo") == "Inducción SEZA"), None)
     check(induccion is not None, "curso «Inducción SEZA» duplicado de un curso existente")
-    c.patch(f"/sesiones-capacitacion/{s['codigo']}", json={"tienda": "Tienda prueba", "inicio": "2030-01-15T09:00", "cupo": 1,
-                                                          "supervisor_nombre": "Sup Prueba", "vacante": puebla["id"], "curso_induccion": induccion["id"]}, headers=h)
+    cita = {"tienda": "Tienda prueba", "direccion": "Av. Prueba 1", "fecha": "2030-01-15", "hora": "09:00", "capacitador_tipo": "externo",
+            "capacitador_nombre": "Capacitador Prueba", "curso_induccion": induccion["id"], "indicaciones": "Llega 15 min antes"}
+    check(c.post(f"/candidatos/{ana}/operativo/entrevista", json={**cita, "tienda": ""}, headers=h).status_code == 400, "la cita exige tienda")
+    r = c.post(f"/candidatos/{ana}/operativo/entrevista", json=cita, headers=h)
+    d = r.json()
+    check(r.status_code == 200 and d["entrevista"]["tienda"] == "Tienda prueba" and d["entrevista"]["capacitador"]["nombre"] == "Capacitador Prueba"
+          and d["entrevista"]["estado"] == "Citado · por confirmar", "programar capacitación: tienda, fecha/hora y capacitador")
+    check(d["envioCandidato"]["enviado"] is False and d["envioCapacitador"][0]["enviado"] is False and d["entrevista"]["ligaCapacitador"],
+          "el envío va por separado: aunque no salga, la cita y la liga del capacitador quedan creadas")
+    r = c.post(f"/candidatos/{fer}/operativo/entrevista", json=cita, headers=h)
+    check(r.status_code == 200, "otra cita en la misma tienda y hora: sin cupos")
     r = c.post(f"/candidatos/{ana}/operativo/confirmar-cita", headers=h).json()
-    check(r["capacitacion"]["confirmada"] and r["induccion"] and r["induccion"]["simulado"], "confirmar cita → PDF de inducción (simulado)")
+    check(r["entrevista"]["confirmada"] and r["induccionEnviada"] and r["induccionEnviada"]["simulado"], "confirmar cita → PDF de «Inducción SEZA» (simulado sin Telegram)")
     msgs = c.get(f"/candidatos/{ana}/mensajes", headers=h).json()
     lista_m = msgs if isinstance(msgs, list) else msgs.get("mensajes", [])
-    check(any("[Simulado" in (m.get("texto") or "") and "Inducción SEZA" in (m.get("texto") or "") for m in lista_m), "el envío simulado queda en el chat de WhatsApp")
+    check(any("[Simulado" in (m.get("texto") or "") and "Inducción SEZA" in (m.get("texto") or "") for m in lista_m), "el envío simulado queda en el chat")
 
-    # Liga del supervisor
-    token = s["ligaSupervisor"].rsplit("/", 1)[1]
-    pub = c.get(f"/sesiones-capacitacion/publica/{token}").json()
-    check([x["nombre"] for x in pub["citados"]] == ["Ana Cumple"] and "telefono" not in pub["citados"][0], "el supervisor ve a sus citados (sin datos de contacto)")
-    ev = pub["citados"][0]["evaluacion"]
-    check(c.post(f"/sesiones-capacitacion/publica/{token}/asistencia", json={"evaluacion": ev, "asistio": True, "resultado": "con_observaciones"}).status_code == 400,
+    # Liga del capacitador (misma liga de la entrevista humana)
+    token = r["entrevista"]["ligaCapacitador"].rsplit("/", 1)[1]
+    pub = c.get(f"/entrevista-humana/publica/{token}").json()
+    check(pub["tipo"] == "capacitacion" and pub["tienda"] == "Tienda prueba" and "telefono" not in pub, "el capacitador ve la capacitación (sin datos de contacto)")
+    check(c.post(f"/entrevista-humana/publica/{token}/capacitacion", json={"asistio": True, "resultado": "con_observaciones"}).status_code == 400,
           "«Requiere seguimiento» exige comentario")
-    c.post(f"/sesiones-capacitacion/publica/{token}/asistencia", json={"evaluacion": ev, "asistio": True, "resultado": "con_observaciones", "comentario": "Reforzar uso de la app"})
+    c.post(f"/entrevista-humana/publica/{token}/capacitacion", json={"asistio": True, "resultado": "con_observaciones", "comentario": "Reforzar uso de la app"})
     panel = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
-    check(panel["etapa"] == "Capacitación realizada" and panel["capacitacion"]["resultadoEtiqueta"] == "Requiere seguimiento"
-          and panel["capacitacion"]["dictamenInterno"] == "Con observaciones", "asistencia → «Capacitación realizada», Requiere seguimiento = Con observaciones")
-    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Listo para alta", "manual": True}, headers=h).status_code == 409, "no se brinca a «Listo para alta»")
+    check(panel["etapa"] == "Entrevista" and panel["entrevista"]["resultadoEtiqueta"] == "Requiere seguimiento" and panel["entrevista"]["capturadoPor"] == "entrevistador",
+          "el capacitador registra el resultado; la tarjeta NO se mueve sola")
+    check(c.post(f"/entrevista-humana/publica/{token}/capacitacion", json={"asistio": True, "resultado": "favorable"}).status_code == 409,
+          "la liga no sobreescribe un resultado ya capturado")
+    r = c.post(f"/candidatos/{fer}/operativo/entrevista/resultado", json={"asistio": True, "resultado": "favorable"}, headers=h)
+    check(r.status_code == 200 and r.json()["entrevista"]["capturadoPor"] == "rh", "RH siempre puede capturar el resultado a mano")
+    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Onboarding", "manual": True}, headers=h).status_code == 409,
+          "no se brinca a Onboarding sin condiciones ni contrato")
 
-    # Documentos + 3 referencias
-    r = c.post(f"/candidatos/{ana}/operativo/solicitar-documentos", headers=h).json()
-    check(r["etapa"] == "Documentos y referencias" and len(r["expediente"]["documentos"]) >= 9, "pedir documentos y referencias → columna y expediente de chofer")
+    # Evaluación → Contratación
+    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Evaluación", "manual": True}, headers=h).status_code == 200, "RH pasa a Evaluación")
+    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Contratación", "manual": True}, headers=h).status_code == 200, "RH pasa a Contratación")
+    panel = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
+    check({"Honorarios", "Prestación de servicios", "Comisión mercantil"} <= set(panel["contratacion"]["tiposContratacion"]),
+          "tipos de contratación: Honorarios, Prestación de servicios, Comisión mercantil")
+    check(c.post(f"/candidatos/{ana}/operativo/contrato", json={"cuando": "ahora"}, headers=h).status_code == 409, "generar contrato exige condiciones")
+    r = c.patch(f"/candidatos/{ana}/condiciones-contratacion", json={"puesto": "Chofer de reparto", "sueldo": "$650 diarios", "tipo_contratacion": "Comisión mercantil",
+                                                                      "fecha_ingreso": "2030-02-01"}, headers=h)
+    check(r.status_code == 200, "guardar condiciones (Comisión mercantil)")
+    check(c.post(f"/candidatos/{ana}/operativo/onboarding", headers=h).status_code == 409, "a Onboarding no se pasa sin decidir el contrato")
+    panel = c.post(f"/candidatos/{ana}/operativo/contrato", json={"cuando": "despues"}, headers=h).json()
+    check(panel["contratacion"]["contrato"] == "despues" and not panel["contratacion"]["requisitosOnboarding"], "«Generar después de Onboarding» deja el contrato pendiente")
+    pdf = c.get(f"/contratacion/expedientes/{panel['expediente']['id']}/contrato", headers=h)
+    check(pdf.status_code == 200 and pdf.content[:4] == b"%PDF", "el contrato se puede generar sin esperar los documentos de Onboarding")
+
+    # Onboarding: 6 documentos personales (los del vehículo ya están) + 3 referencias
+    r = c.post(f"/candidatos/{ana}/operativo/onboarding", headers=h).json()
+    docs = {d["tipo"]: d for d in r["expediente"]["documentos"]}
+    check(r["etapa"] == "Onboarding" and len(docs) == 9 and all(docs[t]["estadoSimple"] == "Revisado" for t in
+          ("Licencia de conducir vigente", "Tarjeta de circulación", "Póliza de seguro vigente")),
+          "Enviar a Onboarding → pide los 6 documentos; los 3 del vehículo ya están revisados")
     tok = r["liga"].rsplit("/", 1)[1]
     pub = c.get(f"/expedientes/publica/{tok}").json()
     check(pub["pideReferencias"] and pub["referenciasRequeridas"] == 3, "la liga del expediente pide 3 referencias")
@@ -211,16 +257,14 @@ def _flujo_operativo(c, h, ana, fer):
     check(c.post(f"/expedientes/publica/{tok}/referencias", json={"referencias": refs}).status_code == 400, "exige exactamente 3 referencias")
     refs.append({"nombre": "Ref Tres", "telefono": "5533333333", "parentesco": "Exjefe o excompañero"})
     check(c.post(f"/expedientes/publica/{tok}/referencias", json={"referencias": refs}).status_code == 200, "el candidato captura sus 3 referencias")
-    pdf = b"%PDF-1.4\n" + b"0" * 900
 
     def estado_doc(tipo):
         p_ = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
         return next(x["estadoSimple"] for x in p_["expediente"]["documentos"] if x["tipo"] == tipo)
 
-    # Estados del documento: Pendiente → Recibido → Requiere corrección (motivo + WhatsApp) → Recibido → Revisado
     ine = "Identificación oficial (INE)"
     check(estado_doc(ine) == "Pendiente", "documento sin archivo → «Pendiente»")
-    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": ine}, files={"archivo": ("ine.pdf", pdf, "application/pdf")})
+    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": ine}, files={"archivo": ("ine.pdf", PDF, "application/pdf")})
     check(estado_doc(ine) == "Recibido", "el candidato lo sube → «Recibido» (falta revisión de RH)")
     check(c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": ine, "estado": "rechazado"}, headers=h).status_code == 400,
           "pedir corrección exige motivo")
@@ -230,8 +274,8 @@ def _flujo_operativo(c, h, ana, fer):
     doc_pub = next(x for x in c.get(f"/expedientes/publica/{tok}").json()["documentos"] if x["tipo"] == ine)
     check(estado_doc(ine) == "Requiere corrección" and r_corr["whatsapp"] is not None
           and any("requiere corrección: Falta el reverso" in (m.get("texto") or "") for m in lista_m)
-          and doc_pub["motivo"] == "Falta el reverso", "pedir corrección → «Requiere corrección», aviso por WhatsApp y motivo en la liga")
-    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": ine}, files={"archivo": ("ine2.pdf", pdf, "application/pdf")})
+          and doc_pub["motivo"] == "Falta el reverso", "pedir corrección → «Requiere corrección», aviso por chat y motivo en la liga")
+    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": ine}, files={"archivo": ("ine2.pdf", PDF, "application/pdf")})
     check(estado_doc(ine) == "Recibido", "lo vuelve a subir → «Recibido» otra vez")
     c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": ine, "estado": "aprobado"}, headers=h)
     check(estado_doc(ine) == "Revisado", "RH lo revisa → «Revisado»")
@@ -244,24 +288,24 @@ def _flujo_operativo(c, h, ana, fer):
     cfg = _cfg_obtener(db)
     cfg.modo_prueba = True
     db.commit()
-    lic = "Licencia de conducir vigente"
-    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": lic}, files={"archivo": ("lic.pdf", pdf, "application/pdf")})
-    check(estado_doc(lic) == "Recibido", "Modo Prueba (flujo operativo): el documento subido queda «Recibido», no se auto-aprueba")
+    curp = "CURP"
+    c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": curp}, files={"archivo": ("curp.pdf", PDF, "application/pdf")})
+    check(estado_doc(curp) == "Recibido", "Modo Prueba (flujo operativo): el documento subido queda «Recibido», no se auto-aprueba")
     cfg.modo_prueba = False
     db.commit()
     db.close()
 
-    for d in r["expediente"]["documentos"]:
-        if d["tipo"] == ine:
+    for t in docs:
+        if estado_doc(t) == "Revisado":
             continue
-        c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": d["tipo"]}, files={"archivo": ("doc.pdf", pdf, "application/pdf")})
-        c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": d["tipo"], "estado": "aprobado"}, headers=h)
+        c.post(f"/expedientes/publica/{tok}/documentos", data={"tipo": t}, files={"archivo": ("doc.pdf", PDF, "application/pdf")})
+        c.post(f"/candidatos/{ana}/operativo/documentos", json={"tipo": t, "estado": "aprobado"}, headers=h)
     panel = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
     check(all(x["estadoSimple"] == "Revisado" for x in panel["expediente"]["documentos"]), "los 9 documentos del chofer quedan «Revisado»")
-    check(panel["etapa"] == "Documentos y referencias" and any("Referencias por contactar" in f for f in panel["faltantesAlta"]),
-          "con documentos aprobados aún faltan las referencias contactadas")
+    check(not panel["listoParaAlta"] and any("Referencias por contactar" in f for f in panel["faltantesAlta"]),
+          "con documentos revisados aún faltan las referencias contactadas")
+    check(c.post(f"/candidatos/{ana}/operativo/alta", headers=h).status_code == 409, "«Dar de alta» bloqueado sin referencias contactadas")
 
-    # Registro manual de llamadas: fecha, contactada, resultado, observaciones
     url_ref = f"/candidatos/{ana}/operativo/referencias/0"
     check(c.post(url_ref, json={"contactada": True, "resultado": "No contestó"}, headers=h).status_code == 400,
           "llamada: el resultado debe corresponder a si se contactó")
@@ -269,7 +313,7 @@ def _flujo_operativo(c, h, ana, fer):
           "llamada: la fecha no puede ser futura")
     panel = c.post(url_ref, json={"contactada": False, "resultado": "No contestó", "fecha": "2026-09-29T10:15", "nota": "Buzón"}, headers=h).json()
     ref0 = panel["expediente"]["referencias"][0]
-    check(not ref0["contactada"] and ref0["resultado"] == "No contestó" and len(ref0["llamadas"]) == 1 and panel["etapa"] == "Documentos y referencias",
+    check(not ref0["contactada"] and ref0["resultado"] == "No contestó" and len(ref0["llamadas"]) == 1,
           "llamada sin contacto: queda registrada y la referencia sigue por contactar")
     panel = c.post(url_ref, json={"contactada": True, "resultado": "Favorable", "fecha": "2026-09-29T12:40", "nota": "Lo recomienda"}, headers=h).json()
     ref0 = panel["expediente"]["referencias"][0]
@@ -278,10 +322,10 @@ def _flujo_operativo(c, h, ana, fer):
           and ref0["llamadas"][1]["usuario"], "segunda llamada contactada: historial con fecha, resultado, observaciones y quién llamó")
     for i in (1, 2):
         panel = c.post(f"/candidatos/{ana}/operativo/referencias/{i}", json={"contactada": True, "resultado": "Favorable", "nota": "OK"}, headers=h).json()
-    check(panel["etapa"] == "Listo para alta" and panel["listoParaAlta"], "3 referencias contactadas → «Listo para alta» automático")
+    check(panel["etapa"] == "Onboarding" and panel["listoParaAlta"], "documentos y referencias listos → se habilita «Dar de alta» (sin columnas extra)")
     panel = c.post(f"/candidatos/{ana}/operativo/alta", headers=h).json()
-    check(panel["etapa"] == "Alta realizada" and panel["alta"]["colaborador"], "registrar alta → «Alta realizada» + colaborador")
-    check(c.get(f"/candidatos/{ana}", headers=h).json()["activa"] is True, "la tarjeta sigue en el Kanban (cuenta en «Alta realizada»)")
+    check(panel["alta"]["colaborador"] and panel["activa"] is False, "«Dar de alta» crea el colaborador y CIERRA el proceso")
+    check(c.get(f"/candidatos/{ana}", headers=h).json()["motivoCierre"] == "contratado", "la postulación queda cerrada como contratado")
 
 
 async def _whatsapp():
@@ -294,6 +338,7 @@ async def _whatsapp():
     persona = _crear_candidato(db, v.cuenta_id, "Hugo WhatsApp", "WhatsApp", False)
     p, _ = postulacion_para_vacante(db, persona, v, v.cuenta_id, "whatsapp", consentimiento=True)
     db.commit()
+    check(p.etapa == "Prefiltro", "todo candidato nuevo entra a Prefiltro")
     guion = ["Me interesa", "Iztapalapa", "si", "claro", "Sí", "tengo una kangoo", "no sé", "modelo 09", "nel", "no sé", "si", "no tengo", "sí"]
     ultima = {}
     for t in guion:
@@ -301,16 +346,16 @@ async def _whatsapp():
     db.refresh(p)
     ev = (p.analisis or {}).get("prefiltro_reglas", {}).get("evaluacion", {})
     check(p.prefiltro_completo and p.estado == "revision" and {m["id"] for m in ev.get("motivos", [])} == {"circulacion", "poliza"},
-          "WhatsApp: preguntas con repregunta → Requiere revisión (circulación dudosa + póliza pendiente)")
-    check(ultima.get("clasificacion", {}).get("etiqueta") == "Requiere revisión", "WhatsApp: cierre con etiqueta")
+          "chat: preguntas con repregunta → Requiere revisión (circulación dudosa + póliza pendiente)")
+    check(ultima.get("clasificacion", {}).get("etiqueta") == "Requiere revisión", "chat: cierre con etiqueta")
     db.close()
 
 
-# ------------------------------------------------------------ 2026-09-30: punta a punta por WhatsApp
+# ------------------------------------------------------------ punta a punta por chat
 
 
 async def _whatsapp_por_plaza(nombre: str, plaza: str, cambios: dict):
-    """Contesta el cuestionario completo por WhatsApp; regresa (codigo, respuestas del bot, postulación)."""
+    """Contesta el cuestionario completo por chat; regresa (db, postulación, ids, respuestas del bot, vacante)."""
     from app.database import SessionLocal
     from app.models import Vacante
     from app.routers.candidatos import _crear_candidato, postulacion_para_vacante, procesar_prefiltro
@@ -335,28 +380,26 @@ async def _whatsapp_por_plaza(nombre: str, plaza: str, cambios: dict):
 async def _whatsapp_completo():
     from app.services import prefiltro_reglas as pr
 
-    # Orden de las preguntas + «Cumple perfil» → columna «Revisión de vehículo» con liga de fotos
     db, p, ids, salidas, v = await _whatsapp_por_plaza("Lalo WhatsApp", "puebla", {})
     textos = [q["texto"] for q in pr.preguntas(v.prefiltro_reglas)]
     en_orden = all(textos[i] in salidas[i] and f"*{i + 1}/{len(ids)}*" in salidas[i] for i in range(len(ids)))
-    check(en_orden and len(ids) >= 11, f"WhatsApp: las {len(ids)} preguntas del documento salen en orden, una por mensaje")
+    check(en_orden and len(ids) >= 11, f"chat: las {len(ids)} preguntas del documento salen en orden, una por mensaje")
     check(p.estado == "cumple" and p.etapa == "Revisión de vehículo" and p.revision_vehiculo is not None
-          and "/vehiculo/" in salidas[-1], "WhatsApp: «Cumple perfil» → «Revisión de vehículo» + liga de fotos")
+          and "/vehiculo/" in salidas[-1] and "licencia" in salidas[-1], "chat: «Cumple perfil» → «Revisión de vehículo» + liga de fotos y documentos")
     cumple = p.codigo
     db.close()
 
-    # Vehículo fuera de parámetro → «Requiere revisión» con su motivo; se queda en Prefiltro para RH
     db, p, *_ = await _whatsapp_por_plaza("Memo WhatsApp", "puebla", {"anio_vehiculo": "2015"})
     ev = (p.analisis or {}).get("prefiltro_reglas", {}).get("evaluacion", {})
     check(p.estado == "revision" and ev.get("etiqueta") == "Requiere revisión" and p.etapa == "Prefiltro"
           and [m["id"] for m in ev.get("motivos", [])] == ["anio_vehiculo"],
-          "WhatsApp: modelo 2015 en Puebla → «Requiere revisión» (motivo año del vehículo), sigue en Prefiltro")
+          "chat: modelo 2015 en Puebla → «Requiere revisión» (motivo año del vehículo), sigue en Prefiltro")
     db.close()
 
     db, p, *_ = await _whatsapp_por_plaza("Nico WhatsApp", "cdmx", {"tipo_vehiculo": "un tsuru"})
     ev = (p.analisis or {}).get("prefiltro_reglas", {}).get("evaluacion", {})
     check(p.estado == "revision" and [m["id"] for m in ev.get("motivos", [])] == ["tipo_vehiculo"],
-          "WhatsApp: «un tsuru» en CDMX → «Otro» → «Requiere revisión» (motivo tipo de vehículo)")
+          "chat: «un tsuru» en CDMX → «Otro» → «Requiere revisión» (motivo tipo de vehículo)")
     db.close()
     return cumple
 
@@ -390,54 +433,49 @@ def _capacitacion_y_contadores(cumple: str):
                 vac.update((v.get("embudo") or {}).get("etapas") or {})
             return kanban, vac
 
-        vacs = c.get("/vacantes", headers=h).json()
-        puebla = next(v for v in vacs if v["ubicacionEstado"] == "Puebla")
         cursos = c.get("/capacitacion", headers=h).json()
         induccion = next(x for x in (cursos if isinstance(cursos, list) else cursos.get("cursos", [])) if x.get("titulo") == "Inducción SEZA")
-        s = c.post("/sesiones-capacitacion", json={"tienda": "Tienda WA", "inicio": "2030-02-01T09:00", "cupo": 5, "supervisor_nombre": "Sup WA",
-                                                  "vacante": puebla["id"], "curso_induccion": induccion["id"]}, headers=h).json()
+        cita = {"tienda": "Tienda WA", "fecha": "2030-02-01", "hora": "09:00", "capacitador_tipo": "externo", "capacitador_nombre": "Sup WA",
+                "curso_induccion": induccion["id"]}
 
         k0, v0 = conteos()
         r = c.post(f"/candidatos/{cumple}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Revisado en persona"}, headers=h)
-        check(r.status_code == 200 and r.json()["vehiculo"]["puedeCitar"], "vehículo del candidato de WhatsApp aprobado por excepción")
-        c.post(f"/candidatos/{cumple}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
+        check(r.status_code == 200 and r.json()["vehiculo"]["puedeCitar"], "vehículo del candidato de chat aprobado por excepción")
         k1, v1 = conteos()
-        check(k1["Revisión de vehículo"] == k0["Revisión de vehículo"] - 1 and k1["Cita para capacitación"] == k0["Cita para capacitación"] + 1
-              and v1 == k1, "contadores: la tarjeta pasa de «Revisión de vehículo» a «Cita» y Kanban = vacantes")
+        check(k1["Revisión de vehículo"] == k0["Revisión de vehículo"] - 1 and k1["Entrevista"] == k0["Entrevista"] + 1
+              and v1 == k1, "contadores: la tarjeta pasa de «Revisión de vehículo» a «Entrevista» y Kanban = vacantes")
+        c.post(f"/candidatos/{cumple}/operativo/entrevista", json=cita, headers=h)
 
-        # El candidato confirma con «Sí» por WhatsApp → PDF de Inducción SEZA (simulado) y descargable
         resp = asyncio.run(_whatsapp_confirma(cumple, "Sí, ahí estaré"))
-        check("confirmada" in resp and "material de inducción" in resp, "WhatsApp «Sí» confirma la cita y avisa del material de inducción")
+        check("confirmada" in resp and "material de inducción" in resp, "chat «Sí» confirma la cita y avisa del material de inducción")
         panel = c.get(f"/candidatos/{cumple}/operativo", headers=h).json()
         msgs = c.get(f"/candidatos/{cumple}/mensajes", headers=h).json()
         liga = next((m["texto"].rsplit(" ", 1)[1] for m in (msgs if isinstance(msgs, list) else msgs.get("mensajes", []))
                      if "[Simulado" in (m.get("texto") or "")), "")
         pdf = c.get(f"/capacitacion/publica/{liga.rsplit('/', 1)[1]}/pdf") if liga else None
-        check(panel["capacitacion"]["confirmada"] and pdf is not None and pdf.status_code == 200
+        check(panel["entrevista"]["confirmada"] and pdf is not None and pdf.status_code == 200
               and pdf.content[:4] == b"%PDF", "el PDF de «Inducción SEZA» se descarga desde la liga enviada")
 
-        # Supervisor: asistencia + resultado → «Capacitación realizada» y contadores al día
-        token = s["ligaSupervisor"].rsplit("/", 1)[1]
-        ev = next(x["evaluacion"] for x in c.get(f"/sesiones-capacitacion/publica/{token}").json()["citados"] if x["nombre"] == "Lalo WhatsApp")
-        r = c.post(f"/sesiones-capacitacion/publica/{token}/asistencia", json={"evaluacion": ev, "asistio": True, "resultado": "favorable"})
+        token = panel["entrevista"]["ligaCapacitador"].rsplit("/", 1)[1]
+        r = c.post(f"/entrevista-humana/publica/{token}/capacitacion", json={"asistio": True, "resultado": "favorable"})
         k2, v2 = conteos()
-        check(r.status_code == 200 and k2["Cita para capacitación"] == k1["Cita para capacitación"] - 1
-              and k2["Capacitación realizada"] == k1["Capacitación realizada"] + 1 and v2 == k2,
-              "supervisor registra «Apto» → «Capacitación realizada»; contadores se recalculan")
+        tarjeta = c.get(f"/candidatos/{cumple}", headers=h).json()
+        check(r.status_code == 200 and k2 == k1 and v2 == k2 and tarjeta["operativo"]["texto"] == "Realizada · Apto",
+              "capacitador registra «Apto» → subestado «Realizada · Apto»; la tarjeta no se mueve sola y los contadores cuadran")
 
-        # Si la inducción truena, la cita se confirma igual y el supervisor puede capturar (no bloquea)
         otro = next(x["id"] for x in c.get("/candidatos", headers=h).json() if x["etapa"] == "Revisión de vehículo")
         c.post(f"/candidatos/{otro}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Prueba"}, headers=h)
-        c.post(f"/candidatos/{otro}/operativo/citar", json={"sesion": s["codigo"]}, headers=h)
+        c.post(f"/candidatos/{otro}/operativo/entrevista", json=cita, headers=h)
         with mock.patch("app.routers.capacitacion.asignar_a_postulacion", side_effect=RuntimeError("falla simulada")):
             r = c.post(f"/candidatos/{otro}/operativo/confirmar-cita", headers=h)
-        check(r.status_code == 200 and r.json()["capacitacion"]["confirmada"] and r.json()["induccion"] is None,
+        check(r.status_code == 200 and r.json()["entrevista"]["confirmada"] and r.json()["induccionEnviada"] is None,
               "si falla el PDF de inducción, la cita queda confirmada igual")
-        nombre = c.get(f"/candidatos/{otro}", headers=h).json()["nombre"]
-        ev = next(x["evaluacion"] for x in c.get(f"/sesiones-capacitacion/publica/{token}").json()["citados"] if x["nombre"] == nombre)
-        r = c.post(f"/sesiones-capacitacion/publica/{token}/asistencia", json={"evaluacion": ev, "asistio": False, "comentario": "No llegó"})
-        check(r.status_code == 200 and c.get(f"/candidatos/{otro}", headers=h).json()["etapa"] == "Cita para capacitación",
-              "«No asistió» deja la tarjeta en «Cita» para reprogramar")
+        r = c.post(f"/candidatos/{otro}/operativo/entrevista/resultado", json={"asistio": False, "comentario": "No llegó"}, headers=h)
+        check(r.status_code == 200 and r.json()["etapa"] == "Entrevista" and r.json()["subestado"]["texto"] == "No asistió",
+              "«No asistió» deja la tarjeta en «Entrevista» para reprogramar")
+        r = c.post(f"/candidatos/{otro}/operativo/entrevista", json=cita, headers=h)
+        check(r.status_code == 200 and r.json()["entrevista"]["estado"] == "Citado · por confirmar" and r.json()["entrevistasAnteriores"] == 1,
+              "reprogramar tras «No asistió» crea una cita nueva y conserva la anterior")
 
 
 if __name__ == "__main__":

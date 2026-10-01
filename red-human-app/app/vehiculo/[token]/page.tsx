@@ -1,17 +1,18 @@
 "use client";
 
-/* Liga pública para que el candidato suba las fotos de su vehículo (demo Grupo SEZA, 2026-09-29).
-   Sin sesión: el token es el secreto. Cuatro fotos — frente, atrás y ambos costados —; en el celular
-   el botón abre directo la cámara trasera. Si RH pide corrección, solo se habilitan los lados que hay
-   que volver a tomar y se muestra su comentario. La decisión (aprobar / corregir / excepción) es de RH. */
+/* Liga pública para que el candidato suba lo de su vehículo (demo Grupo SEZA; v2 2026-09-30).
+   Sin sesión: el token es el secreto. Cuatro fotos — frente, atrás y ambos costados — (en el celular el botón abre
+   la cámara trasera) y tres documentos en foto o PDF: licencia vigente, tarjeta de circulación y póliza de seguro.
+   Si RH pide corrección, solo se habilita lo que hay que volver a subir y se muestra su comentario. La decisión
+   (aprobar / corregir / excepción) es de RH. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { Camera, CheckCircle2, Clock, Loader2, RefreshCw } from "lucide-react";
+import { Camera, CheckCircle2, Clock, FileText, Loader2, RefreshCw, Upload } from "lucide-react";
 import { Logo, Card, Badge } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
-import { fetchVehiculoPublico, subirFotoVehiculo, urlFotoVehiculoPublica, type VehiculoPublico } from "@/lib/api";
+import { fetchVehiculoPublico, subirDocumentoVehiculo, subirFotoVehiculo, urlFotoVehiculoPublica, type VehiculoPublico } from "@/lib/api";
 
 type Fase = "cargando" | "no_disponible" | "lista";
 
@@ -53,7 +54,17 @@ export default function FotosVehiculo() {
     setVersion((v) => v + 1);
   }
 
-  const pendientes = info?.lados.filter((l) => l.pendiente).length ?? 0;
+  async function subirDoc(clave: string, archivo?: File) {
+    if (!archivo) return;
+    setSubiendo(clave);
+    setError("");
+    const r = await subirDocumentoVehiculo(token, clave, archivo);
+    setSubiendo(null);
+    if (!r.ok) return setError(r.error);
+    setInfo(r.data);
+  }
+
+  const pendientes = (info?.lados.filter((l) => l.pendiente).length ?? 0) + (info?.documentos?.filter((d) => d.pendiente).length ?? 0);
 
   return (
     <main className="sala-publica min-h-svh bg-bg">
@@ -87,13 +98,13 @@ export default function FotosVehiculo() {
               <h1 className="font-display mt-3 text-2xl font-bold sm:text-3xl">{info.nombre ? `Hola, ${info.nombre}` : "Fotos de tu vehículo"}</h1>
               <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-2">
                 {info.vacante && `Para tu postulación a ${info.vacante}${info.empresa ? ` en ${info.empresa}` : ""}. `}
-                Toma cada foto con el vehículo completo, de día y sin filtros.
+                Sube 4 fotos del vehículo completo (de día y sin filtros) y tu licencia, tarjeta de circulación y póliza de seguro.
               </p>
             </div>
 
             {info.estado === "correccion" && info.comentario && (
               <Card className="mt-6 border-warn/40 bg-warn-soft/40 p-4">
-                <p className="text-sm font-semibold text-ink">Necesitamos que vuelvas a tomar {pendientes === 1 ? "una foto" : `${pendientes} fotos`}</p>
+                <p className="text-sm font-semibold text-ink">Necesitamos que vuelvas a subir {pendientes === 1 ? "un archivo" : `${pendientes} archivos`}</p>
                 <p className="mt-1 text-[13px] text-ink-2">{info.comentario}</p>
               </Card>
             )}
@@ -103,7 +114,7 @@ export default function FotosVehiculo() {
                 {info.estado === "por_revisar" ? <Clock className="mx-auto h-8 w-8 text-warn" /> : <CheckCircle2 className="mx-auto h-8 w-8 text-good" />}
                 <p className="mt-2 text-sm text-ink-2">
                   {info.estado === "por_revisar"
-                    ? "¡Listo! Recibimos tus 4 fotos. El equipo de RH las revisará y te avisará por el chat."
+                    ? "¡Listo! Recibimos tus fotos y documentos. El equipo de RH los revisará y te avisará por el chat."
                     : "Tu vehículo ya fue revisado. Te contactaremos por el chat para el siguiente paso."}
                 </p>
               </Card>
@@ -125,9 +136,28 @@ export default function FotosVehiculo() {
                 />
               ))}
             </div>
+            {Boolean(info.documentos?.length) && (
+              <>
+                <h2 className="font-display mt-8 text-lg font-bold">Documentos</h2>
+                <div className="mt-3 flex flex-col gap-3">
+                  {info.documentos.map((d) => (
+                    <DocumentoVehiculo
+                      key={d.clave}
+                      nombre={d.nombre}
+                      estado={d.estado}
+                      motivo={d.motivo}
+                      cargado={d.cargado}
+                      habilitado={info.abierta && (info.estado === "pendiente" ? !d.cargado || d.pendiente : d.pendiente)}
+                      subiendo={subiendo === d.clave}
+                      onArchivo={(f) => void subirDoc(d.clave, f)}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
             {info.abierta && (
               <p className="mt-4 text-center text-[12px] text-ink-3">
-                {pendientes ? `Faltan ${pendientes} de 4.` : ""} Formatos: JPG, PNG o WEBP · máx. 10 MB. En iPhone usa «Más compatible» en Ajustes › Cámara › Formatos.
+                {pendientes ? `Faltan ${pendientes}.` : ""} Fotos: JPG, PNG o WEBP · documentos: foto o PDF · máx. 10 MB. En iPhone usa «Más compatible» en Ajustes › Cámara › Formatos.
               </p>
             )}
           </>
@@ -202,6 +232,61 @@ function LadoFoto({
           </>
         )}
       </div>
+    </Card>
+  );
+}
+
+function DocumentoVehiculo({
+  nombre,
+  estado,
+  motivo,
+  cargado,
+  habilitado,
+  subiendo,
+  onArchivo,
+}: {
+  nombre: string;
+  estado: string;
+  motivo: string;
+  cargado: boolean;
+  habilitado: boolean;
+  subiendo: boolean;
+  onArchivo: (f?: File) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const tono = estado === "Revisado" ? "good" : estado === "Requiere corrección" ? "bad" : cargado ? "warn" : "neutral";
+  return (
+    <Card className={cn("flex flex-col gap-2 p-3.5", habilitado && !cargado && "border-brand/40")}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+          <FileText className="h-4 w-4 text-ink-3" /> {nombre}
+        </span>
+        <Badge tone={tono} dot>{estado}</Badge>
+      </div>
+      {motivo && <p className="text-[12px] text-bad">Qué corregir: {motivo}</p>}
+      {habilitado && (
+        <>
+          <input
+            ref={input}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,application/pdf"
+            className="hidden"
+            onChange={(e) => {
+              onArchivo(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => input.current?.click()}
+            disabled={subiendo}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-semibold text-brand-ink transition hover:brightness-110 disabled:opacity-60 totem:min-h-16 totem:text-xl"
+          >
+            {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : cargado ? <RefreshCw className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
+            {subiendo ? "Subiendo…" : cargado ? "Volver a subir" : "Subir foto o PDF"}
+          </button>
+        </>
+      )}
     </Card>
   );
 }

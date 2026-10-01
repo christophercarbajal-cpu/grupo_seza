@@ -99,7 +99,6 @@ def guardar_referencias(token: str, datos: ReferenciasIn, db: Session = Depends(
     p = e.postulacion
     registrar(db, "candidato", "referencias_capturadas", "postulacion", p.codigo, {"n": len(limpias)})
     flujo_operativo.nota(p, "referencias_capturadas", "El candidato capturó sus 3 referencias", "candidato")
-    flujo_operativo.revisar_listo(db, p, "candidato")
     db.commit()
     return publica(token, db)
 
@@ -122,9 +121,4 @@ async def subir(
     token: str, tipo: str = Form(...), archivo: UploadFile = File(...), db: Session = Depends(get_db)
 ):
     e = _por_token(db, token)
-    resultado = await subir_documento_interno(db, e, tipo, archivo, subido_por="candidato")
-    if e.postulacion and flujo_operativo.es_operativo(e.postulacion):  # Modo Prueba aprueba solo: puede quedar listo
-        db.refresh(e)
-        flujo_operativo.revisar_listo(db, e.postulacion, "candidato")
-        db.commit()
-    return resultado
+    return await subir_documento_interno(db, e, tipo, archivo, subido_por="candidato")

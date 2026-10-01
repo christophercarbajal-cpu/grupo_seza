@@ -1,16 +1,18 @@
 "use client";
 
-/* «Prefiltro / Revisión de vehículo» (demo Grupo SEZA, 2026-09-29).
+/* «Prefiltro / Revisión de vehículo» (demo Grupo SEZA; v2 2026-09-30).
 
-   Resultado del prefiltro por reglas (Cumple perfil / Requiere revisión / No cumple) con cada motivo y la
-   siguiente acción, y la revisión de las fotos del vehículo: RH aprueba, pide corrección de ciertos lados
-   (con comentario; se reenvía la misma liga) o marca excepción (con motivo). Hasta que el vehículo esté
-   aprobado o en excepción no se puede citar al candidato. Todas las decisiones son de RH (HITL). */
+   Estado del prefiltro (Sin iniciar / En curso / Completado) y, APARTE, su resultado (Cumple perfil / Requiere
+   revisión / No cumple) con cada motivo y la siguiente acción. Revisión del vehículo: 4 fotos + licencia, tarjeta
+   de circulación y póliza (quedan en el expediente). RH aprueba (revisa también los documentos), pide corrección
+   de ciertas fotos o documentos (con comentario; se reenvía la misma liga) o marca excepción (con motivo). Hasta
+   que el vehículo esté aprobado o en excepción no se puede citar al candidato. Las decisiones son de RH (HITL). */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowRight, Camera, Check, CheckCircle2, Clock, Send, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, Camera, Check, CheckCircle2, Clock, FileText, Send, ShieldCheck, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
-import { Aviso, BotonCopiar } from "@/components/dashboard/subida";
+import { Aviso } from "@/components/dashboard/subida";
+import { LigaAcciones } from "@/components/dashboard/liga-acciones";
 import { cn } from "@/lib/utils";
 import {
   aprobarPrefiltroReglas,
@@ -18,12 +20,15 @@ import {
   enviarLigaVehiculo,
   fetchFlujoVehiculo,
   urlArchivo,
+  urlDocumento,
   type FlujoVehiculo,
   type Resultado,
 } from "@/lib/api";
 
 const TONO_RESULTADO = { cumple: "good", revision: "warn", no_cumple: "bad", pendiente: "neutral" } as const;
 const TONO_VEHICULO = { sin_liga: "neutral", pendiente: "neutral", por_revisar: "warn", correccion: "warn", aprobado: "good", excepcion: "human" } as const;
+const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Revisado: "good", Recibido: "warn", "Requiere corrección": "bad", Pendiente: "neutral" };
+const TONO_ESTADO_PREFILTRO: Record<string, "neutral" | "warn" | "brand"> = { "Sin iniciar": "neutral", "En curso": "warn", Completado: "brand" };
 
 type Modal = null | "aprobar_prefiltro" | "correccion" | "excepcion";
 
@@ -56,7 +61,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
     const whatsapp = r.data.envio?.whatsapp;
     setAviso(
       whatsapp && !whatsapp.enviado
-        ? { tono: "warn", texto: `${exito} El WhatsApp no salió (sin teléfono o fuera de la ventana de 24 h): copia la liga y compártela.` }
+        ? { tono: "warn", texto: `${exito} El mensaje no salió: copia la liga y compártela.` }
         : { tono: "ok", texto: exito },
     );
     onCambio?.();
@@ -68,7 +73,8 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
   if (!pf) return <p className="text-sm text-ink-3">La vacante de esta postulación no usa prefiltro por reglas.</p>;
 
   const puedeAprobarPrefiltro = puedeDecidir && pf.completo && (pf.resultado === "revision" || pf.resultado === "no_cumple");
-  const fotosCompletas = vh?.fotos.every((f) => f.cargada) ?? false;
+  const completo = vh?.completo ?? false;
+  const hayAlgo = Boolean(vh && (vh.fotos.some((f) => f.cargada) || vh.documentos.some((d) => d.cargado)));
 
   return (
     <div className="flex flex-col gap-5">
@@ -93,10 +99,15 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
           <div>
             <Eyebrow>Prefiltro</Eyebrow>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Badge tone={TONO_RESULTADO[pf.resultado]} dot>
-                {pf.etiqueta}
-              </Badge>
-              {pf.canal && <span className="text-[12px] text-ink-3">vía {pf.canal === "web" ? "formulario web" : "WhatsApp"}</span>}
+              {pf.estadoPrefiltro && (
+                <Badge tone={TONO_ESTADO_PREFILTRO[pf.estadoPrefiltro] ?? "neutral"}>{pf.estadoPrefiltro}</Badge>
+              )}
+              {pf.completo && (
+                <Badge tone={TONO_RESULTADO[pf.resultado]} dot>
+                  Resultado: {pf.etiqueta}
+                </Badge>
+              )}
+              {pf.canal && <span className="text-[12px] text-ink-3">vía {pf.canal === "web" ? "formulario web" : "chat"}</span>}
               {!pf.completo && pf.total ? <span className="text-[12px] text-ink-3">{pf.respondidas}/{pf.total} respuestas</span> : null}
             </div>
           </div>
@@ -176,9 +187,9 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                 size="sm"
                 variant="outline"
                 disabled={Boolean(ocupado)}
-                onClick={() => ejecutar("liga", () => enviarLigaVehiculo(codigo), "Liga de fotos enviada.")}
+                onClick={() => ejecutar("liga", () => enviarLigaVehiculo(codigo), "Liga del vehículo enviada.")}
               >
-                <Send className="h-4 w-4" /> {vh.estado === "sin_liga" ? "Enviar liga de fotos" : "Reenviar liga"}
+                <Send className="h-4 w-4" /> {vh.estado === "sin_liga" ? "Enviar liga del vehículo" : "Reenviar liga"}
               </Button>
             )}
           </div>
@@ -195,12 +206,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
             </p>
           )}
 
-          {vh.liga && (
-            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-surface-2 px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">{vh.liga}</span>
-              <BotonCopiar texto={vh.liga} etiqueta="Copiar liga" />
-            </div>
-          )}
+          {vh.liga && <LigaAcciones className="mt-3" etiqueta="Liga del candidato (fotos y documentos)" liga={vh.liga} />}
 
           <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             {vh.fotos.map((f) => (
@@ -225,16 +231,36 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
             ))}
           </div>
 
+          <p className="mt-4 text-[12px] font-semibold uppercase tracking-wide text-ink-3">Documentos del vehículo</p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {vh.documentos.map((d) => (
+              <li key={d.clave} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-[13px]",
+                vh.estado === "correccion" && vh.ladosCorregir?.includes(d.clave) ? "border-warn" : "border-border-soft")}>
+                <span className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-ink-3" />
+                  {d.cargado && vh.expedienteId ? (
+                    <a href={urlDocumento(vh.expedienteId, d.tipo)} target="_blank" rel="noreferrer" className="text-ink hover:text-brand hover:underline">{d.tipo}</a>
+                  ) : (
+                    <span className="text-ink">{d.tipo}</span>
+                  )}
+                  {d.estadoSimple === "Requiere corrección" && d.notas && <span className="text-[12px] text-bad">· {d.notas}</span>}
+                </span>
+                <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
+              </li>
+            ))}
+          </ul>
+
           {puedeDecidir && vh.estado !== "sin_liga" && (
             <div className="mt-4 flex flex-wrap gap-2">
               <Button
                 size="sm"
-                disabled={Boolean(ocupado) || !fotosCompletas || vh.estado === "aprobado"}
-                onClick={() => ejecutar("aprobar", () => decidirVehiculo(codigo, "aprobar"), "Vehículo aprobado: ya se puede citar al candidato.")}
+                disabled={Boolean(ocupado) || !completo || vh.estado === "aprobado"}
+                title={completo ? "Aprueba las fotos y marca como revisados la licencia, la tarjeta y la póliza" : "Faltan fotos o documentos"}
+                onClick={() => ejecutar("aprobar", () => decidirVehiculo(codigo, "aprobar"), "Vehículo aprobado (fotos y documentos revisados): ya se puede citar al candidato.")}
               >
                 <Check className="h-4 w-4" /> Aprobar vehículo
               </Button>
-              <Button size="sm" variant="outline" disabled={Boolean(ocupado) || !vh.fotos.some((f) => f.cargada)} onClick={() => setModal("correccion")}>
+              <Button size="sm" variant="outline" disabled={Boolean(ocupado) || !hayAlgo} onClick={() => setModal("correccion")}>
                 Pedir corrección…
               </Button>
               <Button size="sm" variant="ghost" disabled={Boolean(ocupado) || vh.estado === "excepcion"} onClick={() => setModal("excepcion")}>
@@ -263,26 +289,26 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
         <div className="fixed inset-0 z-50 grid place-items-end bg-black/40 p-0 sm:place-items-center sm:p-4" onClick={() => setModal(null)}>
           <div className="w-full rounded-t-2xl bg-surface p-5 shadow-xl sm:max-w-md sm:rounded-2xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="font-display text-lg font-bold">
-              {modal === "aprobar_prefiltro" ? "Aprobar prefiltro" : modal === "correccion" ? "Pedir corrección de fotos" : "Marcar excepción"}
+              {modal === "aprobar_prefiltro" ? "Aprobar prefiltro" : modal === "correccion" ? "Pedir corrección" : "Marcar excepción"}
             </h3>
             <p className="mt-1 text-[13px] text-ink-3">
               {modal === "aprobar_prefiltro"
-                ? "El prefiltro quedará como «Cumple perfil» y se enviará la liga de fotos del vehículo."
+                ? "El prefiltro quedará como «Cumple perfil» y se enviará la liga del vehículo (fotos y documentos)."
                 : modal === "correccion"
-                  ? "Se le reenvía la misma liga con tu comentario; solo podrá volver a subir los lados marcados."
+                  ? "Se le reenvía la misma liga con tu comentario; solo podrá volver a subir lo que marques."
                   : "El vehículo queda aprobado por excepción y se podrá citar al candidato."}
             </p>
             {modal === "correccion" && vh && (
               <div className="mt-3 grid grid-cols-2 gap-2">
-                {vh.fotos.map((f) => (
-                  <label key={f.lado} className="flex min-h-11 items-center gap-2 rounded-xl border border-border-soft px-3 text-sm">
+                {[...vh.fotos.map((f) => ({ clave: f.lado, nombre: `Foto: ${f.nombre}` })), ...vh.documentos.map((d) => ({ clave: d.clave, nombre: d.tipo }))].map((o) => (
+                  <label key={o.clave} className="flex min-h-11 items-center gap-2 rounded-xl border border-border-soft px-3 text-sm">
                     <input
                       type="checkbox"
-                      checked={lados.includes(f.lado)}
-                      onChange={(e) => setLados((l) => (e.target.checked ? [...l, f.lado] : l.filter((x) => x !== f.lado)))}
+                      checked={lados.includes(o.clave)}
+                      onChange={(e) => setLados((l) => (e.target.checked ? [...l, o.clave] : l.filter((x) => x !== o.clave)))}
                       className="h-4 w-4 accent-[var(--brand)]"
                     />
-                    {f.nombre}
+                    {o.nombre}
                   </label>
                 ))}
               </div>
@@ -303,7 +329,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                 disabled={!texto.trim() || Boolean(ocupado) || (modal === "correccion" && lados.length === 0)}
                 onClick={() =>
                   modal === "aprobar_prefiltro"
-                    ? ejecutar("prefiltro", () => aprobarPrefiltroReglas(codigo, texto.trim()), "Prefiltro aprobado; se envió la liga de fotos.")
+                    ? ejecutar("prefiltro", () => aprobarPrefiltroReglas(codigo, texto.trim()), "Prefiltro aprobado; se envió la liga del vehículo.")
                     : modal === "correccion"
                       ? ejecutar("correccion", () => decidirVehiculo(codigo, "correccion", texto.trim(), lados), "Corrección solicitada; se reenvió la liga.")
                       : ejecutar("excepcion", () => decidirVehiculo(codigo, "excepcion", texto.trim()), "Vehículo aprobado por excepción.")

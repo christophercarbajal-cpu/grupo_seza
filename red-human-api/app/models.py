@@ -37,13 +37,22 @@ PLATAFORMAS = ["Portal", "WhatsApp", "Google Empleos", "Jooble", "Talent.com"]
 # nueva que RH mueve a mano sin automatización detrás.
 ETAPAS_CANDIDATO = ["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding"]
 
-# Demo Grupo SEZA (2026-09-29): Kanban OPERATIVO (reclutamiento masivo de choferes). Lo usa la Cuenta con
+# Demo Grupo SEZA: Kanban OPERATIVO (reclutamiento masivo de choferes). Lo usa la Cuenta con
 # `Cuenta.flujo_candidatos == "operativo"`; `Postulacion.etapa` guarda estos valores tal cual. Las
 # transiciones las hace services/flujo_operativo.py (nunca el agente conversacional ni el Zero-Touch).
-ETAPAS_OPERATIVO = [
-    "Nuevo", "Prefiltro", "Revisión de vehículo", "Cita para capacitación", "Capacitación realizada",
-    "Documentos y referencias", "Listo para alta", "Alta realizada",
-]
+# v2 (2026-09-30): 6 columnas. «Entrevista» = capacitación en tienda (sobre EntrevistaHumana); los
+# documentos y las referencias viven en «Onboarding»; «Dar de alta» CIERRA la postulación (contratado).
+ETAPAS_OPERATIVO = ["Prefiltro", "Revisión de vehículo", "Entrevista", "Evaluación", "Contratación", "Onboarding"]
+# Valores de la v1 (8 columnas) → columna v2. Lo usa scripts/migrar_flujo_operativo_v2.py; «Alta realizada»
+# además se cierra como `contratado`.
+ETAPAS_OPERATIVO_LEGADO = {
+    "Nuevo": "Prefiltro",
+    "Cita para capacitación": "Entrevista",
+    "Capacitación realizada": "Entrevista",
+    "Documentos y referencias": "Onboarding",
+    "Listo para alta": "Onboarding",
+    "Alta realizada": "Onboarding",
+}
 FLUJOS_CANDIDATOS = ("rh", "operativo")
 
 # 2026-09-15 (memoria de 5 días): en estas etapas la conversación de WhatsApp conserva su contexto
@@ -419,6 +428,13 @@ class Postulacion(Base):
 # pública; RH aprueba, pide corrección o marca excepción. Solo con «aprobado» o «excepcion» se le puede
 # citar (services/vehiculo.puede_citar).
 LADOS_VEHICULO = {"frente": "Frente", "atras": "Atrás", "izquierdo": "Costado izquierdo", "derecho": "Costado derecho"}
+# v2 (2026-09-30): con las fotos se piden estos 3 documentos; se guardan como `Documento` del EXPEDIENTE de la
+# postulación (así ya están ahí en Onboarding y no se vuelven a pedir). Nada de comprobante de propiedad.
+DOCUMENTOS_VEHICULO = {
+    "licencia": "Licencia de conducir vigente",
+    "tarjeta": "Tarjeta de circulación",
+    "poliza": "Póliza de seguro vigente",
+}
 ESTADOS_VEHICULO = {
     "pendiente": "Esperando fotos",
     "por_revisar": "Fotos por revisar",
@@ -497,6 +513,14 @@ class EntrevistaHumana(Base):
     recordatorio_enviado_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     evaluada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+    # --- Flujo operativo v2 (2026-09-30): la «Entrevista» es la capacitación en tienda ---
+    # `ubicacion` = dirección; `entrevistador` = capacitador; `resultado` = favorable | con_observaciones |
+    # desfavorable (Apto / Requiere seguimiento / No apto, ver RESULTADOS_CAPACITACION).
+    tienda: Mapped[str] = mapped_column(String(200), default="")
+    confirmada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    asistencia: Mapped[str] = mapped_column(String(20), default="")  # "" | asistio | no_asistio
+    curso_induccion_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # PDF que sale al confirmar
+    envios: Mapped[list] = mapped_column(JSON, default=list)  # [{destinatario, canal, enviado, detalle, fecha}]
 
     candidato: Mapped["Candidato"] = relationship(foreign_keys=[candidato_id])
     postulacion: Mapped[Optional["Postulacion"]] = relationship(back_populates="entrevistas_humanas")
@@ -751,6 +775,12 @@ def estado_documento_onboarding(d: "Documento") -> str:
 
 # 2026-09-20 (B2): tipo de contratación con vigencia y unidades de duración permitidas.
 TIPO_CONTRATACION_DETERMINADO = "Tiempo determinado"
+# Tipos de contratación que ofrece la captura de condiciones (2026-09-30: + Prestación de servicios y Comisión
+# mercantil; «Honorarios» ya existía). El texto se guarda tal cual en `Expediente.tipo_contratacion`.
+TIPOS_CONTRATACION = [
+    "Tiempo indeterminado", "Tiempo determinado", "Por obra o proyecto",
+    "Honorarios", "Prestación de servicios", "Comisión mercantil",
+]
 UNIDADES_DURACION = ("días", "meses", "años")
 
 
@@ -839,6 +869,11 @@ class Expediente(Base):
     # Demo SEZA (flujo operativo): 3 referencias que captura el candidato en su liga pública —
     # [{nombre, telefono, parentesco, capturada_en, contactada, contactada_por, contactada_en, nota}]
     referencias: Mapped[list] = mapped_column(JSON, default=list)
+    # Flujo operativo v2 (2026-09-30): en Contratación RH elige «Generar contrato» (ahora) o «Generar después de
+    # Onboarding» (queda pendiente para esa etapa). "" = sin decidir | generado | despues
+    contrato_operativo: Mapped[str] = mapped_column(String(20), default="")
+    contrato_operativo_por: Mapped[str] = mapped_column(String(150), default="")
+    contrato_operativo_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     candidato: Mapped[Optional[Candidato]] = relationship(foreign_keys=[candidato_id])
     postulacion: Mapped[Optional["Postulacion"]] = relationship(back_populates="expediente")

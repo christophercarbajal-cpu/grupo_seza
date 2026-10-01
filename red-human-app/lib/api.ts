@@ -3401,6 +3401,8 @@ export interface ResumenPrefiltroReglas {
   vehiculoEstado?: string;
   respondidas?: number;
   total?: number;
+  /** v2: subestado de la columna, separado del resultado — Sin iniciar | En curso | Completado */
+  estadoPrefiltro?: "Sin iniciar" | "En curso" | "Completado";
 }
 
 export type EstadoVehiculo = "sin_liga" | "pendiente" | "por_revisar" | "correccion" | "aprobado" | "excepcion";
@@ -3419,7 +3421,22 @@ export interface RevisionVehiculo {
   decididoEn?: string | null;
   ladosCorregir?: string[];
   fotos: { lado: string; nombre: string; cargada: boolean; subidaEn: string; url: string }[];
+  /** v2: licencia, tarjeta de circulación y póliza — viven en el expediente de la postulación. */
+  documentos: DocumentoVehiculo[];
+  expedienteId?: number | null;
+  completo?: boolean;
   historial: { evento: string; texto: string; usuario: string; fecha: string }[];
+}
+
+export interface DocumentoVehiculo {
+  clave: "licencia" | "tarjeta" | "poliza";
+  tipo: string;
+  cargado: boolean;
+  /** Pendiente | Recibido | Revisado | Requiere corrección */
+  estadoSimple: string;
+  notas: string;
+  revisadoPor: string;
+  pendiente: boolean;
 }
 
 export interface FlujoVehiculo {
@@ -3452,6 +3469,7 @@ export interface VehiculoPublico {
   abierta: boolean;
   comentario: string;
   lados: { clave: string; nombre: string; cargada: boolean; pendiente: boolean }[];
+  documentos: { clave: string; nombre: string; cargado: boolean; estado: string; motivo: string; pendiente: boolean }[];
 }
 
 export function fetchVehiculoPublico(token: string) {
@@ -3465,112 +3483,30 @@ export function subirFotoVehiculo(token: string, lado: string, archivo: File) {
   return subir<VehiculoPublico>(`/vehiculo/publica/${token}/foto`, form);
 }
 
+export function subirDocumentoVehiculo(token: string, clave: string, archivo: File) {
+  const form = new FormData();
+  form.append("clave", clave);
+  form.append("archivo", archivo);
+  return subir<VehiculoPublico>(`/vehiculo/publica/${token}/documento`, form);
+}
+
 export function urlFotoVehiculoPublica(token: string, lado: string, version = "") {
   return `${API}/vehiculo/publica/${token}/foto/${lado}${version ? `?v=${version}` : ""}`;
 }
 
-/* ---------- Demo SEZA: flujo operativo (Kanban de 8 etapas, capacitación en tienda, documentos y alta) ---------- */
+/* ---------- Demo SEZA: flujo operativo v2 (Kanban de 6 columnas) ---------- */
 
 export const ETAPAS_OPERATIVO = [
-  "Nuevo",
   "Prefiltro",
   "Revisión de vehículo",
-  "Cita para capacitación",
-  "Capacitación realizada",
-  "Documentos y referencias",
-  "Listo para alta",
-  "Alta realizada",
+  "Entrevista",
+  "Evaluación",
+  "Contratación",
+  "Onboarding",
 ] as const;
 
 export function fetchFlujoCandidatos() {
   return get<{ flujo: "rh" | "operativo"; etapas: string[] }>("/candidatos-flujo");
-}
-
-export interface SesionCapacitacion {
-  codigo: string;
-  nombre: string;
-  tienda: string;
-  direccion: string;
-  inicio: string | null;
-  inicioTexto: string;
-  duracionMin: number;
-  cupo: number;
-  ocupados: number;
-  disponibles: number;
-  supervisorNombre: string;
-  supervisorTelefono: string;
-  indicaciones: string;
-  vacante: string | null;
-  vacanteTitulo: string;
-  cursoInduccion: string | null;
-  cursoInduccionTitulo: string;
-  estado: "programada" | "cerrada" | "cancelada";
-  ligaSupervisor: string;
-  citados?: CitadoSesion[];
-}
-
-export interface CitadoSesion {
-  evaluacion: string;
-  postulacion?: string;
-  nombre: string;
-  vacante: string;
-  confirmada: boolean;
-  asistencia: "" | "asistio" | "no_asistio";
-  resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
-  resultadoEtiqueta: string;
-  comentario: string;
-  estado?: string;
-}
-
-export type CamposSesion = {
-  tienda: string;
-  direccion?: string;
-  inicio: string;
-  duracion_min?: number;
-  cupo: number;
-  supervisor_nombre?: string;
-  supervisor_telefono?: string;
-  indicaciones?: string;
-  vacante?: string | null;
-  curso_induccion?: string | null;
-};
-
-export function fetchSesionesCapacitacion(incluirPasadas = false) {
-  return get<SesionCapacitacion[]>(`/sesiones-capacitacion${incluirPasadas ? "?incluir_pasadas=true" : ""}`);
-}
-export function fetchSesionCapacitacion(codigo: string) {
-  return get<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}`);
-}
-export function crearSesionCapacitacion(datos: CamposSesion) {
-  return post<SesionCapacitacion>("/sesiones-capacitacion", datos);
-}
-export function editarSesionCapacitacion(codigo: string, datos: CamposSesion) {
-  return patch<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}`, datos);
-}
-export function estadoSesionCapacitacion(codigo: string, estado: "programada" | "cerrada" | "cancelada") {
-  return post<SesionCapacitacion>(`/sesiones-capacitacion/${codigo}/estado`, { estado });
-}
-
-export interface SesionSupervisor {
-  nombre: string;
-  tienda: string;
-  direccion: string;
-  inicioTexto: string;
-  supervisor: string;
-  empresa: string;
-  cupo: number;
-  estado: string;
-  resultados: { valor: "favorable" | "con_observaciones" | "desfavorable"; texto: string }[];
-  citados: CitadoSesion[];
-}
-export function fetchSesionSupervisor(token: string) {
-  return get<SesionSupervisor>(`/sesiones-capacitacion/publica/${token}`);
-}
-export function registrarAsistenciaSupervisor(
-  token: string,
-  datos: { evaluacion: string; asistio: boolean; resultado?: string; comentario?: string; supervisor?: string },
-) {
-  return post<SesionSupervisor>(`/sesiones-capacitacion/publica/${token}/asistencia`, datos);
 }
 
 export interface ReferenciaCandidato {
@@ -3589,49 +3525,120 @@ export interface ReferenciaCandidato {
   llamadas?: { fecha: string; contactada: boolean; resultado: string; observaciones: string; usuario: string; registrada_en: string }[];
 }
 
+export interface EnvioOperativo {
+  destinatario: string;
+  canal: string;
+  enviado: boolean;
+  detalle: string;
+  fecha: string;
+}
+
+/** Capacitación en tienda (la «Entrevista» del flujo operativo) — vive en EntrevistaHumana. */
+export interface EntrevistaOperativa {
+  id: number;
+  tienda: string;
+  direccion: string;
+  fecha: string | null;
+  fechaLocal: string;
+  horaLocal: string;
+  fechaTexto: string;
+  indicaciones: string;
+  capacitador: { tipo: "interno" | "externo"; usuarioId: number | null; nombre: string; telefono: string; correo: string };
+  ligaCapacitador: string;
+  confirmada: boolean;
+  confirmadaEn: string | null;
+  asistencia: "" | "asistio" | "no_asistio";
+  resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
+  resultadoEtiqueta: string;
+  capturadoPor: "" | "rh" | "entrevistador";
+  evaluadaEn: string | null;
+  estado: string;
+  tono: "neutral" | "warn" | "good" | "bad" | "brand";
+  cursoInduccion: { codigo: string; titulo: string } | null;
+  envios: EnvioOperativo[];
+}
+
 export interface PanelOperativo {
   etapa: string;
   etapas: string[];
-  capacitacion: {
-    evaluacion: string | null;
-    nombre: string;
-    estado: string | null;
-    confirmada: boolean;
-    confirmadaEn: string | null;
-    asistencia: string;
-    resultado: string;
-    resultadoEtiqueta: string;
-    dictamenInterno: string;
-    comentario: string;
-    registradoPor: string;
-    sesion: SesionCapacitacion | null;
-    induccion: string;
+  activa: boolean;
+  estadoPrefiltro: string;
+  subestado: { texto: string; tono: string };
+  entrevista: EntrevistaOperativa | null;
+  entrevistasAnteriores: number;
+  induccion: string;
+  resultadosCapacitacion: { valor: "favorable" | "con_observaciones" | "desfavorable"; texto: string }[];
+  contratacion: {
+    condiciones: { puesto: string; sueldo: string; tipoContratacion: string; fechaIngreso: string | null; ubicacion: string };
+    completas: boolean;
+    /** "" sin decidir | generado | despues */
+    contrato: "" | "generado" | "despues";
+    contratoPor: string;
+    contratoEn: string | null;
+    requisitosOnboarding: string[];
+    tiposContratacion: string[];
   };
   expediente: {
     id: number;
     liga: string;
     progreso: number;
     /** estadoSimple: Pendiente | Recibido | Revisado | Requiere corrección */
-    documentos: { tipo: string; estado: string; aprobado: boolean; archivo: boolean; notas: string; estadoSimple: string; revisadoPor?: string }[];
+    documentos: { tipo: string; estado: string; aprobado: boolean; archivo: boolean; notas: string; estadoSimple: string; revisadoPor?: string; delVehiculo?: boolean }[];
     referencias: ReferenciaCandidato[];
     resultadosReferencia?: { contactada: string[]; noContactada: string[] };
   } | null;
   faltantesAlta: string[];
   listoParaAlta: boolean;
   alta: { por: string; en: string | null; colaborador: { codigo: string; nombre: string } | null } | null;
-  whatsapp?: { enviado?: boolean };
-  induccion?: { titulo: string; liga: string; simulado: boolean } | null;
+  // presentes según la acción
+  whatsapp?: { enviado?: boolean; detalle?: unknown } | null;
+  envioCandidato?: EnvioOperativo;
+  envioCapacitador?: EnvioOperativo[];
+  envios?: EnvioOperativo[];
+  induccionEnviada?: { titulo: string; liga: string; simulado: boolean } | null;
   liga?: string;
+}
+
+export interface DatosEntrevistaOperativa {
+  tienda: string;
+  direccion?: string;
+  fecha: string;
+  hora: string;
+  capacitador_tipo: "interno" | "externo";
+  capacitador_usuario_id?: number | null;
+  capacitador_nombre?: string;
+  capacitador_telefono?: string;
+  capacitador_correo?: string;
+  curso_induccion?: string | null;
+  indicaciones?: string;
 }
 
 export function fetchPanelOperativo(codigo: string) {
   return get<PanelOperativo>(`/candidatos/${codigo}/operativo`);
 }
-export function citarCapacitacion(codigo: string, sesion: string) {
-  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/citar`, { sesion });
+export function programarEntrevistaOperativa(codigo: string, datos: DatosEntrevistaOperativa) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista`, datos);
+}
+export function reprogramarEntrevistaOperativa(codigo: string, datos: DatosEntrevistaOperativa) {
+  return patch<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista`, datos);
+}
+export function cancelarEntrevistaOperativa(codigo: string, motivo = "") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista/cancelar`, { motivo });
+}
+export function reenviarEntrevistaOperativa(codigo: string, destinatario: "candidato" | "capacitador") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista/reenviar`, { destinatario });
 }
 export function confirmarCitaCapacitacion(codigo: string) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/confirmar-cita`);
+}
+export function resultadoEntrevistaOperativa(codigo: string, datos: { asistio: boolean; resultado?: string; comentario?: string }) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista/resultado`, datos);
+}
+export function decidirContratoOperativo(codigo: string, cuando: "ahora" | "despues") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/contrato`, { cuando });
+}
+export function enviarAOnboardingOperativo(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/onboarding`);
 }
 export function solicitarDocumentosReferencias(codigo: string) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/solicitar-documentos`);
@@ -3649,6 +3656,28 @@ export function marcarReferencia(
 }
 export function registrarAltaOperativa(codigo: string) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/alta`);
+}
+
+/** Liga del capacitador (misma liga de la entrevista humana, modo «capacitacion»). */
+export interface CapacitacionPublica {
+  tipo: "capacitacion";
+  candidato: string;
+  puesto: string;
+  empresa: string;
+  fecha: string | null;
+  tienda: string;
+  direccion: string;
+  capacitador: string;
+  confirmada: boolean;
+  yaEvaluada: boolean;
+  asistencia: string;
+  resultado: string;
+  resultadoEtiqueta: string;
+  comentario: string;
+  resultados: { valor: string; texto: string }[];
+}
+export function registrarCapacitacionPublica(token: string, datos: { asistio: boolean; resultado?: string; comentario?: string; capacitador?: string }) {
+  return post<CapacitacionPublica>(`/entrevista-humana/publica/${token}/capacitacion`, datos);
 }
 
 export function guardarReferenciasPublicas(token: string, referencias: { nombre: string; telefono: string; parentesco: string }[]) {

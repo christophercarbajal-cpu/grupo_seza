@@ -76,10 +76,40 @@ def _expediente_para_entrevistador(db: Session, eh: EntrevistaHumana) -> dict:
     }
 
 
+def _es_capacitacion(eh: EntrevistaHumana) -> bool:
+    """Flujo operativo v2 (2026-09-30): en una Cuenta operativa la «Entrevista» es la capacitación en tienda y el
+    entrevistador es el CAPACITADOR (asistencia + Apto / Requiere seguimiento / No apto)."""
+    from ..services import flujo_operativo
+
+    return bool(eh.postulacion and flujo_operativo.es_operativo(eh.postulacion))
+
+
 @router.get("/publica/{token}")
 def publica(token: str, db: Session = Depends(get_db)):
+    from ..models import RESULTADOS_CAPACITACION
+
     eh = _por_token(db, token, permitir_evaluada=True)
     p = eh.postulacion
+    if _es_capacitacion(eh):
+        if eh.cancelada:
+            raise HTTPException(410, "Esta capacitación fue cancelada o reprogramada.")
+        return {
+            "tipo": "capacitacion",
+            "candidato": eh.candidato.nombre if eh.candidato else "",
+            "puesto": p.vacante.titulo if p.vacante else "",
+            "empresa": nombre_empresa_candidato(p.vacante) if p.vacante else "",
+            "fecha": iso(eh.fecha),
+            "tienda": eh.tienda,
+            "direccion": eh.ubicacion or "",
+            "capacitador": eh.entrevistador or "",
+            "confirmada": bool(eh.confirmada_en),
+            "yaEvaluada": bool(eh.asistencia),
+            "asistencia": eh.asistencia or "",
+            "resultado": eh.resultado or "",
+            "resultadoEtiqueta": RESULTADOS_CAPACITACION.get(eh.resultado or "", ""),
+            "comentario": eh.comentario or "",
+            "resultados": [{"valor": k, "texto": v} for k, v in RESULTADOS_CAPACITACION.items()],
+        }
     return {
         "candidato": eh.candidato.nombre if eh.candidato else "",
         "puesto": p.vacante.titulo if p and p.vacante else "",
@@ -146,3 +176,36 @@ async def enviar_resultado(token: str, datos: ResultadoEntrevistaHumanaPublicaIn
     )
     db.commit()
     return {"ok": True, "estatus": "realizada", "notificaciones": resultados}
+
+
+class ResultadoCapacitacionIn(BaseModel):
+    asistio: bool
+    resultado: str = ""  # favorable | con_observaciones | desfavorable (obligatorio si asistió)
+    comentario: str = ""
+    capacitador: str = ""  # quién captura (si no, el capacitador asignado)
+
+
+@router.post("/publica/{token}/capacitacion")
+def enviar_resultado_capacitacion(token: str, datos: ResultadoCapacitacionIn, db: Session = Depends(get_db)):
+    """El CAPACITADOR registra asistencia + resultado de la capacitación en tienda (flujo operativo). Alimenta la
+    MISMA entrevista que la captura manual de RH; una vez registrada, la liga ya no la sobreescribe (RH sí puede
+    corregir desde la ficha). No mueve la tarjeta de etapa."""
+    from ..services import flujo_operativo
+
+    eh = _por_token(db, token, permitir_evaluada=True)
+    if not _es_capacitacion(eh):
+        raise HTTPException(404, "Esta liga no es de una capacitación en tienda.")
+    if eh.cancelada:
+        raise HTTPException(410, "Esta capacitación fue cancelada o reprogramada.")
+    if eh.asistencia:
+        raise HTTPException(409, "La asistencia ya quedó registrada.")
+    quien = (datos.capacitador or eh.entrevistador).strip()
+    if not quien:
+        raise HTTPException(400, "Escribe tu nombre (queda registrado quién capturó la asistencia).")
+    try:
+        flujo_operativo.registrar_resultado(db, eh.postulacion, eh, datos.asistio, datos.resultado, datos.comentario,
+                                            f"{quien} (capacitador)", "entrevistador")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.commit()
+    return publica(token, db)

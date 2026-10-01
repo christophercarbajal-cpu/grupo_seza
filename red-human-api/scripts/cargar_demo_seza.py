@@ -14,9 +14,9 @@ Deja en la base (entorno aislado de la demo):
     Cada una trae su pieza de Facebook (`publicaciones["facebook"]`: copy + destacados de la imagen); la
     liga única la arma `services/difusion.liga` (`/aplicar/{slug}?origen=facebook`).
 
-Puntos 5-8 (scripts/demo_seza_operativo.py): Kanban operativo de 8 etapas, «Inducción SEZA» duplicada de un
-curso existente, sesiones de «Capacitación en tienda» con cupo y 25 candidatos ficticios repartidos en las 8
-etapas (sin teléfono, correo @demo.invalid: ningún mensaje sale).
+Flujo operativo v2 (scripts/demo_seza_operativo.py): Kanban operativo de 6 columnas, «Inducción SEZA» duplicada
+de un curso existente y 25 candidatos ficticios repartidos en las 6 columnas (sin teléfono, correo @demo.invalid:
+ningún mensaje sale).
 
 Seguridad: sin `--ejecutar` es SIMULACRO (hace todo dentro de una transacción y la deshace). Idempotente:
 la Cuenta se reconoce por su slug, los Clientes por nombre, la plantilla por nombre y cada vacante por
@@ -291,12 +291,11 @@ def main() -> None:
         plantilla = _plantilla(db, cuenta, admin)
         vacantes = [_vacante(db, cuenta, admin, clientes["SEZA"], plantilla, d) for d in VACANTES]
 
-        # Puntos 5-8: Kanban operativo, Inducción SEZA, sesiones con cupo y candidatos ficticios
+        # Flujo operativo v2: Kanban de 6 columnas, Inducción SEZA y candidatos ficticios
         cuenta.flujo_candidatos = "operativo"
         por_plaza = {d["plaza"]: v for d, v in zip(VACANTES, vacantes)}
         curso = operativo.induccion(db, cuenta, admin)
-        ses = operativo.sesiones(db, cuenta, por_plaza, curso)
-        creados = operativo.candidatos(db, cuenta, admin, por_plaza, ses)
+        creados = operativo.candidatos(db, cuenta, admin, por_plaza, curso)
         print(f"  + {creados} candidatos ficticios nuevos")
         print("\nKanban (postulaciones activas por etapa):")
         conteo = operativo.conteo_por_etapa(db, cuenta)

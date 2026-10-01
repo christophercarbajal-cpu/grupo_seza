@@ -70,6 +70,12 @@ def _preguntas_reglas(v: Vacante) -> list:
     return prefiltro_reglas.preguntas(v.prefiltro_reglas) if prefiltro_reglas.activo(v.prefiltro_reglas) else []
 
 
+def _subestado_operativo(p: Postulacion):
+    from .services import flujo_operativo  # import local: evita ciclo
+
+    return flujo_operativo.subestado(p) if flujo_operativo.es_operativo(p) else None
+
+
 def _resumen_prefiltro_reglas(p: Postulacion):
     from .services import vehiculo  # import local: vehiculo importa serial
 
@@ -479,6 +485,8 @@ def postulacion_dict(p: Postulacion, detalle: bool = False, n_mensajes: Optional
         "flujo": (p.cuenta.flujo_candidatos if p.cuenta else "rh") or "rh",
         # Demo SEZA: resultado del prefiltro por reglas + siguiente acción (None si la vacante no lo usa)
         "prefiltroReglas": _resumen_prefiltro_reglas(p),
+        # Flujo operativo v2: subestado de la columna ({texto, tono}) — p. ej. «Prefiltro: En curso», «Cita confirmada»
+        "operativo": _subestado_operativo(p),
         # --- Persona (maestro) ---
         "candidato": _persona_dict(c),
     }
