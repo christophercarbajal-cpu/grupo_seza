@@ -345,8 +345,8 @@ def documento_para_adjunto(db: Session, e: Expediente, pie: str, nombre_archivo:
     for d in docs:
         if d.estado in ("pendiente", "rechazado"):
             return d
-    n = sum(1 for d in docs if d.tipo.startswith("Documento WhatsApp")) + 1
-    nuevo = Documento(expediente_id=e.id, tipo=f"Documento WhatsApp {n}", obligatorio=False)
+    n = sum(1 for d in docs if d.tipo.startswith(("Documento por chat", "Documento WhatsApp"))) + 1
+    nuevo = Documento(expediente_id=e.id, tipo=f"Documento por chat {n}", obligatorio=False)
     db.add(nuevo)
     db.flush()
     return nuevo

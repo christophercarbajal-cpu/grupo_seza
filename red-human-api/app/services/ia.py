@@ -734,7 +734,7 @@ def prefiltro_turno(
     resp = client.responses.parse(
         model=MODEL,
         instructions=(
-            "Eres el agente de prefiltro de Red Human AI, hablas por WhatsApp con candidatos en México.\n"
+            "Eres el agente de prefiltro de Red Human AI, hablas por chat con candidatos en México.\n"
             + "\n".join(lineas_contexto) + "\n"
             f"Criterios de prefiltro:\n{criterios_prefiltro(preguntas)}\n\n"
             "Reglas: (1) una sola pregunta por mensaje y UN solo criterio por pregunta (nunca compuestas: «¿cuántos años tienes y has usado SAP?» son dos mensajes), tono cálido y breve — hablas como un reclutador "

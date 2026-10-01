@@ -74,7 +74,7 @@ export default function FotosVehiculo() {
         {fase === "no_disponible" && (
           <Card className="p-8 text-center">
             <h1 className="font-display text-xl font-bold">Liga no disponible</h1>
-            <p className="mt-2 text-sm text-ink-2">Esta liga no es válida o tu postulación ya se cerró. Si crees que es un error, escríbenos por WhatsApp.</p>
+            <p className="mt-2 text-sm text-ink-2">Esta liga no es válida o tu postulación ya se cerró. Si crees que es un error, escríbenos por el chat.</p>
           </Card>
         )}
 
@@ -103,8 +103,8 @@ export default function FotosVehiculo() {
                 {info.estado === "por_revisar" ? <Clock className="mx-auto h-8 w-8 text-warn" /> : <CheckCircle2 className="mx-auto h-8 w-8 text-good" />}
                 <p className="mt-2 text-sm text-ink-2">
                   {info.estado === "por_revisar"
-                    ? "¡Listo! Recibimos tus 4 fotos. El equipo de RH las revisará y te avisará por WhatsApp."
-                    : "Tu vehículo ya fue revisado. Te contactaremos por WhatsApp para el siguiente paso."}
+                    ? "¡Listo! Recibimos tus 4 fotos. El equipo de RH las revisará y te avisará por el chat."
+                    : "Tu vehículo ya fue revisado. Te contactaremos por el chat para el siguiente paso."}
                 </p>
               </Card>
             )}

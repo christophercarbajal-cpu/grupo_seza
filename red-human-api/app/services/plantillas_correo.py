@@ -249,7 +249,7 @@ def html_candidato(d: dict, evento: str = "agendada") -> tuple[str, str]:
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fafafb;border:1px solid #eceef1;border-radius:14px;padding:6px 18px;{"opacity:.6;" if cancelada else ""}">{filas}</table>'
         + (f'<p style="margin:18px 0 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:{INK2};">{escape(d["comentario"])}</p>' if d.get("comentario") and not cancelada else "")
         + boton
-        + ("" if cancelada else f'<p style="margin:16px 0 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:{INK2};">Te recomendamos conectarte 5 minutos antes{" y probar tu cámara y micrófono" if modalidad == "Videollamada" else ""}. Si necesitas cambiar la fecha, respóndenos por WhatsApp.</p>')
+        + ("" if cancelada else f'<p style="margin:16px 0 0;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:{INK2};">Te recomendamos conectarte 5 minutos antes{" y probar tu cámara y micrófono" if modalidad == "Videollamada" else ""}. Si necesitas cambiar la fecha, escríbenos por el chat.</p>')
     )
     pie = f"Tus datos se tratan conforme al Aviso de Privacidad de {escape(empresa)} exclusivamente para este proceso de selección (LFPDPPP)."
     return asunto, _base(asunto, f"{t['eyebrow']} · {d.get('fecha', '')} {d.get('hora', '')} · {d.get('vacante', '')}", empresa, d.get("logo_url", ""), contenido, pie)

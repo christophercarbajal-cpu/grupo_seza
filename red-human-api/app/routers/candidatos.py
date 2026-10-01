@@ -745,7 +745,7 @@ async def _disparar_plantilla_inicio(db: Session, p: Postulacion) -> dict:
         texto_alterno=f"Hola {primer_nombre}, ¡gracias por tu interés! Empecemos con tu proceso. Escríbeme *Hola* para continuar.",
     )
     texto_mensaje = (
-        f"[Plantilla de WhatsApp «{PLANTILLA_INICIO_ENTREVISTA}»] Hola {primer_nombre}, ¡gracias por tu interés! Empecemos con tu proceso."
+        f"[Mensaje de inicio «{PLANTILLA_INICIO_ENTREVISTA}»] Hola {primer_nombre}, ¡gracias por tu interés! Empecemos con tu proceso."
         if envio.get("enviado")
         else f"[Fallo de envío Meta] La plantilla «{PLANTILLA_INICIO_ENTREVISTA}» no pudo entregarse a {p.telefono}: {envio.get('detalle', 'sin detalle')}."
     )
@@ -781,7 +781,7 @@ async def postular(
     if not consentimiento:
         raise HTTPException(400, "Necesitamos tu autorización para tratar tus datos (Aviso de Privacidad).")
     if not telefono.strip() and not correo.strip():
-        raise HTTPException(400, "Déjanos un WhatsApp o un correo para poder contactarte.")
+        raise HTTPException(400, "Déjanos un celular o un correo para poder contactarte.")
 
     vac = db.query(Vacante).filter(Vacante.slug == vacante).first()
     if not vac:

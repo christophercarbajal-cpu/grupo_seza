@@ -260,7 +260,7 @@ export default function FormularioAplicar() {
                         onChange={(v) => setDatos({ ...datos, correo: v })}
                       />
                       <Campo
-                        label="WhatsApp"
+                        label="Celular"
                         icon={Phone}
                         placeholder="33 1234 5678"
                         type="tel"
@@ -268,7 +268,7 @@ export default function FormularioAplicar() {
                         onChange={(v) => setDatos({ ...datos, telefono: v })}
                       />
                       <p className="text-xs text-ink-3 sm:col-span-2">
-                        Con uno de los dos basta, pero por WhatsApp te contestamos más rápido.
+                        Con uno de los dos basta, pero por celular te contestamos más rápido.
                       </p>
                     </div>
                   )}
@@ -302,7 +302,7 @@ export default function FormularioAplicar() {
                           className="mt-0.5 h-5 w-5 rounded border-border-soft accent-[var(--brand)]"
                         />
                         <span className="text-[13px] leading-relaxed text-ink-2">
-                          Autorizo ser contactado(a) por WhatsApp, correo o llamada, y el tratamiento de mis datos
+                          Autorizo ser contactado(a) por mensaje, correo o llamada, y el tratamiento de mis datos
                           personales conforme al{" "}
                           <a href="#" className="text-brand underline">
                             Aviso de Privacidad
@@ -512,7 +512,7 @@ function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean
             <div className="flex w-full max-w-md flex-col items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-5 text-center">
               <Camera className="h-7 w-7 text-brand" />
               <p className="text-sm leading-relaxed text-ink">
-                Siguiente paso: sube 4 fotos de tu vehículo (frente, atrás y ambos costados). También te mandamos la liga por WhatsApp.
+                Siguiente paso: sube 4 fotos de tu vehículo (frente, atrás y ambos costados). También te mandamos la liga por el chat.
               </p>
               <Button href={ligaVehiculo} className="w-full">
                 <Camera className="h-4 w-4" /> Subir fotos de mi vehículo
@@ -524,7 +524,7 @@ function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean
               <MessageCircle className="h-5 w-5" />
             </span>
             <p className="text-sm leading-relaxed text-ink">
-              Nuestro asistente virtual de RH te contactará por WhatsApp en breve para continuar tu proceso.
+              Nuestro asistente virtual de RH te contactará por el chat en breve para continuar tu proceso.
             </p>
           </div>
 

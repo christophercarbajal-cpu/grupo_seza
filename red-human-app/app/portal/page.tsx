@@ -297,7 +297,7 @@ export default function Portal() {
             Encuentra tu <span className="brand-gradient-text">próxima oportunidad</span>
           </h1>
           <p className="mx-auto mt-4 max-w-xl text-base leading-relaxed text-ink-2 sm:text-lg">
-            Postúlate en minutos: Red Human revisa tu perfil y el equipo de Recursos Humanos te contacta por WhatsApp.
+            Postúlate en minutos: Red Human revisa tu perfil y el equipo de Recursos Humanos te contacta por chat.
           </p>
 
           {/* Buscador único */}

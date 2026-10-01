@@ -428,7 +428,7 @@ async def _recibir_documento_whatsapp(db: Session, p: Postulacion, msg: dict, te
     adicional. Nunca truena: cualquier fallo se le explica al candidato por WhatsApp."""
     media = msg.get("media") or {}
     e = p.expediente
-    etiqueta = media.get("filename") or f"{msg.get('tipo')} de WhatsApp"
+    etiqueta = media.get("filename") or f"{msg.get('tipo')} recibido por chat"
     guardar_mensaje(db, p, "user", f"[📎 {etiqueta}]" + (f" {msg.get('texto')}" if msg.get("texto") else ""), "whatsapp", wa_id=msg.get("wa_id", ""))
     db.flush()
 

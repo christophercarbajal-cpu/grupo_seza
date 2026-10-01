@@ -68,7 +68,7 @@ async def subir_foto(token: str, lado: str = Form(...), archivo: UploadFile = Fi
     if lado not in LADOS_VEHICULO:
         raise HTTPException(400, "Lado inválido.")
     if r.estado not in ("pendiente", "correccion"):
-        raise HTTPException(409, "Tus fotos ya están en revisión. Si necesitas cambiar alguna, RH te lo pedirá por WhatsApp.")
+        raise HTTPException(409, "Tus fotos ya están en revisión. Si necesitas cambiar alguna, RH te lo pedirá por este medio.")
     if r.estado == "correccion" and lado not in vehiculo_srv.lados_faltantes(r):
         raise HTTPException(409, "Esa foto no necesita corrección.")
     val = await fs.validar(archivo, "foto")

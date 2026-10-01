@@ -577,7 +577,7 @@ def registro_externo(token: str, datos: RegistroExternoIn, db: Session = Depends
     if not datos.nombre.strip():
         raise HTTPException(400, "Escribe tu nombre.")
     if not (datos.correo.strip() or datos.telefono.strip()):
-        raise HTTPException(400, "Deja tu correo o tu WhatsApp para enviarte tu resultado.")
+        raise HTTPException(400, "Deja tu correo o tu celular para enviarte tu resultado.")
     a.externo_nombre = datos.nombre.strip()[:200]
     a.externo_correo = datos.correo.strip().lower()[:200]
     a.externo_telefono = datos.telefono.strip()[:30]

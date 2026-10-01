@@ -127,12 +127,12 @@ export default function SalaCurso() {
         {a && vista === "registro" && (
           <Card className="p-6">
             <h2 className="font-display text-lg font-bold">Antes de empezar</h2>
-            <p className="mt-1 text-sm text-ink-2">Solo necesitamos tu nombre y un correo o WhatsApp para enviarte tu resultado.</p>
+            <p className="mt-1 text-sm text-ink-2">Solo necesitamos tu nombre y un correo o celular para enviarte tu resultado.</p>
             <div className="mt-4 flex flex-col gap-3">
               <input value={nombre} onChange={(e) => setNombre(e.target.value)} placeholder="Nombre completo" className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 totem:min-h-16 totem:text-xl" />
               <div className="grid gap-3 sm:grid-cols-2">
                 <input value={correo} onChange={(e) => setCorreo(e.target.value)} placeholder="Correo" type="email" className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 totem:min-h-16 totem:text-xl" />
-                <input value={telefono} onChange={(e) => setTelefono(e.target.value)} placeholder="WhatsApp (10 dígitos)" className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 totem:min-h-16 totem:text-xl" />
+                <input value={telefono} onChange={(e) => setTelefono(e.target.value)} placeholder="Celular (10 dígitos)" className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20 totem:min-h-16 totem:text-xl" />
               </div>
               {error && <p className="text-sm font-semibold text-bad">{error}</p>}
               <Button className={cn("w-full", btnTotem)} onClick={registrar} disabled={ocupado || !nombre.trim() || !(correo.trim() || telefono.trim())}>
