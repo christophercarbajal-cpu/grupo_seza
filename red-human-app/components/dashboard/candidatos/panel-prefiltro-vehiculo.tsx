@@ -8,8 +8,8 @@
    de ciertas fotos o documentos (con comentario; se reenvía la misma liga) o marca excepción (con motivo). Hasta
    que el vehículo esté aprobado o en excepción no se puede citar al candidato. Las decisiones son de RH (HITL). */
 
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowRight, Camera, Check, CheckCircle2, Clock, FileText, Send, ShieldCheck, XCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, ArrowRight, Camera, Check, CheckCircle2, Clock, FileText, ShieldCheck, Upload, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { LigaAcciones } from "@/components/dashboard/liga-acciones";
@@ -19,6 +19,9 @@ import {
   decidirVehiculo,
   enviarLigaVehiculo,
   fetchFlujoVehiculo,
+  generarLigaVehiculo,
+  subirDocumentoVehiculoRH,
+  subirFotoVehiculoRH,
   urlArchivo,
   urlDocumento,
   type FlujoVehiculo,
@@ -182,16 +185,6 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                 )}
               </div>
             </div>
-            {puedeDecidir && pf.resultado === "cumple" && vh.estado !== "aprobado" && vh.estado !== "excepcion" && (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={Boolean(ocupado)}
-                onClick={() => ejecutar("liga", () => enviarLigaVehiculo(codigo), "Liga del vehículo enviada.")}
-              >
-                <Send className="h-4 w-4" /> {vh.estado === "sin_liga" ? "Enviar liga del vehículo" : "Reenviar liga"}
-              </Button>
-            )}
           </div>
 
           {!vh.puedeCitar && (
@@ -206,7 +199,17 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
             </p>
           )}
 
-          {vh.liga && <LigaAcciones className="mt-3" etiqueta="Liga del candidato (fotos y documentos)" liga={vh.liga} />}
+          <LigaAcciones
+            className="mt-3"
+            etiqueta="Liga del candidato (fotos y documentos)"
+            liga={vh.liga}
+            generando={ocupado === "generar"}
+            onGenerar={puedeDecidir ? () => ejecutar("generar", () => generarLigaVehiculo(codigo), "Liga generada: ábrela, cópiala o envíala.") : undefined}
+            enviando={ocupado === "liga"}
+            ultimoEnvio={vh.ligaEnviadaEn ? { enviado: true, fecha: vh.ligaEnviadaEn } : null}
+            onEnviar={puedeDecidir && vh.estado !== "aprobado" && vh.estado !== "excepcion"
+              ? () => ejecutar("liga", () => enviarLigaVehiculo(codigo), "Liga del vehículo enviada.") : undefined}
+          />
 
           <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             {vh.fotos.map((f) => (
@@ -223,9 +226,15 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                     </div>
                   )}
                 </div>
-                <figcaption className="px-2.5 py-1.5 text-[12px]">
-                  <span className="font-medium text-ink">{f.nombre}</span>
-                  <span className="block text-ink-3">{f.cargada ? "Recibida" : "Pendiente"}</span>
+                <figcaption className="flex items-center justify-between gap-1 px-2.5 py-1.5 text-[12px]">
+                  <span>
+                    <span className="font-medium text-ink">{f.nombre}</span>
+                    <span className="block text-ink-3">{f.cargada ? "Recibida" : "Pendiente"}</span>
+                  </span>
+                  {puedeDecidir && (
+                    <SubirArchivo soloImagen ocupado={ocupado === `foto-${f.lado}`} titulo={`Subir foto: ${f.nombre}`}
+                      onArchivo={(a) => ejecutar(`foto-${f.lado}`, () => subirFotoVehiculoRH(codigo, f.lado, a), `Foto «${f.nombre}» cargada.`)} />
+                  )}
                 </figcaption>
               </figure>
             ))}
@@ -245,7 +254,13 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                   )}
                   {d.estadoSimple === "Requiere corrección" && d.notas && <span className="text-[12px] text-bad">· {d.notas}</span>}
                 </span>
-                <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
+                <span className="flex items-center gap-1.5">
+                  <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
+                  {puedeDecidir && (
+                    <SubirArchivo ocupado={ocupado === `doc-${d.clave}`} titulo={`Subir ${d.tipo}`}
+                      onArchivo={(a) => ejecutar(`doc-${d.clave}`, () => subirDocumentoVehiculoRH(codigo, d.clave, a), `«${d.tipo}» cargado.`)} />
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -342,5 +357,20 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
         </div>
       )}
     </div>
+  );
+}
+
+/** Captura interna: RH sube el archivo desde la ficha (alimenta la misma revisión que la liga del candidato). */
+function SubirArchivo({ onArchivo, ocupado, titulo, soloImagen = false }: { onArchivo: (a: File) => void; ocupado: boolean; titulo: string; soloImagen?: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input ref={ref} type="file" className="hidden" accept={soloImagen ? "image/jpeg,image/png,image/webp" : "image/jpeg,image/png,image/webp,application/pdf"}
+        onChange={(e) => { const a = e.target.files?.[0]; if (a) onArchivo(a); e.target.value = ""; }} />
+      <button type="button" title={titulo} disabled={ocupado} onClick={() => ref.current?.click()}
+        className="inline-flex h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">
+        <Upload className="h-3.5 w-3.5" /> {ocupado ? "…" : "Subir"}
+      </button>
+    </>
   );
 }

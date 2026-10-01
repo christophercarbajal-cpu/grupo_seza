@@ -13,8 +13,8 @@
       «Dar de alta» (crea el colaborador y cierra el proceso).
    Una acción principal por paso; toda decisión queda con el nombre de quien la tomó. */
 
-import { useCallback, useEffect, useState } from "react";
-import { CalendarCheck, CheckCircle2, ClipboardCheck, FileCheck2, FileSignature, Phone, Send, UserCheck, XCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CalendarCheck, CheckCircle2, ClipboardCheck, FileCheck2, FileSignature, FileText, Phone, Send, ShieldCheck, Upload, UserCheck, Users, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { CampoRH, ModalMarco, inputRH } from "@/components/dashboard/modulos-rh";
@@ -22,7 +22,9 @@ import { LigaAcciones } from "@/components/dashboard/liga-acciones";
 import { cn } from "@/lib/utils";
 import {
   cancelarEntrevistaOperativa,
+  capturarReferenciasOperativo,
   confirmarCitaCapacitacion,
+  enviarCartaIntencion,
   decidirContratoOperativo,
   enviarAOnboardingOperativo,
   fetchCursos,
@@ -38,8 +40,11 @@ import {
   resultadoEntrevistaOperativa,
   revisarDocumentoOperativo,
   solicitarDocumentosReferencias,
+  subirDocumento,
+  urlCartaIntencion,
   urlContratoPdf,
   urlDocumento,
+  validarReferenciaOperativo,
   type DatosEntrevistaOperativa,
   type Entrevistador,
   type PanelOperativo as Panel,
@@ -63,6 +68,12 @@ function ahoraLocal(): string {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
 }
 
+/** ISO → formato de <input type="datetime-local"> en la hora local del navegador. */
+function ahoraLocalDe(iso: string): string {
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
 function fechaCorta(iso?: string | null): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -71,6 +82,13 @@ function fechaCorta(iso?: string | null): string {
 
 type Llamada = { indice: number; nombre: string; telefono: string; parentesco: string; contactada: boolean; resultado: string; fecha: string; nota: string };
 type FormCita = DatosEntrevistaOperativa & { modo: "nueva" | "reprogramar" };
+
+function condDesde(c: Panel["contratacion"]["condiciones"]) {
+  return {
+    puesto: c.puesto, sueldo: c.sueldo, tipo: c.tipoContratacion, fecha: (c.fechaIngreso || "").slice(0, 10), ubicacion: c.ubicacion,
+    jefe: c.jefeDirecto, instrucciones: c.instruccionesIngreso, duracion: c.duracionContrato ? String(c.duracionContrato) : "", unidad: c.duracionUnidad || "meses",
+  };
+}
 
 const CITA_VACIA: FormCita = {
   modo: "nueva", tienda: "", direccion: "", fecha: "", hora: "09:00", capacitador_tipo: "interno", capacitador_usuario_id: null,
@@ -84,17 +102,19 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
   const [rechazo, setRechazo] = useState<{ tipo: string; motivo: string } | null>(null);
   const [contacto, setContacto] = useState<Llamada | null>(null);
   const [cita, setCita] = useState<FormCita | null>(null);
-  const [resultado, setResultado] = useState<{ asistio: boolean; resultado: string; comentario: string } | null>(null);
+  const [resultado, setResultado] = useState<{ asistio: boolean; resultado: string; comentario: string; fecha: string; entrevistador: string } | null>(null);
+  const [capturaRefs, setCapturaRefs] = useState<{ nombre: string; telefono: string; parentesco: string }[] | null>(null);
+  const [confirmarAlta, setConfirmarAlta] = useState(false);
   const [usuarios, setUsuarios] = useState<Entrevistador[]>([]);
   const [cursos, setCursos] = useState<{ id: string; titulo: string }[]>([]);
-  const [cond, setCond] = useState({ puesto: "", sueldo: "", tipo: "", fecha: "" });
+  const [cond, setCond] = useState({ puesto: "", sueldo: "", tipo: "", fecha: "", ubicacion: "", jefe: "", instrucciones: "", duracion: "", unidad: "meses" });
 
   const cargar = useCallback(async () => {
     const p = await fetchPanelOperativo(codigo);
     if (p) {
       setPanel(p);
       const c = p.contratacion.condiciones;
-      setCond({ puesto: c.puesto, sueldo: c.sueldo, tipo: c.tipoContratacion, fecha: (c.fechaIngreso || "").slice(0, 10) });
+      setCond(condDesde(c));
     }
   }, [codigo]);
   useEffect(() => {
@@ -110,8 +130,7 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
     setOcupado("");
     if (!r.ok) return setAviso({ tono: "error", texto: r.error });
     setPanel(r.data);
-    const c = r.data.contratacion.condiciones;
-    setCond({ puesto: c.puesto, sueldo: c.sueldo, tipo: c.tipoContratacion, fecha: (c.fechaIngreso || "").slice(0, 10) });
+    setCond(condDesde(r.data.contratacion.condiciones));
     const sinEnvio = r.data.whatsapp && !r.data.whatsapp.enviado;
     setAviso({ tono: sinEnvio ? "warn" : "ok", texto: exito(r.data) + (sinEnvio ? " El mensaje no salió: copia la liga y compártela." : "") });
     onCambio?.();
@@ -153,7 +172,8 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
       const k = p.envioCapacitador ?? [];
       const partes = [modo === "reprogramar" ? "Capacitación reprogramada." : "Capacitación programada."];
       partes.push(c?.enviado ? "La cita le llegó al candidato." : `La cita al candidato no salió${c?.detalle ? ` (${c.detalle})` : ""}.`);
-      partes.push(k.some((x) => x.enviado) ? "El capacitador recibió su liga." : "Al capacitador no le llegó el aviso: comparte su liga.");
+      partes.push(k.some((x) => x.enviado) ? "El entrevistador recibió su liga." : "Al entrevistador no le llegó el aviso: comparte su liga.");
+      if (p.induccionEnviada) partes.push(`Material de inducción «${p.induccionEnviada.titulo}» compartido.`);
       return partes.join(" ");
     });
   }
@@ -239,7 +259,8 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
             <b>{eh.asistencia === "no_asistio" ? "No asistió" : `Resultado: ${eh.resultadoEtiqueta}`}</b>
             {eh.asistencia === "asistio" && eh.indicaciones ? ` — ${eh.indicaciones}` : ""}
             <span className="block text-[12px] text-ink-3">
-              Registró: {eh.capturadoPor === "rh" ? "RH (captura manual)" : "el capacitador (liga)"} · {fechaCorta(eh.evaluadaEn)}
+              Realizada: {fechaCorta(eh.realizadaEn)} · entrevistador: {eh.capacitador.nombre} · registró {eh.registradoPor || "—"} vía{" "}
+              {eh.capturadoPor === "rh" ? "captura de RH" : "liga del entrevistador"} · {fechaCorta(eh.evaluadaEn)}
             </span>
           </p>
         )}
@@ -254,8 +275,8 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
             )}
             {citaAbierta && (
               <>
-                <Button size="sm" onClick={() => setResultado({ asistio: true, resultado: "", comentario: "" })}>
-                  <ClipboardCheck className="h-4 w-4" /> Registrar resultado
+                <Button size="sm" onClick={() => setResultado({ asistio: true, resultado: "", comentario: "", fecha: ahoraLocal(), entrevistador: eh!.capacitador.nombre })}>
+                  <ClipboardCheck className="h-4 w-4" /> Registrar entrevista
                 </Button>
                 {!eh!.confirmada && (
                   <Button size="sm" variant="outline" disabled={Boolean(ocupado)}
@@ -272,8 +293,14 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
               </>
             )}
             {eh && conResultado && (
-              <Button size="sm" variant="ghost" onClick={() => setResultado({ asistio: eh.asistencia === "asistio", resultado: eh.resultado, comentario: "" })}>
-                Corregir resultado…
+              <Button size="sm" variant="ghost" onClick={() => setResultado({ asistio: eh.asistencia === "asistio", resultado: eh.resultado, comentario: "",
+                fecha: eh.realizadaEn ? ahoraLocalDe(eh.realizadaEn) : ahoraLocal(), entrevistador: eh.capacitador.nombre })}>
+                Corregir registro…
+              </Button>
+            )}
+            {!eh && ["Revisión de vehículo", "Entrevista"].includes(etapa) && (
+              <Button size="sm" variant="ghost" onClick={() => setResultado({ asistio: true, resultado: "", comentario: "", fecha: ahoraLocal(), entrevistador: "" })}>
+                <ClipboardCheck className="h-4 w-4" /> Registrar entrevista (sin cita)
               </Button>
             )}
             {enEntrevista && eh?.asistencia === "asistio" && (
@@ -295,9 +322,24 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
       {etapa === "Evaluación" && (
         <Card className="p-5">
           <Eyebrow>Evaluación</Eyebrow>
-          <p className="mt-2 text-[13px] text-ink-2">
-            Agrega y revisa entrevistas humanas o evaluaciones (psicométrica, médica, socioeconómica…) en la pestaña «Evaluación integral». Recibir un
-            resultado no mueve al candidato: tú decides cuándo pasa a Contratación.
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            {[
+              { t: "Prefiltro", v: panel.evaluacionResumen.prefiltro.etiqueta,
+                d: panel.evaluacionResumen.prefiltro.aprobadoPorRH ? `Aprobado por ${panel.evaluacionResumen.prefiltro.aprobadoPorRH.usuario}` : panel.evaluacionResumen.prefiltro.motivos.slice(0, 2).join(" · ") },
+              { t: "Revisión de vehículo", v: panel.evaluacionResumen.vehiculo.etiqueta,
+                d: [panel.evaluacionResumen.vehiculo.decididoPor && `por ${panel.evaluacionResumen.vehiculo.decididoPor}`, panel.evaluacionResumen.vehiculo.comentario].filter(Boolean).join(" · ") },
+              { t: "Entrevista en tienda", v: panel.evaluacionResumen.entrevista.resultadoEtiqueta || panel.evaluacionResumen.entrevista.estado,
+                d: [panel.evaluacionResumen.entrevista.entrevistador, panel.evaluacionResumen.entrevista.observaciones].filter(Boolean).join(" · ") },
+            ].map((x) => (
+              <div key={x.t} className="rounded-xl border border-border-soft p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">{x.t}</p>
+                <p className="mt-1 text-sm font-semibold text-ink">{x.v || "—"}</p>
+                {x.d && <p className="mt-0.5 text-[12px] text-ink-3">{x.d}</p>}
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-[13px] text-ink-2">
+            Revisa el resumen (y, si hace falta, agrega evaluaciones en «Evaluación integral»). Tú decides si pasa a Contratación.
           </p>
           {puedeDecidir && !cerrada && (
             <Button size="sm" className="mt-3" disabled={Boolean(ocupado)}
@@ -326,26 +368,51 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
             <CampoRH label="Puesto">
               <input className={inputRH} value={cond.puesto} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, puesto: e.target.value })} />
             </CampoRH>
-            <CampoRH label="Sueldo">
-              <input className={inputRH} value={cond.sueldo} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, sueldo: e.target.value })} placeholder="$650 MXN diarios, pago semanal" />
-            </CampoRH>
-            <CampoRH label="Tipo de contratación">
+            <CampoRH label="Tipo de contratación" ayuda={cond.tipo ? `Plantilla: ${ct.plantillas[cond.tipo]?.titulo ?? ""}` : undefined}>
               <select className={inputRH} value={cond.tipo} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, tipo: e.target.value })}>
                 <option value="">Elige…</option>
-                {ct.tiposContratacion.filter((t) => t !== "Tiempo determinado").map((t) => (
+                {ct.tiposContratacion.map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
             </CampoRH>
-            <CampoRH label="Fecha de ingreso">
+            <CampoRH label={`${ct.plantillas[cond.tipo]?.pago ?? "Sueldo"} (condiciones económicas)`}>
+              <input className={inputRH} value={cond.sueldo} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, sueldo: e.target.value })} placeholder="$650 MXN diarios, pago semanal" />
+            </CampoRH>
+            {cond.tipo === "Tiempo determinado" && (
+              <CampoRH label="Duración">
+                <div className="flex gap-2">
+                  <input className={inputRH} inputMode="numeric" value={cond.duracion} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, duracion: e.target.value.replace(/\D/g, "") })} />
+                  <select className={inputRH} value={cond.unidad} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, unidad: e.target.value })}>
+                    {["días", "meses", "años"].map((u) => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
+              </CampoRH>
+            )}
+            <CampoRH label={ct.plantillas[cond.tipo]?.pago && ct.plantillas[cond.tipo].pago !== "Sueldo" ? "Fecha de inicio" : "Fecha de ingreso"}>
               <input type="date" className={inputRH} value={cond.fecha} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, fecha: e.target.value })} />
             </CampoRH>
+            <CampoRH label="Ubicación">
+              <input className={inputRH} value={cond.ubicacion} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, ubicacion: e.target.value })} />
+            </CampoRH>
+            <CampoRH label="Jefe directo / contacto">
+              <input className={inputRH} value={cond.jefe} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, jefe: e.target.value })} />
+            </CampoRH>
           </div>
+          <CampoRH label="Instrucciones de ingreso">
+            <textarea rows={2} value={cond.instrucciones} disabled={!puedeDecidir || cerrada} onChange={(e) => setCond({ ...cond, instrucciones: e.target.value })}
+              className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
+          </CampoRH>
           {puedeDecidir && !cerrada && (
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="outline" disabled={Boolean(ocupado) || !cond.puesto || !cond.sueldo || !cond.tipo || !cond.fecha}
                 onClick={() => ejecutar("condiciones", async () => {
-                  const r = await guardarCondicionesContratacion(codigo, { puesto: cond.puesto, sueldo: cond.sueldo, tipoContratacion: cond.tipo, fechaIngreso: cond.fecha });
+                  const r = await guardarCondicionesContratacion(codigo, {
+                    puesto: cond.puesto, sueldo: cond.sueldo, tipoContratacion: cond.tipo, fechaIngreso: cond.fecha, ubicacion: cond.ubicacion,
+                    jefeDirecto: cond.jefe, instruccionesIngreso: cond.instrucciones,
+                    duracionContrato: cond.tipo === "Tiempo determinado" && cond.duracion ? Number(cond.duracion) : null,
+                    duracionUnidad: cond.tipo === "Tiempo determinado" ? cond.unidad : "",
+                  });
                   if (!r.ok) return r;
                   const p = await fetchPanelOperativo(codigo);
                   return p ? { ok: true as const, data: p } : { ok: false as const, error: "No se pudo recargar." };
@@ -371,6 +438,21 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                 <a href={urlContratoPdf(exp.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1 rounded-xl px-3 text-sm font-semibold text-brand hover:bg-brand-soft">
                   <FileSignature className="h-4 w-4" /> Ver contrato
                 </a>
+              )}
+              {ct.cartaDisponible && exp && (
+                <>
+                  <a href={urlCartaIntencion(exp.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1 rounded-xl px-3 text-sm font-semibold text-brand hover:bg-brand-soft">
+                    <FileText className="h-4 w-4" /> Carta de intención
+                  </a>
+                  <Button size="sm" variant="ghost" disabled={Boolean(ocupado)} onClick={async () => {
+                    setOcupado("carta");
+                    const r = await enviarCartaIntencion(exp.id, "whatsapp");
+                    setOcupado("");
+                    setAviso(r.ok ? { tono: r.data.enviado ? "ok" : "warn", texto: r.data.enviado ? "Carta de intención enviada al candidato." : `La carta no salió (${r.data.detalle}); compártela desde su liga.` } : { tono: "error", texto: r.error });
+                  }}>
+                    <Send className="h-4 w-4" /> Enviar carta
+                  </Button>
+                </>
               )}
             </div>
           )}
@@ -435,6 +517,14 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                       <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 text-right">
+                      {puedeDecidir && !cerrada && !d.aprobado && (
+                        <SubirDoc ocupado={ocupado === `subir-${d.tipo}`} onArchivo={(a) => ejecutar(`subir-${d.tipo}`, async () => {
+                          const r = await subirDocumento(exp.id, d.tipo, a);
+                          if (!r.ok) return r;
+                          const p = await fetchPanelOperativo(codigo);
+                          return p ? { ok: true as const, data: p } : { ok: false as const, error: "No se pudo recargar." };
+                        }, () => `«${d.tipo}» cargado: queda «Recibido» para revisión.`)} />
+                      )}
                       {puedeDecidir && !cerrada && d.archivo && !d.aprobado && (
                         <span className="inline-flex gap-1">
                           <Button size="sm" variant="ghost" disabled={Boolean(ocupado)}
@@ -470,9 +560,18 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
             </div>
           )}
 
-          <p className="mt-5 text-[12px] font-semibold uppercase tracking-wide text-ink-3">Referencias (3)</p>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[12px] font-semibold uppercase tracking-wide text-ink-3">Referencias (3) · contactada ≠ validada</p>
+            {puedeDecidir && !cerrada && (
+              <Button size="sm" variant="ghost" onClick={() => setCapturaRefs(
+                [0, 1, 2].map((i) => ({ nombre: exp.referencias[i]?.nombre ?? "", telefono: exp.referencias[i]?.telefono ?? "", parentesco: exp.referencias[i]?.parentesco ?? "" })),
+              )}>
+                <Users className="h-4 w-4" /> {exp.referencias.length ? "Editar referencias" : "Capturar referencias"}
+              </Button>
+            )}
+          </div>
           {exp.referencias.length === 0 ? (
-            <p className="mt-2 text-sm text-ink-3">El candidato aún no captura sus referencias en la liga.</p>
+            <p className="mt-2 text-sm text-ink-3">El candidato aún no captura sus referencias en la liga (o captúralas tú).</p>
           ) : (
             <ul className="mt-2 flex flex-col gap-2">
               {exp.referencias.map((r, i) => {
@@ -490,6 +589,17 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                         <Badge tone={r.contactada ? TONO_REFERENCIA[r.resultado ?? ""] ?? "good" : llamadas.length ? "warn" : "neutral"}>
                           {r.contactada ? `Contactada${r.resultado ? ` · ${r.resultado}` : ""}` : llamadas.length ? `Sin contactar · ${r.resultado || "intento"}` : "Por llamar"}
                         </Badge>
+                        {r.validada ? (
+                          <Badge tone="good" dot>Validada</Badge>
+                        ) : (
+                          r.contactada && <Badge tone="warn">Sin validar</Badge>
+                        )}
+                        {puedeDecidir && !cerrada && r.contactada && (
+                          <Button size="sm" variant={r.validada ? "ghost" : "outline"} disabled={Boolean(ocupado)}
+                            onClick={() => ejecutar(`val-${i}`, () => validarReferenciaOperativo(codigo, i, !r.validada), () => (r.validada ? "Validación retirada." : "Referencia validada."))}>
+                            <ShieldCheck className="h-4 w-4" /> {r.validada ? "Quitar validación" : "Validar"}
+                          </Button>
+                        )}
                         {puedeDecidir && !cerrada && (
                           <Button size="sm" variant={r.contactada ? "ghost" : "outline"} disabled={Boolean(ocupado)}
                             onClick={() => setContacto({ indice: i, nombre: r.nombre, telefono: r.telefono, parentesco: r.parentesco, contactada: true, resultado: "", fecha: ahoraLocal(), nota: "" })}>
@@ -498,6 +608,7 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
                         )}
                       </span>
                     </div>
+                    {r.validada && <p className="mt-1 text-[12px] text-good">Validada por {r.validada_por} · {fechaCorta(r.validada_en)}{r.validacion_nota ? ` — ${r.validacion_nota}` : ""}</p>}
                     {llamadas.length > 0 && (
                       <ul className="mt-2 flex flex-col gap-1 border-t border-border-faint pt-2 text-[12px] text-ink-3">
                         {[...llamadas].reverse().map((l, j) => (
@@ -528,10 +639,12 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
             </p>
           ) : panel.listoParaAlta ? (
             <>
-              <p className="mt-2 flex items-center gap-2 text-sm text-ink"><FileCheck2 className="h-4 w-4 text-good" /> Documentos revisados y 3 referencias contactadas.</p>
+              <p className="mt-2 flex items-center gap-2 text-sm text-ink"><FileCheck2 className="h-4 w-4 text-good" /> Documentos revisados y 3 referencias validadas.</p>
               {puedeDecidir && (
                 <Button className="mt-3" disabled={Boolean(ocupado)}
-                  onClick={() => ejecutar("alta", () => registrarAltaOperativa(codigo), () => "Alta realizada: se creó el colaborador y se cerró el proceso.")}>
+                  onClick={() => (ct.contrato === "generado"
+                    ? ejecutar("alta", () => registrarAltaOperativa(codigo), () => "Alta realizada: se creó el colaborador y se cerró el proceso.")
+                    : setConfirmarAlta(true))}>
                   <UserCheck className="h-4 w-4" /> Dar de alta
                 </Button>
               )}
@@ -610,8 +723,16 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
 
       {/* ---------- Modal: resultado manual de RH ---------- */}
       {resultado && (
-        <ModalMarco titulo="Registrar resultado de la capacitación" subtitulo="Captura interna de RH: alimenta el mismo resultado que la liga del capacitador."
+        <ModalMarco titulo="Registrar entrevista" subtitulo="Captura interna de RH (aunque no esté confirmada): alimenta el mismo registro que la liga del entrevistador. Queda tu nombre, la fecha y la vía."
           onClose={() => !ocupado && setResultado(null)} ancho="max-w-lg">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <CampoRH label="Fecha y hora realizada">
+              <input type="datetime-local" className={inputRH} value={resultado.fecha} max={ahoraLocal()} onChange={(e) => setResultado({ ...resultado, fecha: e.target.value })} />
+            </CampoRH>
+            <CampoRH label="Entrevistador / capacitador">
+              <input className={inputRH} value={resultado.entrevistador} onChange={(e) => setResultado({ ...resultado, entrevistador: e.target.value })} />
+            </CampoRH>
+          </div>
           <CampoRH label="¿Asistió?">
             <div className="flex gap-2">
               {[true, false].map((v) => (
@@ -634,15 +755,68 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
               </div>
             </CampoRH>
           )}
-          <CampoRH label={resultado.asistio && resultado.resultado !== "favorable" ? "Comentario (obligatorio)" : "Comentario (opcional)"}>
+          <CampoRH label={resultado.asistio && resultado.resultado !== "favorable" ? "Observaciones (obligatorias)" : "Observaciones (opcional)"}>
             <textarea rows={3} value={resultado.comentario} onChange={(e) => setResultado({ ...resultado, comentario: e.target.value })}
               className="w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
           </CampoRH>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setResultado(null)} disabled={Boolean(ocupado)}>Cancelar</Button>
-            <Button disabled={Boolean(ocupado) || (resultado.asistio && !resultado.resultado)}
-              onClick={() => ejecutar("resultado", () => resultadoEntrevistaOperativa(codigo, resultado), () => { setResultado(null); return "Resultado registrado. La tarjeta sigue en Entrevista hasta que la pases a Evaluación."; })}>
-              Guardar resultado
+            <Button disabled={Boolean(ocupado) || (resultado.asistio && !resultado.resultado) || !resultado.fecha}
+              onClick={() => ejecutar("resultado", () => resultadoEntrevistaOperativa(codigo, {
+                asistio: resultado.asistio, resultado: resultado.resultado, comentario: resultado.comentario,
+                fecha_realizada: resultado.fecha, entrevistador: resultado.entrevistador,
+              }), () => { setResultado(null); return "Entrevista registrada. La tarjeta sigue en Entrevista hasta que la pases a Evaluación."; })}>
+              Guardar registro
+            </Button>
+          </div>
+        </ModalMarco>
+      )}
+
+      {/* ---------- Modal: el contrato quedó pendiente → se ofrece antes del alta ---------- */}
+      {confirmarAlta && (
+        <ModalMarco titulo="El contrato está pendiente" subtitulo="Se dejó para después de Onboarding. ¿Lo generas antes de dar de alta?"
+          onClose={() => !ocupado && setConfirmarAlta(false)} ancho="max-w-lg">
+          <div className="flex flex-col gap-2">
+            <Button disabled={Boolean(ocupado) || !ct.completas} onClick={() => ejecutar("alta", async () => {
+              const r = await decidirContratoOperativo(codigo, "ahora");
+              if (!r.ok) return r;
+              if (r.data.expediente) window.open(urlContratoPdf(r.data.expediente.id), "_blank");
+              return registrarAltaOperativa(codigo);
+            }, () => { setConfirmarAlta(false); return "Contrato generado y alta realizada: se creó el colaborador y se cerró el proceso."; })}>
+              <FileSignature className="h-4 w-4" /> Generar contrato y dar de alta
+            </Button>
+            <Button variant="outline" disabled={Boolean(ocupado)} onClick={() => ejecutar("alta", () => registrarAltaOperativa(codigo),
+              () => { setConfirmarAlta(false); return "Alta realizada sin contrato: se creó el colaborador y se cerró el proceso."; })}>
+              Dar de alta sin generar el contrato
+            </Button>
+            <Button variant="ghost" onClick={() => setConfirmarAlta(false)} disabled={Boolean(ocupado)}>Cancelar</Button>
+          </div>
+        </ModalMarco>
+      )}
+
+      {/* ---------- Modal: captura manual de referencias ---------- */}
+      {capturaRefs && (
+        <ModalMarco titulo="Referencias del candidato" subtitulo="Nombre, relación y teléfono. Alimenta el mismo registro que la liga del candidato."
+          onClose={() => !ocupado && setCapturaRefs(null)} ancho="max-w-xl">
+          <div className="flex flex-col gap-3">
+            {capturaRefs.map((r, i) => (
+              <div key={i} className="grid gap-2 sm:grid-cols-3">
+                <input className={inputRH} placeholder={`Nombre (referencia ${i + 1})`} value={r.nombre}
+                  onChange={(e) => setCapturaRefs(capturaRefs.map((x, j) => (j === i ? { ...x, nombre: e.target.value } : x)))} />
+                <select className={inputRH} value={r.parentesco} onChange={(e) => setCapturaRefs(capturaRefs.map((x, j) => (j === i ? { ...x, parentesco: e.target.value } : x)))}>
+                  <option value="">Relación…</option>
+                  {["Familiar", "Amistad", "Exjefe o excompañero", "Vecino(a)", "Otro"].map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <input className={inputRH} placeholder="Teléfono (10 dígitos)" inputMode="tel" value={r.telefono}
+                  onChange={(e) => setCapturaRefs(capturaRefs.map((x, j) => (j === i ? { ...x, telefono: e.target.value } : x)))} />
+              </div>
+            ))}
+          </div>
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCapturaRefs(null)} disabled={Boolean(ocupado)}>Cancelar</Button>
+            <Button disabled={Boolean(ocupado) || capturaRefs.some((r) => !r.nombre.trim() || !r.parentesco || r.telefono.replace(/\D/g, "").length < 10)}
+              onClick={() => ejecutar("refs", () => capturarReferenciasOperativo(codigo, capturaRefs), () => { setCapturaRefs(null); return "Referencias guardadas."; })}>
+              Guardar referencias
             </Button>
           </div>
         </ModalMarco>
@@ -694,5 +868,19 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
         </ModalMarco>
       )}
     </div>
+  );
+}
+
+/** Captura interna: RH sube el documento desde la ficha (queda «Recibido» para revisión, igual que por la liga). */
+function SubirDoc({ onArchivo, ocupado }: { onArchivo: (a: File) => void; ocupado: boolean }) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <input ref={ref} type="file" className="hidden" accept="image/jpeg,image/png,image/webp,application/pdf"
+        onChange={(e) => { const a = e.target.files?.[0]; if (a) onArchivo(a); e.target.value = ""; }} />
+      <Button size="sm" variant="ghost" disabled={ocupado} onClick={() => ref.current?.click()} title="Subir el archivo desde la ficha">
+        <Upload className="h-4 w-4" /> {ocupado ? "Subiendo…" : "Subir"}
+      </Button>
+    </>
   );
 }

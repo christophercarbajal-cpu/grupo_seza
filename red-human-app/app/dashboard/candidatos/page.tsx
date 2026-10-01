@@ -154,6 +154,22 @@ const etapaColor: Record<EtapaCandidato, string> = {
   Entrevista: "var(--brand-2)",
 };
 
+/** Flujo operativo: filtros dentro de una columna (por el subestado de la tarjeta, `operativo.filtro`). */
+const FILTROS_COLUMNA: Partial<Record<EtapaCandidato, { clave: string; texto: string }[]>> = {
+  Prefiltro: [
+    { clave: "sin_iniciar", texto: "Sin iniciar" },
+    { clave: "en_curso", texto: "En curso" },
+    { clave: "completado", texto: "Completado" },
+  ],
+  Entrevista: [
+    { clave: "sin_agendar", texto: "Sin agendar" },
+    { clave: "agendada", texto: "Agendada" },
+    { clave: "confirmada", texto: "Confirmada" },
+    { clave: "realizada", texto: "Realizada" },
+    { clave: "no_asistio", texto: "No asistió" },
+  ],
+};
+
 const TONO_SUBESTADO: Record<string, string> = {
   neutral: "bg-surface-2 text-ink-3",
   warn: "bg-warn-soft text-warn",
@@ -363,6 +379,7 @@ function CandidatosContenido() {
 
   // 2026-09-30: columnas vacías del Kanban (preferencia de cada usuario en este navegador)
   const [vistaVacias, setVistaVacias] = useState<"mostrar" | "compactar" | "ocultar">("mostrar");
+  const [filtroColumna, setFiltroColumna] = useState<Partial<Record<string, string>>>({});
   useEffect(() => {
     try {
       const v = localStorage.getItem("rh-candidatos-vacias");
@@ -912,7 +929,11 @@ function CandidatosContenido() {
       {!cargando && vista === "pipeline" && (() => {
         const columnas = etapas
           .filter((etapa) => !columnaResaltada || etapa === columnaResaltada)
-          .map((etapa) => ({ etapa, cols: datosFiltrados.filter((c) => c.etapa === etapa) }));
+          .map((etapa) => ({
+            etapa,
+            todos: datosFiltrados.filter((c) => c.etapa === etapa),
+            cols: datosFiltrados.filter((c) => c.etapa === etapa && (!filtroColumna[etapa] || c.operativo?.filtro === filtroColumna[etapa])),
+          }));
         const visibles = columnas.filter(({ cols, etapa }) => vistaVacias !== "ocultar" || cols.length > 0 || etapa === columnaResaltada);
         const ocultas = columnas.length - visibles.length;
         return (
@@ -946,7 +967,8 @@ function CandidatosContenido() {
             )}
 
             <div className="flex snap-x gap-3 overflow-x-auto overscroll-x-contain pb-3 [scrollbar-width:thin]">
-              {visibles.map(({ etapa, cols }) => {
+              {visibles.map(({ etapa, cols, todos }) => {
+                const filtrosEtapa = flujoCuenta === "operativo" ? FILTROS_COLUMNA[etapa] : undefined;
                 const esResaltada = columnaResaltada === etapa;
                 const idColumna = `columna-etapa-${etapa.replace(/\s/g, "-")}`;
 
@@ -992,6 +1014,21 @@ function CandidatosContenido() {
                         {cols.length}
                       </span>
                     </div>
+                    {filtrosEtapa && todos.length > 0 && (
+                      <div className="scroll-x mb-2 gap-1 px-1">
+                        {[{ clave: "", texto: "Todos" }, ...filtrosEtapa].map((fc) => {
+                          const n = fc.clave ? todos.filter((c) => c.operativo?.filtro === fc.clave).length : todos.length;
+                          const activo = (filtroColumna[etapa] ?? "") === fc.clave;
+                          return (
+                            <button key={fc.clave || "todos"} type="button" onClick={() => setFiltroColumna((x) => ({ ...x, [etapa]: fc.clave }))}
+                              className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold transition",
+                                activo ? "bg-brand text-white" : "bg-surface text-ink-3 hover:text-ink")}>
+                              {fc.texto} {n}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
                     {/* Scroll vertical propio: la barra horizontal del tablero siempre queda a la vista */}
                     <div className="-mx-0.5 flex max-h-[calc(100dvh-15rem)] min-h-[6rem] flex-col gap-2 overflow-y-auto px-0.5 pb-0.5">
