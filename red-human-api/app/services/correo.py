@@ -42,6 +42,11 @@ async def enviar_correo(destinatario: str, asunto: str, cuerpo_html: str, adjunt
     `adjuntos` (2026-09-19): [{"filename": "carta.pdf", "content": <bytes>}] → Resend los recibe en base64."""
     if not destinatario:
         return _resultado(False, "Sin dirección de correo")
+    # 2026-10-01: TODO correo sale con la plantilla HTML corporativa de Red Human; lo que llegue sin ella se envuelve
+    from .plantillas_correo import MARCA_LAYOUT, envolver
+
+    if MARCA_LAYOUT not in (cuerpo_html or ""):
+        cuerpo_html = envolver(asunto, cuerpo_html)
     if not settings.resend_api_key:
         print("[correo] ⚠️ RESEND_API_KEY sin configurar: el correo no sale (se registra como no enviado).", flush=True)
         return _resultado(False, "RESEND_API_KEY sin configurar")

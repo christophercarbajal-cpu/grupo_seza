@@ -350,12 +350,17 @@ def _mensaje_liga(nombre: str, curso: Curso, liga: str, tipo: str) -> str:
 
 
 def _html_liga(nombre: str, curso: Curso, liga: str, tipo: str) -> str:
+    """Correo del curso asignado con la plantilla corporativa de Red Human (2026-10-01: nada de HTML suelto)."""
+    from ..services import plantillas_correo
+
     primer = (nombre or "").split(" ")[0] or "hola"
     motivo = " como parte de tu proceso de selección" if tipo == "candidato" else ""
-    return (
-        f"<p>¡Hola {primer}!</p><p>Te asignamos el curso <strong>{curso.titulo}</strong>{motivo} (duración aproximada: {curso.duracion_horas} horas).</p>"
-        f"<p>Se cursa en línea, módulo por módulo, con una evaluación breve al final:</p><p><a href=\"{liga}\">{liga}</a></p><p>Saludos,<br>Red Human AI</p>"
+    _, html = plantillas_correo.html_aviso(
+        f"Curso asignado: {curso.titulo}",
+        f"¡Hola {primer}! Te asignamos el curso «{curso.titulo}»{motivo}. Se cursa en línea, módulo por módulo, con una evaluación breve al final.",
+        "", [("Curso", curso.titulo), ("Duración aproximada", f"{curso.duracion_horas} horas")], ("Abrir mi curso", liga),
     )
+    return html
 
 
 async def _notificar(a: AsignacionCurso) -> dict:

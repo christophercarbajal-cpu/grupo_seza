@@ -76,9 +76,29 @@ def _fila(etiqueta: str, valor: str, ultima: bool = False) -> str:
     )
 
 
+# Marca del layout corporativo: `correo.enviar_correo` envuelve cualquier cuerpo que NO la traiga (2026-10-01: ningún
+# correo sale sin la plantilla de Red Human, aunque un módulo nuevo olvide usarla).
+MARCA_LAYOUT = "<!-- red-human-layout -->"
+
+
+def envolver(titulo: str, cuerpo: str, empresa: str = "") -> str:
+    """Mete un cuerpo cualquiera (HTML suelto o texto plano) dentro del layout corporativo de Red Human."""
+    import re as _re
+
+    texto = cuerpo or ""
+    if not _re.search(r"<[a-zA-Z][^>]*>", texto):  # texto plano → párrafos escapados
+        texto = "".join(f'<p style="margin:0 0 12px;">{escape(linea)}</p>' for linea in texto.split("\n") if linea.strip())
+    contenido = (
+        f'<h1 class="titulo" style="margin:4px 0 12px;font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:24px;line-height:1.2;color:{INK};">{escape(titulo)}</h1>'
+        f'<div style="font-family:Helvetica Neue,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.6;color:{INK2};">{texto}</div>'
+    )
+    return _base(titulo, _re.sub(r"<[^>]+>", " ", texto)[:120], empresa, "", contenido, "Aviso automático de Red Human AI.")
+
+
 def _base(titulo: str, preheader: str, empresa: str, logo_url: str, contenido: str, pie: str) -> str:
     """Esqueleto responsivo: contenedor de 600 px que se vuelve fluido en móvil."""
     return f"""<!doctype html>
+{MARCA_LAYOUT}
 <html lang="es">
 <head>
 <meta charset="utf-8">

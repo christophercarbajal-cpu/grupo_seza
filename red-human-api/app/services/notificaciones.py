@@ -121,31 +121,27 @@ def parametros_plantilla_entrevista(d: dict) -> List[str]:
 
 
 def _html_correo_candidato(eh: EntrevistaHumana, c: Postulacion) -> str:
+    """Respaldo sin datos completos de la entrevista: igual con la plantilla corporativa (2026-10-01)."""
     cuando = _fecha_hora_legible_mx(eh.fecha) if eh.fecha else "fecha por confirmar"
     detalle = _detalle_modalidad(eh, c)
     primer_nombre = c.nombre.split(" ")[0] if c.nombre else "candidato(a)"
-    return (
-        f"<p>¡Hola {primer_nombre}!</p>"
-        f"<p>Te confirmamos tu entrevista con <strong>{eh.entrevistador or 'nuestro equipo de RH'}</strong> "
-        f"el <strong>{cuando}</strong>, modalidad <strong>{eh.modalidad}</strong>.</p>"
-        + (f"<p>{detalle}.</p>" if detalle else "")
-        + (f"<p>{eh.comentario}</p>" if eh.comentario else "")
-        + "<p>Saludos,<br>Red Human AI</p>"
-    )
+    filas = [("Entrevistador(a)", eh.entrevistador or "Equipo de RH"), ("Fecha", cuando), ("Modalidad", eh.modalidad or "Por confirmar")]
+    filas += [("Detalle", detalle)] if detalle else []
+    filas += [("Indicaciones", eh.comentario)] if eh.comentario else []
+    return plantillas_correo.html_aviso(f"¡Hola {primer_nombre}! Te confirmamos tu entrevista", "Estos son los datos de tu entrevista:",
+                                        "", filas)[1]
 
 
 def _html_correo_entrevistador(eh: EntrevistaHumana, c: Postulacion) -> str:
+    """Respaldo sin datos completos de la entrevista: igual con la plantilla corporativa (2026-10-01)."""
     cuando = _fecha_hora_legible_mx(eh.fecha) if eh.fecha else "fecha por confirmar"
     detalle = _detalle_modalidad(eh, c)
-    return (
-        f"<p>Tienes una entrevista programada con <strong>{c.nombre}</strong> "
-        f"({c.vacante.titulo if c.vacante else 'vacante sin especificar'}) "
-        f"el <strong>{cuando}</strong>, modalidad <strong>{eh.modalidad}</strong>.</p>"
-        + (f"<p>{detalle}.</p>" if detalle else "")
-        + (f"<p>Teléfono del candidato: {c.telefono}</p>" if c.telefono else "")
-        + (f"<p>{eh.comentario}</p>" if eh.comentario else "")
-        + "<p>Saludos,<br>Red Human AI</p>"
-    )
+    filas = [("Candidato", c.nombre or ""), ("Vacante", c.vacante.titulo if c.vacante else "Sin especificar"), ("Fecha", cuando),
+             ("Modalidad", eh.modalidad or "Por confirmar")]
+    filas += [("Detalle", detalle)] if detalle else []
+    filas += [("Teléfono del candidato", c.telefono)] if c.telefono else []
+    filas += [("Indicaciones", eh.comentario)] if eh.comentario else []
+    return plantillas_correo.html_aviso(f"Entrevista programada con {c.nombre}", "Tienes una entrevista programada:", "", filas)[1]
 
 
 def _html_correo_evaluacion_entrevistador(eh: EntrevistaHumana, c: Postulacion, liga: str) -> str:
