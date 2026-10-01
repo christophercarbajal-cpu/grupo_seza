@@ -195,7 +195,7 @@ export interface Candidato {
   /** Demo SEZA: prefiltro por reglas — resultado, motivos y siguiente acción (null si la vacante no lo usa). */
   prefiltroReglas?: import("./api").ResumenPrefiltroReglas | null;
   /** Flujo operativo v2: subestado de la columna (p. ej. «Prefiltro: En curso», «Cita confirmada», «Docs 4/9 · Refs 1/3»). */
-  operativo?: { texto: string; tono: "neutral" | "warn" | "good" | "bad" | "brand" } | null;
+  operativo?: { texto: string; tono: "neutral" | "warn" | "good" | "bad" | "brand"; filtro?: string } | null;
   /** Demo SEZA: Kanban de la Cuenta de la postulación. */
   flujo?: "rh" | "operativo";
   /* --- Puntos 3/5: síntesis global (CV + Prefiltro + Entrevista IA + Entrevista Humana),

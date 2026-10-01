@@ -104,6 +104,7 @@ def publica(token: str, db: Session = Depends(get_db)):
             "capacitador": eh.entrevistador or "",
             "confirmada": bool(eh.confirmada_en),
             "yaEvaluada": bool(eh.asistencia),
+            "realizadaEn": iso(eh.realizada_en),
             "asistencia": eh.asistencia or "",
             "resultado": eh.resultado or "",
             "resultadoEtiqueta": RESULTADOS_CAPACITACION.get(eh.resultado or "", ""),
@@ -204,7 +205,7 @@ def enviar_resultado_capacitacion(token: str, datos: ResultadoCapacitacionIn, db
         raise HTTPException(400, "Escribe tu nombre (queda registrado quién capturó la asistencia).")
     try:
         flujo_operativo.registrar_resultado(db, eh.postulacion, eh, datos.asistio, datos.resultado, datos.comentario,
-                                            f"{quien} (capacitador)", "entrevistador")
+                                            f"{quien} (capacitador)", "entrevistador", entrevistador=quien)
     except ValueError as e:
         raise HTTPException(400, str(e))
     db.commit()

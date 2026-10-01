@@ -251,6 +251,9 @@ def pdf_contrato(d: dict, con_zonas: bool = False):
     """Contrato individual de trabajo (2026-09-19, Bloque 3) generado con las condiciones FINALES guardadas
     en el expediente: empresa, colaborador, puesto, sueldo, tipo de contratación, fecha de ingreso, ubicación,
     jefe directo. Cláusulas base y espacio de firmas; el texto legal definitivo lo revisa RH/legal."""
+    from ..models import plantilla_contrato
+
+    pl = plantilla_contrato(d.get("tipo_contratacion", ""))  # 2026-09-30: el tipo define la plantilla
     pdf = _Carta(format="letter")
     pdf.set_margins(22, 20, 22)
     pdf.set_auto_page_break(auto=True, margin=22)
@@ -259,7 +262,8 @@ def pdf_contrato(d: dict, con_zonas: bool = False):
     pdf.set_xy(22, 30)
     pdf.set_font(_FUENTE, "B", 15)
     pdf.set_text_color(26, 26, 26)
-    pdf.cell(0, 9, _latin(f"Contrato Individual de Trabajo ({d['tipo_contratacion']})"), new_x="LMARGIN", new_y="NEXT")
+    titulo = f"{pl['titulo']} ({d['tipo_contratacion']})" if pl["laboral"] else pl["titulo"]
+    pdf.multi_cell(0, 8, _latin(titulo), new_x="LMARGIN", new_y="NEXT")
     pdf.set_font(_FUENTE, "", 10)
     pdf.set_text_color(85, 85, 85)
     pdf.cell(0, 6, _latin(f"{d['empresa']} - {d['hoy']}"), new_x="LMARGIN", new_y="NEXT")
@@ -271,14 +275,16 @@ def pdf_contrato(d: dict, con_zonas: bool = False):
     pdf.ln(4)
     pdf.set_font(_FUENTE, "", 11)
     pdf.set_text_color(26, 26, 26)
+    rol = pl["rol"]
     pdf.multi_cell(0, 6, _latin(
-        f"Contrato individual de trabajo que celebran, por una parte, {d['empresa']} (en adelante «la Empresa») y, por la otra, "
-        f"{d['nombre']} (en adelante «el Colaborador»), al tenor de las siguientes declaraciones y cláusulas:"
+        f"{pl['titulo']} que celebran, por una parte, {d['empresa']} (en adelante «la Empresa») y, por la otra, "
+        f"{d['nombre']} (en adelante «{rol[3:].capitalize() if rol.startswith('el ') else rol}»), al tenor de las siguientes declaraciones y cláusulas:"
     ), new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
     filas = [
-        ("Puesto", d["puesto"]), ("Sueldo", d["sueldo"]), ("Tipo de contratación", d["tipo_contratacion"]),
-        ("Fecha de ingreso", d["fecha_ingreso"]), ("Lugar de trabajo", d["ubicacion"]), ("Jefe directo", d["jefe"]),
+        ("Puesto" if pl["laboral"] else "Servicio", d["puesto"]), (pl["pago"], d["sueldo"]), ("Tipo de contratación", d["tipo_contratacion"]),
+        ("Fecha de inicio" if not pl["laboral"] else "Fecha de ingreso", d["fecha_ingreso"]), ("Lugar", d["ubicacion"]),
+        ("Jefe directo" if pl["laboral"] else "Contacto en la Empresa", d["jefe"]),
     ] + ([("Duración", d["duracion"]), ("Fecha de término", d["fecha_termino"])] if d.get("fecha_termino") else [])
     for etiqueta, valor in filas:
         pdf.set_font(_FUENTE, "B", 11)
@@ -287,6 +293,17 @@ def pdf_contrato(d: dict, con_zonas: bool = False):
         pdf.cell(0, 7, _latin(str(valor)), border="B", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(4)
     clausulas = [
+        ("PRIMERA. Objeto.", f"El Colaborador se obliga a prestar sus servicios personales subordinados a la Empresa en el puesto de {d['puesto']}, desempeñando las funciones propias del mismo con la diligencia y cuidado apropiados."),
+    ] if pl["laboral"] else [
+        ("PRIMERA. Objeto.", f"{rol.capitalize()} se obliga a realizar para la Empresa los servicios de {d['puesto']} con sus propios medios, de manera independiente y sin subordinación."),
+        ("SEGUNDA. Vigencia.", f"El presente contrato surte efectos a partir del {d['fecha_ingreso']}" + (f" y concluye el {d['fecha_termino']}." if d.get("fecha_termino") else " y podrá darse por terminado por cualquiera de las partes con aviso previo por escrito.")),
+        ("TERCERA. " + pl["pago"] + ".", f"La Empresa cubrirá a {rol} {d['sueldo']} contra la entrega del comprobante fiscal correspondiente; {rol} es responsable de sus obligaciones fiscales."),
+        ("CUARTA. Lugar.", f"Los servicios se prestarán en {d['ubicacion']}; el contacto de la Empresa será {d['jefe']}."),
+        ("QUINTA. Naturaleza.", f"Las partes reconocen que este contrato es de naturaleza {'mercantil' if 'Comercio' in pl['ley'] else 'civil'}, por lo que no existe relación laboral entre ellas."),
+        ("SEXTA. Confidencialidad y datos personales.", "Se guardará confidencialidad sobre la información de la Empresa. Los datos personales se tratan conforme al Aviso de Privacidad de la Empresa (LFPDPPP)."),
+        ("SÉPTIMA. Disposiciones generales.", f"En lo no previsto, las partes se sujetan a {pl['ley']} y demás ordenamientos aplicables."),
+    ]
+    clausulas_laborales = [
         ("PRIMERA. Objeto.", f"El Colaborador se obliga a prestar sus servicios personales subordinados a la Empresa en el puesto de {d['puesto']}, desempeñando las funciones propias del mismo con la diligencia y cuidado apropiados."),
         ("SEGUNDA. Duración.", (
             f"El presente contrato es por tiempo determinado con una duración de {d['duracion']}, surtirá efectos a partir del {d['fecha_ingreso']} y concluirá el {d['fecha_termino']}, conforme a la Ley Federal del Trabajo."
@@ -298,6 +315,8 @@ def pdf_contrato(d: dict, con_zonas: bool = False):
         ("QUINTA. Confidencialidad y datos personales.", "El Colaborador guardará confidencialidad sobre la información de la Empresa. Sus datos personales se tratan conforme al Aviso de Privacidad de la Empresa (LFPDPPP)."),
         ("SEXTA. Disposiciones generales.", "En lo no previsto, las partes se sujetan a la Ley Federal del Trabajo y demás ordenamientos aplicables."),
     ]
+    if pl["laboral"]:
+        clausulas = clausulas_laborales
     for titulo, texto in clausulas:
         pdf.set_font(_FUENTE, "B", 11)
         pdf.cell(0, 6, _latin(titulo), new_x="LMARGIN", new_y="NEXT")

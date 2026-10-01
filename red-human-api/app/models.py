@@ -519,8 +519,10 @@ class EntrevistaHumana(Base):
     tienda: Mapped[str] = mapped_column(String(200), default="")
     confirmada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     asistencia: Mapped[str] = mapped_column(String(20), default="")  # "" | asistio | no_asistio
-    curso_induccion_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # PDF que sale al confirmar
+    curso_induccion_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # PDF que sale con la cita
     envios: Mapped[list] = mapped_column(JSON, default=list)  # [{destinatario, canal, enviado, detalle, fecha}]
+    realizada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)  # «Fecha realizada»
+    registrado_por: Mapped[str] = mapped_column(String(150), default="")  # autor del registro (la vía va en resultado_capturado_por)
 
     candidato: Mapped["Candidato"] = relationship(foreign_keys=[candidato_id])
     postulacion: Mapped[Optional["Postulacion"]] = relationship(back_populates="entrevistas_humanas")
@@ -781,6 +783,22 @@ TIPOS_CONTRATACION = [
     "Tiempo indeterminado", "Tiempo determinado", "Por obra o proyecto",
     "Honorarios", "Prestación de servicios", "Comisión mercantil",
 ]
+# El tipo determina la PLANTILLA del contrato y la etiqueta del pago (los laborales usan la base: «Contrato
+# Individual de Trabajo», «Sueldo», Ley Federal del Trabajo). Lo leen services/pdf.pdf_contrato y la captura.
+PLANTILLAS_CONTRATO = {
+    "Honorarios": {"titulo": "Contrato de Prestación de Servicios Profesionales (Honorarios)", "rol": "el Prestador",
+                   "pago": "Honorarios", "ley": "el Código Civil Federal", "laboral": False},
+    "Prestación de servicios": {"titulo": "Contrato de Prestación de Servicios", "rol": "el Prestador",
+                                "pago": "Contraprestación", "ley": "el Código Civil Federal", "laboral": False},
+    "Comisión mercantil": {"titulo": "Contrato de Comisión Mercantil", "rol": "el Comisionista",
+                           "pago": "Comisión", "ley": "el Código de Comercio", "laboral": False},
+}
+PLANTILLA_LABORAL = {"titulo": "Contrato Individual de Trabajo", "rol": "el Colaborador", "pago": "Sueldo",
+                     "ley": "la Ley Federal del Trabajo", "laboral": True}
+
+
+def plantilla_contrato(tipo: str) -> dict:
+    return PLANTILLAS_CONTRATO.get(tipo or "", PLANTILLA_LABORAL)
 UNIDADES_DURACION = ("días", "meses", "años")
 
 

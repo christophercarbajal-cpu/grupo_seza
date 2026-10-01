@@ -172,6 +172,57 @@ async def enviar_liga(codigo: str, db: Session = Depends(get_db), u: Usuario = D
     return {**_salida(p), "envio": envio}
 
 
+@router.post("/candidatos/{codigo}/vehiculo/generar-liga")
+def generar_liga(codigo: str, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor),
+                 cuenta: Cuenta = Depends(cuenta_actual)):
+    """Genera (o reutiliza) la liga del vehículo SIN enviarla: RH la abre, la copia o la manda después."""
+    p = _con_reglas(_por_codigo(db, codigo, cuenta.id))
+    vehiculo_srv.obtener_o_crear(db, p)
+    registrar(db, u.nombre, "vehiculo_liga_generada", "postulacion", p.codigo, {})
+    db.commit()
+    return _salida(p)
+
+
+@router.post("/candidatos/{codigo}/vehiculo/foto")
+async def subir_foto_rh(codigo: str, lado: str = Form(...), archivo: UploadFile = File(...), db: Session = Depends(get_db),
+                        u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    """Captura interna: RH sube una foto desde la ficha (alimenta la MISMA revisión que la liga del candidato)."""
+    p = _con_reglas(_por_codigo(db, codigo, cuenta.id))
+    if lado not in LADOS_VEHICULO:
+        raise HTTPException(400, "Lado inválido.")
+    r = vehiculo_srv.obtener_o_crear(db, p)
+    val = await fs.validar(archivo, "foto")
+    if not val.es_imagen:
+        raise HTTPException(415, "Sube una foto (JPG, PNG o WEBP), no un PDF.")
+    marca = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    ruta = fs.guardar(val, f"vehiculo/{p.codigo}", f"{lado}-{marca}")
+    a = Archivo(candidato_id=p.candidato_id, tipo=f"vehiculo_{lado}", nombre=val.nombre, ruta=ruta, mime=val.mime,
+                tamano=val.tamano, subido_por=f"{u.nombre} (RH, ficha)")
+    db.add(a)
+    db.flush()
+    vehiculo_srv.registrar_foto(db, r, lado, a.id)
+    registrar(db, u.nombre, "vehiculo_foto_rh", "postulacion", p.codigo, {"lado": lado})
+    db.commit()
+    return _salida(p)
+
+
+@router.post("/candidatos/{codigo}/vehiculo/documento")
+async def subir_documento_rh(codigo: str, clave: str = Form(...), archivo: UploadFile = File(...), db: Session = Depends(get_db),
+                             u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
+    """Captura interna: RH sube licencia, tarjeta o póliza desde la ficha (mismo expediente que la liga)."""
+    from .contratacion import subir_documento_interno
+
+    p = _con_reglas(_por_codigo(db, codigo, cuenta.id))
+    if clave not in DOCUMENTOS_VEHICULO:
+        raise HTTPException(400, "Documento inválido.")
+    r = vehiculo_srv.obtener_o_crear(db, p)
+    await subir_documento_interno(db, p.expediente, DOCUMENTOS_VEHICULO[clave], archivo, u.nombre)
+    vehiculo_srv.registrar_documento_subido(db, r, clave)
+    registrar(db, u.nombre, "vehiculo_documento_rh", "postulacion", p.codigo, {"documento": clave})
+    db.commit()
+    return _salida(p)
+
+
 class DecisionIn(BaseModel):
     accion: str  # aprobar | correccion | excepcion
     comentario: str = ""

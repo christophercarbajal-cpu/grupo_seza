@@ -3535,6 +3535,23 @@ export function subirFotoVehiculo(token: string, lado: string, archivo: File) {
   return subir<VehiculoPublico>(`/vehiculo/publica/${token}/foto`, form);
 }
 
+export function generarLigaVehiculo(codigo: string) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/generar-liga`);
+}
+/** Captura interna: RH sube una foto o un documento del vehículo desde la ficha (mismo registro que la liga). */
+export function subirFotoVehiculoRH(codigo: string, lado: string, archivo: File) {
+  const form = new FormData();
+  form.append("lado", lado);
+  form.append("archivo", archivo);
+  return subir<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/foto`, form);
+}
+export function subirDocumentoVehiculoRH(codigo: string, clave: string, archivo: File) {
+  const form = new FormData();
+  form.append("clave", clave);
+  form.append("archivo", archivo);
+  return subir<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/documento`, form);
+}
+
 export function subirDocumentoVehiculo(token: string, clave: string, archivo: File) {
   const form = new FormData();
   form.append("clave", clave);
@@ -3575,6 +3592,11 @@ export interface ReferenciaCandidato {
   fecha_llamada?: string;
   /** Historial de llamadas registradas a mano por el reclutador (solo se agrega). */
   llamadas?: { fecha: string; contactada: boolean; resultado: string; observaciones: string; usuario: string; registrada_en: string }[];
+  /** Contactada ≠ validada: validar es una decisión aparte de RH. */
+  validada?: boolean;
+  validada_por?: string;
+  validada_en?: string;
+  validacion_nota?: string;
 }
 
 export interface EnvioOperativo {
@@ -3603,9 +3625,13 @@ export interface EntrevistaOperativa {
   resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
   resultadoEtiqueta: string;
   capturadoPor: "" | "rh" | "entrevistador";
+  registradoPor: string;
+  realizadaEn: string | null;
   evaluadaEn: string | null;
   estado: string;
   tono: "neutral" | "warn" | "good" | "bad" | "brand";
+  /** sin_agendar | agendada | confirmada | realizada | no_asistio */
+  clave: string;
   cursoInduccion: { codigo: string; titulo: string } | null;
   envios: EnvioOperativo[];
 }
@@ -3620,8 +3646,20 @@ export interface PanelOperativo {
   entrevistasAnteriores: number;
   induccion: string;
   resultadosCapacitacion: { valor: "favorable" | "con_observaciones" | "desfavorable"; texto: string }[];
+  /** Evaluación del flujo operativo: prefiltro + vehículo + entrevista en tienda; RH decide. */
+  evaluacionResumen: {
+    prefiltro: { resultado: string; etiqueta: string; motivos: string[]; aprobadoPorRH: { usuario: string; motivo: string; fecha: string } | null };
+    vehiculo: { estado: string; etiqueta: string; decididoPor: string; comentario: string };
+    entrevista: { estado: string; resultado: string; resultadoEtiqueta: string; observaciones: string; entrevistador: string; registradoPor: string; via: string; realizadaEn: string | null };
+  };
   contratacion: {
-    condiciones: { puesto: string; sueldo: string; tipoContratacion: string; fechaIngreso: string | null; ubicacion: string };
+    condiciones: {
+      puesto: string; sueldo: string; tipoContratacion: string; fechaIngreso: string | null; ubicacion: string;
+      jefeDirecto: string; instruccionesIngreso: string; duracionContrato: number | null; duracionUnidad: string;
+    };
+    /** El tipo de contratación define la plantilla del contrato y cómo se llama el pago. */
+    plantillas: Record<string, { titulo: string; pago: string }>;
+    cartaDisponible: boolean;
     completas: boolean;
     /** "" sin decidir | generado | despues */
     contrato: "" | "generado" | "despues";
@@ -3683,7 +3721,11 @@ export function reenviarEntrevistaOperativa(codigo: string, destinatario: "candi
 export function confirmarCitaCapacitacion(codigo: string) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/confirmar-cita`);
 }
-export function resultadoEntrevistaOperativa(codigo: string, datos: { asistio: boolean; resultado?: string; comentario?: string }) {
+/** «Registrar entrevista»: fecha realizada («YYYY-MM-DDTHH:MM», hora de México), entrevistador, asistió, resultado, observaciones. */
+export function resultadoEntrevistaOperativa(
+  codigo: string,
+  datos: { asistio: boolean; resultado?: string; comentario?: string; fecha_realizada?: string; entrevistador?: string },
+) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista/resultado`, datos);
 }
 export function decidirContratoOperativo(codigo: string, cuando: "ahora" | "despues") {
@@ -3705,6 +3747,12 @@ export function marcarReferencia(
   llamada: { contactada: boolean; resultado: string; fecha: string; nota: string },
 ) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias/${indice}`, llamada);
+}
+export function capturarReferenciasOperativo(codigo: string, referencias: { nombre: string; telefono: string; parentesco: string }[]) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias`, { referencias });
+}
+export function validarReferenciaOperativo(codigo: string, indice: number, validada: boolean, nota = "") {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/referencias/${indice}/validar`, { validada, nota });
 }
 export function registrarAltaOperativa(codigo: string) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/alta`);

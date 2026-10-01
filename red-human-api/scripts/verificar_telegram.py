@@ -3,7 +3,7 @@
 La API de Telegram se SIMULA (nada sale a internet): se registran las llamadas a la Bot API y se comprueba el
 guion de la demo de punta a punta — /start → el bot pide el número (botón nativo) → menú de vacantes como
 botones → aviso de privacidad → «Sí» → prefiltro de 11 preguntas → «Cumple perfil» con liga de fotos → RH cita →
-«Sí» confirma la cita → texto + PDF de «Inducción SEZA» como archivo. Además: el secreto del webhook es
+al agendar sale la cita + PDF de «Inducción SEZA» como archivo → «Sí» confirma la cita. Además: el secreto del webhook es
 obligatorio, los reintentos se deduplican por update_id, y un número que nunca habló con el bot no recibe nada.
 
 Uso (desde red-human-api/):  python scripts/verificar_telegram.py
@@ -159,15 +159,17 @@ def main():
         env = enviados_desde(i)
         check(any("¿Confirmas tu asistencia?" in x["json"].get("text", "") and x["json"].get("chat_id") == str(CHAT) for x in env),
               "RH cita → el aviso sale al chat de Telegram del candidato (envío por teléfono → chat)")
+        docs = [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"]
+        textos = [x["json"].get("text", "") for x in env if x["metodo"] == "sendMessage"]
+        pdf = (docs[0]["files"].get("document") or (None, b""))[1] if docs else b""
+        check(docs and pdf[:4] == b"%PDF" and docs[0]["data"]["chat_id"] == str(CHAT),
+              "al agendar, el PDF de «Inducción SEZA» sale como archivo por Telegram junto con la cita")
+        check(any("Inducción SEZA" in t and "[Simulado" not in t for t in textos), "el mensaje de inducción no va marcado como simulado")
 
         i = len(LLAMADAS)
         c.post(url, json=update_mensaje("Sí"), headers=sec)
-        docs = [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"]
-        textos = [x["json"].get("text", "") for x in enviados_desde(i) if x["metodo"] == "sendMessage"]
-        pdf = (docs[0]["files"].get("document") or (None, b""))[1] if docs else b""
-        check(docs and pdf[:4] == b"%PDF" and docs[0]["data"]["chat_id"] == str(CHAT),
-              "«Sí» confirma la cita → el PDF de «Inducción SEZA» sale como archivo por Telegram")
-        check(any("Inducción SEZA" in t and "[Simulado" not in t for t in textos), "el mensaje de inducción ya no va marcado como simulado")
+        check(any("confirmada" in x["json"].get("text", "") for x in enviados_desde(i))
+              and not [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"], "«Sí» confirma la cita (sin reenviar el PDF)")
 
     # Un número que nunca habló con el bot: no se le puede escribir (Telegram no lo permite)
     import asyncio

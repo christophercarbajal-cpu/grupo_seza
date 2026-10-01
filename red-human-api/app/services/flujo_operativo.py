@@ -10,14 +10,17 @@ Zero-Touch ni del agente conversacional) y sus candados:
 * Prefiltro → Revisión de vehículo: «Cumple perfil» (o RH aprueba un «Requiere revisión»). El candidato sube 4 fotos
   + licencia, tarjeta de circulación y póliza (los 3 documentos quedan en el EXPEDIENTE).
 * Revisión de vehículo → Entrevista: RH aprueba el vehículo o marca excepción.
-* Entrevista = capacitación en tienda sobre `EntrevistaHumana` (tienda, fecha/hora, capacitador; sin grupos ni
-  cupos). El capacitador registra asistencia + Apto / Requiere seguimiento / No apto en su liga, o RH a mano.
-  El envío de la cita (Telegram/WhatsApp) y el aviso al capacitador se registran aparte: un fallo NO bloquea.
+* Entrevista = entrevista y capacitación en tienda sobre `EntrevistaHumana` (tienda y dirección, fecha/hora,
+  entrevistador/capacitador; sin grupos ni cupos). Al agendar, el candidato recibe cita, ubicación y el PDF de
+  inducción; el entrevistador, cita, datos y su liga. El envío se registra aparte: un fallo NO bloquea. «Registrar
+  entrevista» (fecha realizada, entrevistador, asistió, resultado, observaciones) por la liga o por RH a mano (aunque
+  no esté confirmada ni agendada), con autor, fecha y vía. Subestados: Sin agendar / Agendada / Confirmada /
+  Realizada / No asistió.
 * Evaluación: el módulo de Evaluaciones; recibir un resultado nunca mueve la tarjeta (RH la mueve).
 * Contratación: condiciones (puesto, sueldo, tipo, fecha) + «Generar contrato» (ahora) o «Generar después de
   Onboarding». «Enviar a Onboarding» pide los 6 documentos personales y 3 referencias.
-* Onboarding: documentos + referencias (registro de llamadas) → «Dar de alta» crea el Colaborador y CIERRA la
-  postulación (`contratado`).
+* Onboarding: documentos + referencias (registro de llamadas; contactada ≠ VALIDADA: validar es una decisión
+  aparte) → «Dar de alta» crea el Colaborador y CIERRA la postulación (`contratado`).
 
 Toda decisión la toma una persona (RH o el capacitador) y queda en `Postulacion.historial` + bitácora. Modo Prueba
 se salta los candados, como el resto de la plataforma.
@@ -205,18 +208,30 @@ def entrevista_actual(p: Postulacion) -> Optional[EntrevistaHumana]:
     return vivas[-1] if vivas else None
 
 
+FILTROS_ENTREVISTA = {"sin_agendar": "Sin agendar", "agendada": "Agendada", "confirmada": "Confirmada",
+                      "realizada": "Realizada", "no_asistio": "No asistió"}
+FILTROS_PREFILTRO = {"sin_iniciar": PREFILTRO_SIN_INICIAR, "en_curso": PREFILTRO_EN_CURSO, "completado": PREFILTRO_COMPLETADO}
+
+
+def clave_entrevista(eh: Optional[EntrevistaHumana]) -> str:
+    if eh is None:
+        return "sin_agendar"
+    if eh.asistencia == "no_asistio":
+        return "no_asistio"
+    if eh.asistencia == "asistio":
+        return "realizada"
+    return "confirmada" if eh.confirmada_en else "agendada"
+
+
 def estado_entrevista(eh: Optional[EntrevistaHumana]) -> Tuple[str, str]:
     """(etiqueta, tono) del subestado de la columna Entrevista."""
-    if eh is None:
-        return "Por citar", "neutral"
-    if eh.asistencia == "no_asistio":
-        return "No asistió", "bad"
-    if eh.resultado in RESULTADOS_CAPACITACION:
-        tono = {"favorable": "good", "con_observaciones": "warn", "desfavorable": "bad"}[eh.resultado]
-        return f"Realizada · {RESULTADOS_CAPACITACION[eh.resultado]}", tono
-    if eh.confirmada_en:
-        return "Cita confirmada", "brand"
-    return "Citado · por confirmar", "warn"
+    clave = clave_entrevista(eh)
+    if clave == "realizada":
+        if eh.resultado in RESULTADOS_CAPACITACION:
+            tono = {"favorable": "good", "con_observaciones": "warn", "desfavorable": "bad"}[eh.resultado]
+            return f"Realizada · {RESULTADOS_CAPACITACION[eh.resultado]}", tono
+        return "Realizada", "good"
+    return FILTROS_ENTREVISTA[clave], {"sin_agendar": "neutral", "agendada": "warn", "confirmada": "brand", "no_asistio": "bad"}[clave]
 
 
 def capacitador_de(eh: EntrevistaHumana, db: Session) -> dict:
@@ -250,6 +265,8 @@ def texto_cita(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
         partes.append(f"👤 Te recibe: {cap['nombre']}")
     if eh.comentario:
         partes.append(f"📝 {eh.comentario}")
+    if eh.curso_induccion_id:
+        partes.append("📄 Te compartimos tu material de inducción para que lo revises antes.")
     partes.append("\n¿Confirmas tu asistencia? Responde *Sí*.")
     return "\n".join(partes)
 
@@ -377,8 +394,9 @@ async def programar_entrevista(db: Session, p: Postulacion, datos: dict, actor: 
     if _indice(p.etapa) < _indice(ENTREVISTA):
         mover(db, p, ENTREVISTA, actor, "Citado a capacitación en tienda")
     envio_c = await enviar_cita_candidato(db, p, eh)
+    induccion = await enviar_induccion(db, p, eh, actor)
     envio_k = await enviar_aviso_capacitador(db, p, eh)
-    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k}
+    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k, "induccion": induccion}
 
 
 async def reprogramar_entrevista(db: Session, p: Postulacion, datos: dict, actor: str) -> dict:
@@ -392,8 +410,9 @@ async def reprogramar_entrevista(db: Session, p: Postulacion, datos: dict, actor
     nota(p, "entrevista_reprogramada", f"Capacitación reprogramada: {eh.tienda}, {_cuando(eh)} h", actor)
     registrar(db, actor, "capacitacion_tienda_reprogramada", "postulacion", p.codigo, {"fecha": eh.fecha.isoformat(), "tienda": eh.tienda})
     envio_c = await enviar_cita_candidato(db, p, eh)
+    induccion = await enviar_induccion(db, p, eh, actor)
     envio_k = await enviar_aviso_capacitador(db, p, eh)
-    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k}
+    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k, "induccion": induccion}
 
 
 def cancelar_entrevista(db: Session, p: Postulacion, motivo: str, actor: str) -> None:
@@ -408,20 +427,29 @@ def cancelar_entrevista(db: Session, p: Postulacion, motivo: str, actor: str) ->
 
 
 async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
-    """El candidato (por Telegram/WhatsApp) o RH por él confirma la cita → se asigna el curso de inducción y sale su
-    PDF (por Telegram como archivo; con otro proveedor queda simulado en el chat). Si la inducción falla, la cita
-    queda confirmada igual."""
-    from ..models import Curso
-    from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje
-    from ..routers.capacitacion import asignar_a_postulacion
-    from . import whatsapp
-
+    """El candidato (por Telegram/WhatsApp) o RH por él confirma la cita. El material de inducción ya salió con la
+    cita (si por algo no salió, se intenta aquí)."""
     eh = entrevista_actual(p)
     if eh is None or eh.realizada or eh.asistencia:
         raise ValueError("El candidato no tiene una cita de capacitación abierta.")
     if eh.confirmada_en:
         return {"entrevista": eh, "induccion": None, "ya_confirmada": True}
     eh.confirmada_en = _ahora()
+    induccion = None
+    if not any(x.get("destinatario") == "candidato" and x.get("canal") == "induccion" and x.get("enviado") for x in (eh.envios or [])):
+        induccion = await enviar_induccion(db, p, eh, actor)
+    nota(p, "cita_confirmada", "Cita de capacitación confirmada", actor)
+    return {"entrevista": eh, "induccion": induccion, "ya_confirmada": False}
+
+
+async def enviar_induccion(db: Session, p: Postulacion, eh: EntrevistaHumana, actor: str) -> Optional[dict]:
+    """Material de inducción (PDF) al candidato: se asigna el curso y sale su liga + el PDF (por Telegram como
+    archivo; con otro proveedor queda simulado en el chat). Nunca bloquea la cita: un fallo queda en bitácora."""
+    from ..models import Curso
+    from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje
+    from ..routers.capacitacion import asignar_a_postulacion
+    from . import whatsapp
+
     induccion = None
     curso = db.get(Curso, eh.curso_induccion_id) if eh.curso_induccion_id else None
     if curso:
@@ -443,15 +471,17 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
                 guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
                 induccion = {"curso": curso.codigo, "titulo": curso.titulo, "asignacion": a.codigo, "liga": liga, "simulado": not real,
                              "enviado": bool(envio.get("enviado"))}
+                _registrar_envio(eh, "candidato", "induccion", {**envio, "enviado": bool(envio.get("enviado")) or not real,
+                                                                "detalle": envio.get("detalle") or ("simulado (demo)" if not real else "")})
                 registrar(db, actor, "induccion_pdf_enviado" if real else "induccion_pdf_simulado", "postulacion", p.codigo, induccion)
+                nota(p, "induccion_enviada", f"Material de inducción «{curso.titulo}» compartido", actor)
         except Exception as e:  # noqa: BLE001
             import traceback
 
             traceback.print_exc()
             induccion = None
             registrar(db, actor, "induccion_pdf_fallido", "postulacion", p.codigo, {"curso": curso.codigo, "error": str(e)[:300]})
-    nota(p, "cita_confirmada", "Cita de capacitación confirmada" + (f"; se envió el PDF «{curso.titulo}»" if induccion else ""), actor)
-    return {"entrevista": eh, "induccion": induccion, "ya_confirmada": False}
+    return induccion
 
 
 async def _pdf_induccion(curso, asignacion) -> Optional[bytes]:
@@ -473,25 +503,73 @@ def validar_resultado(asistio: bool, resultado: str, comentario: str) -> None:
         raise ValueError("Escribe un comentario que explique el resultado.")
 
 
-def registrar_resultado(db: Session, p: Postulacion, eh: EntrevistaHumana, asistio: bool, resultado: str, comentario: str,
-                        quien: str, capturado_por: str) -> None:
-    """Asistencia + resultado de la capacitación (capacitador en su liga o RH a mano: alimentan lo MISMO). No mueve
+def registrar_resultado(db: Session, p: Postulacion, eh: Optional[EntrevistaHumana], asistio: bool, resultado: str, comentario: str,
+                        quien: str, capturado_por: str, *, fecha_realizada: Optional[datetime] = None, entrevistador: str = "") -> EntrevistaHumana:
+    """«Registrar entrevista»: fecha realizada, entrevistador, asistió/no asistió, resultado y observaciones. Por la
+    liga del entrevistador o por RH a mano (aunque no esté confirmada, e incluso sin cita: entonces la crea). Guarda
+    autor (`registrado_por`), fecha (`evaluada_en`) y vía (`resultado_capturado_por`: entrevistador | rh). No mueve
     la tarjeta: RH la pasa a Evaluación. «No asistió» deja la cita lista para reprogramar."""
     validar_resultado(asistio, resultado, comentario)
+    if eh is None:
+        eh = EntrevistaHumana(candidato_id=p.candidato_id, token=secrets.token_urlsafe(24), envios=[], modalidad="Presencial",
+                              tipo="externo", entrevistador=(entrevistador or quien)[:150], fecha=fecha_realizada or _ahora())
+        p.entrevistas_humanas.append(eh)
+        db.flush()
+    if entrevistador.strip():
+        eh.entrevistador = entrevistador.strip()[:150]
     eh.asistencia = "asistio" if asistio else "no_asistio"
     eh.realizada = asistio
     eh.resultado = resultado if asistio else ""
     eh.comentario = comentario.strip()[:2000] or eh.comentario
     eh.resultado_capturado_por = capturado_por
+    eh.registrado_por = quien[:150]
+    eh.realizada_en = fecha_realizada or _ahora()
     eh.evaluada_en = _ahora()
     if asistio:
         texto = f"Capacitación: {RESULTADOS_CAPACITACION[resultado]}" + (f" — {comentario.strip()}" if comentario.strip() else "")
         p.resultado_apto = resultado != "desfavorable"
     else:
         texto = "No asistió a la capacitación" + (f": {comentario.strip()}" if comentario.strip() else "")
-    nota(p, "capacitacion_resultado", texto, quien)
+    nota(p, "capacitacion_resultado", texto + f" (vía {'liga del entrevistador' if capturado_por == 'entrevistador' else 'captura de RH'})", quien)
     registrar(db, quien, "capacitacion_tienda_resultado", "postulacion", p.codigo,
-              {"asistio": asistio, "resultado": resultado, "capturado_por": capturado_por})
+              {"asistio": asistio, "resultado": resultado, "capturado_por": capturado_por, "realizada_en": eh.realizada_en.isoformat()})
+    return eh
+
+
+def evaluacion_resumen(p: Postulacion) -> dict:
+    """Lo que reúne la Evaluación del flujo operativo: resultado del prefiltro, revisión del vehículo y la entrevista en
+    tienda. RH lo revisa y decide si pasa a Contratación."""
+    from ..models import ESTADOS_VEHICULO
+    from . import prefiltro_reglas
+
+    pr = ((p.analisis or {}).get("prefiltro_reglas") or {}).get("evaluacion") or {}
+    aprobado = ((p.analisis or {}).get("prefiltro_reglas") or {}).get("aprobado_por_rh")
+    r = p.revision_vehiculo
+    eh = entrevista_actual(p)
+    return {
+        "prefiltro": {
+            "resultado": p.estado if p.prefiltro_completo else "",
+            "etiqueta": prefiltro_reglas.RESULTADOS.get(p.estado, "") if p.prefiltro_completo else "Sin completar",
+            "motivos": [m.get("motivo", "") for m in pr.get("motivos", [])],
+            "aprobadoPorRH": aprobado,
+        },
+        "vehiculo": {
+            "estado": r.estado if r else "",
+            "etiqueta": ESTADOS_VEHICULO.get(r.estado, r.estado) if r else "Sin revisión",
+            "decididoPor": (r.decidido_por or "") if r else "",
+            "comentario": (r.comentario or "") if r else "",
+        },
+        "entrevista": {
+            "estado": estado_entrevista(eh)[0],
+            "resultado": eh.resultado if eh else "",
+            "resultadoEtiqueta": RESULTADOS_CAPACITACION.get(eh.resultado or "", "") if eh else "",
+            "observaciones": (eh.comentario or "") if eh else "",
+            "entrevistador": (eh.entrevistador or "") if eh else "",
+            "registradoPor": (eh.registrado_por or "") if eh else "",
+            "via": (eh.resultado_capturado_por or "") if eh else "",
+            "realizadaEn": eh.realizada_en.isoformat() if eh and eh.realizada_en else None,
+        },
+    }
 
 
 # ------------------------------------------------------------ contratación
@@ -576,9 +654,9 @@ def faltantes_para_alta(p: Postulacion) -> List[str]:
     if len(refs) < REFERENCIAS_REQUERIDAS:
         faltan.append(f"Referencias capturadas: {len(refs)} de {REFERENCIAS_REQUERIDAS}")
     else:
-        sin_contactar = [r["nombre"] for r in refs if not r.get("contactada")]
-        if sin_contactar:
-            faltan.append("Referencias por contactar: " + ", ".join(sin_contactar))
+        sin_validar = [r["nombre"] for r in refs if not r.get("validada")]
+        if sin_validar:
+            faltan.append("Referencias por validar: " + ", ".join(sin_validar))
     return faltan
 
 
@@ -592,6 +670,39 @@ def guardar_referencias(db: Session, e, referencias: List[dict]) -> None:
                        "capturada_en": base.get("capturada_en") or _ahora().isoformat(),
                        "contactada": bool(base.get("contactada"))})
     e.referencias = nuevas
+
+
+def validar_referencias(referencias: List[dict], telefono_candidato: str = "") -> List[dict]:
+    """Nombre completo, teléfono de 10 dígitos distinto (y no el del candidato) y relación del catálogo. ValueError si no."""
+    import re
+
+    if len(referencias) != REFERENCIAS_REQUERIDAS:
+        raise ValueError(f"Necesitamos exactamente {REFERENCIAS_REQUERIDAS} referencias.")
+    limpias, telefonos = [], set()
+    for i, r in enumerate(referencias, start=1):
+        tel = re.sub(r"\D", "", str(r.get("telefono") or ""))[-10:]
+        nombre = str(r.get("nombre") or "").strip()
+        if not nombre or len(tel) != 10:
+            raise ValueError(f"Referencia {i}: escribe el nombre completo y un teléfono de 10 dígitos.")
+        if r.get("parentesco") not in PARENTESCOS:
+            raise ValueError(f"Referencia {i}: elige la relación.")
+        if tel in telefonos or (telefono_candidato and tel == telefono_candidato):
+            raise ValueError(f"Referencia {i}: cada referencia debe tener un teléfono distinto (y no el del candidato).")
+        telefonos.add(tel)
+        limpias.append({"nombre": nombre[:150], "telefono": tel, "parentesco": r["parentesco"]})
+    return limpias
+
+
+def validar_referencia(e, indice: int, validada: bool, nota_rh: str, usuario: str) -> dict:
+    """VALIDAR es una decisión aparte de la llamada: solo se valida una referencia ya contactada."""
+    refs = [dict(r) for r in (e.referencias or [])]
+    r = refs[indice]
+    if validada and not r.get("contactada"):
+        raise ValueError("Primero registra una llamada en la que se haya contactado a la referencia.")
+    r.update({"validada": validada, "validada_por": usuario if validada else "", "validada_en": _ahora().isoformat() if validada else "",
+              "validacion_nota": nota_rh[:500]})
+    e.referencias = refs
+    return r
 
 
 def marcar_referencia(e, indice: int, contactada: bool, nota_rh: str, usuario: str, *, resultado: str = "",
@@ -653,7 +764,8 @@ def subestado(p: Postulacion) -> dict:
     """Lo que muestra la tarjeta del Kanban bajo el nombre: {texto, tono}."""
     if p.etapa == PREFILTRO:
         texto = estado_prefiltro(p)
-        return {"texto": f"Prefiltro: {texto}", "tono": {"Sin iniciar": "neutral", "En curso": "warn"}.get(texto, "brand")}
+        clave = next(k for k, v in FILTROS_PREFILTRO.items() if v == texto)
+        return {"texto": texto, "tono": {"Sin iniciar": "neutral", "En curso": "warn"}.get(texto, "brand"), "filtro": clave}
     if p.etapa == VEHICULO:
         from ..models import ESTADOS_VEHICULO
 
@@ -661,8 +773,9 @@ def subestado(p: Postulacion) -> dict:
         return {"texto": ESTADOS_VEHICULO.get(r.estado, r.estado) if r else "Liga sin enviar",
                 "tono": {"por_revisar": "warn", "correccion": "warn", "aprobado": "good", "excepcion": "good"}.get(r.estado if r else "", "neutral")}
     if p.etapa == ENTREVISTA:
-        texto, tono = estado_entrevista(entrevista_actual(p))
-        return {"texto": texto, "tono": tono}
+        eh = entrevista_actual(p)
+        texto, tono = estado_entrevista(eh)
+        return {"texto": texto, "tono": tono, "filtro": clave_entrevista(eh)}
     if p.etapa == EVALUACION:
         return {"texto": "Evaluaciones", "tono": "neutral"}
     e = p.expediente
@@ -682,7 +795,7 @@ def subestado(p: Postulacion) -> dict:
             return {"texto": "Listo para dar de alta", "tono": "good"}
         docs = [d for d in (e.obligatorios if e else [])]
         listos = sum(1 for d in docs if d.aprobado)
-        refs = sum(1 for r in ((e.referencias if e else None) or []) if r.get("contactada"))
+        refs = sum(1 for r in ((e.referencias if e else None) or []) if r.get("validada"))
         return {"texto": f"Docs {listos}/{len(docs)} · Refs {refs}/{REFERENCIAS_REQUERIDAS}", "tono": "warn"}
     return {"texto": "", "tono": "neutral"}
 
