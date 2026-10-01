@@ -67,9 +67,32 @@ def asegurar_token_onboarding(p) -> str:
     return p.telegram_onboarding_token
 
 
-def liga_inicio(token: str) -> str:
-    """Enlace nativo de Telegram (abre la app directo en el bot con /start <token>)."""
-    return f"tg://resolve?domain={usuario_bot()}&start={token}" if token else ""
+# Ligas directas a una acción (Cambios ZESE, 2026-10-01): `/start <accion>_<token>` abre EL proceso del candidato en esa
+# acción sin volver a pedirle datos, empresa ni vacante. Sin acción = seguimiento normal del proceso.
+ACCIONES_INICIO = {"cita": "Tu entrevista", "docs": "Subir documentos", "vehiculo": "Fotos del vehículo"}
+
+
+def liga_inicio(token: str, accion: str = "") -> str:
+    """Enlace nativo de Telegram (abre la app directo en el bot con /start <token> o /start <accion>_<token>)."""
+    if not token:
+        return ""
+    return f"tg://resolve?domain={usuario_bot()}&start={f'{accion}_{token}' if accion in ACCIONES_INICIO else token}"
+
+
+def liga_inicio_web(token: str, accion: str = "") -> str:
+    """Misma liga en https (correos y escritorio sin la app)."""
+    if not token:
+        return ""
+    return f"https://t.me/{usuario_bot()}?start={f'{accion}_{token}' if accion in ACCIONES_INICIO else token}"
+
+
+def separar_inicio(payload: str):
+    """`cita_<token>` → ("cita", token); `<token>` → ("", token)."""
+    payload = (payload or "").strip()
+    pref, _, resto = payload.partition("_")
+    if pref in ACCIONES_INICIO and resto:
+        return pref, resto
+    return "", payload
 
 
 def postulacion_por_token(db, token: str):
@@ -168,7 +191,8 @@ def _html(texto: str) -> str:
 
 
 async def _enviar_a_chat(chat_id: str, texto: str, teclado: Optional[dict] = None) -> dict:
-    cuerpo = {"chat_id": chat_id, "text": _html(texto)[:4096], "parse_mode": "HTML", "disable_web_page_preview": False}
+    # Cambios ZESE: las ligas operativas (documentos, vehículo, entrevista) salen SIN vista previa publicitaria
+    cuerpo = {"chat_id": chat_id, "text": _html(texto)[:4096], "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
     if teclado:
         cuerpo["reply_markup"] = teclado
     r = await llamar("sendMessage", json=cuerpo)
@@ -234,11 +258,7 @@ async def enviar_documento(telefono: str, contenido: bytes, filename: str, capti
 
 
 async def pedir_contacto(chat_id: str, nombre: str = "") -> dict:
-    saludo = f"¡Hola{', ' + nombre.split(' ')[0] if nombre else ''}! 👋 Soy el asistente de reclutamiento de *Red Human*."
-    texto = (
-        f"{saludo}\n\nPara darte seguimiento necesito tu número de celular. Toca el botón "
-        f"*{TEXTO_BOTON_CONTACTO}* de abajo (Telegram lo comparte de forma segura)."
-    )
+    texto = f"¡Hola{', ' + nombre.split(' ')[0] if nombre else ''}! Soy Red Human. Para continuar, toca *{TEXTO_BOTON_CONTACTO}*."
     teclado = {"keyboard": [[{"text": TEXTO_BOTON_CONTACTO, "request_contact": True}]], "resize_keyboard": True, "one_time_keyboard": True}
     return await _enviar_a_chat(chat_id, texto, teclado)
 

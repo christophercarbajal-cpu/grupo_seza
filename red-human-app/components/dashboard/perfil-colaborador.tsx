@@ -26,6 +26,7 @@ import {
 import { Avatar, Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { ModalEditarColaborador } from "@/components/dashboard/colaboradores/alta-importar";
+import { ExpedienteCompleto } from "@/components/dashboard/colaboradores/expediente-completo";
 import { HistorialDesempeno } from "@/components/dashboard/desempeno/cierre-evaluacion";
 import {
   darDeBajaColaborador,
@@ -78,6 +79,7 @@ export function PerfilColaborador({
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
   const [editar, setEditar] = useState(false);
+  const [expedienteCompleto, setExpedienteCompleto] = useState(false);
   const [pestana, setPestana] = useState<"datos" | "desempeno">("datos");
   const [desempeno, setDesempeno] = useState<EvaluacionDesempeno[] | null>(null);
   useEffect(() => {
@@ -243,13 +245,19 @@ export function PerfilColaborador({
 
           {/* Expediente */}
           <Card className="p-5">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <Eyebrow>Expediente</Eyebrow>
-              {exp && (
-                <span className="font-mono text-[11px] text-ink-3">
-                  {exp.progreso}% · {exp.estado === "alta" ? "alta autorizada" : exp.estado}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {exp && (
+                  <span className="font-mono text-[11px] text-ink-3">
+                    {exp.progreso}% · {exp.estado === "alta" ? "alta autorizada" : exp.estado}
+                  </span>
+                )}
+                {/* 2026-10-01 (Cambios ZESE): historial completo desde su registro original de candidato */}
+                <Button size="sm" variant="outline" onClick={() => setExpedienteCompleto(true)}>
+                  <FileText className="h-4 w-4" /> Ver expediente completo
+                </Button>
+              </div>
             </div>
             {cargando ? (
               <div className="mt-3 h-16 animate-pulse rounded-xl bg-surface-2/60" />
@@ -291,6 +299,7 @@ export function PerfilColaborador({
           </Card>
         </div>
 
+        {expedienteCompleto && <ExpedienteCompleto codigo={c.id} onClose={() => setExpedienteCompleto(false)} />}
         {editar && detalle && (
           <ModalEditarColaborador
             colaborador={detalle}

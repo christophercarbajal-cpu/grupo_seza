@@ -65,7 +65,9 @@ FLUJOS_CANDIDATOS = ("rh", "operativo")
 # hasta CONTEXTO_WHATSAPP_HORAS sin actividad — un "sí quiero reagendar" al día 3 debe caer en la
 # postulación en curso, nunca en el menú de vacantes. Solo el Prefiltro sigue con la ventana corta
 # del Modo Prueba (ConfiguracionSistema.modo_prueba_ventana_min).
-ETAPAS_CONTEXTO_LARGO = ("Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding")
+# 2026-10-01 (Cambios ZESE): también las etapas operativas «Revisión de vehículo» y «Entrevista» — antes un «Sí» a la cita
+# horas después cerraba la postulación por la ventana corta del Modo Prueba y el bot ofrecía otras vacantes.
+ETAPAS_CONTEXTO_LARGO = ("Entrevista IA", "Evaluación", "Entrevista Humana", "Contratación", "Onboarding", "Revisión de vehículo", "Entrevista")
 CONTEXTO_WHATSAPP_HORAS = 120
 
 
@@ -428,6 +430,12 @@ class Postulacion(Base):
             return not self.prefiltro_completo
         if self.etapa == "Entrevista IA":
             return self.estado == "cumple" and not self.videollamada_agendada_en
+        # Flujo operativo (2026-10-01): una cita sin confirmar espera su «Sí»; un vehículo sin fotos, su liga.
+        if self.etapa == "Entrevista":
+            return any(not eh.cancelada and not eh.asistencia and not eh.confirmada_en for eh in (self.entrevistas_humanas or []))
+        if self.etapa == "Revisión de vehículo":
+            r = self.revision_vehiculo
+            return bool(r and r.estado in ("pendiente", "correccion"))
         # Evaluación / Entrevista Humana / Contratación: RH ya tomó el control — aunque el
         # prefiltro haya quedado a medias, el agente no tiene nada que preguntar por chat.
         return False
@@ -532,6 +540,7 @@ class EntrevistaHumana(Base):
     # desfavorable (Apto / Requiere seguimiento / No apto, ver RESULTADOS_CAPACITACION).
     tienda: Mapped[str] = mapped_column(String(200), default="")
     confirmada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmada_por: Mapped[str] = mapped_column(String(150), default="")  # «candidato» (Telegram) o el nombre de RH
     asistencia: Mapped[str] = mapped_column(String(20), default="")  # "" | asistio | no_asistio
     curso_induccion_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # PDF que sale con la cita
     envios: Mapped[list] = mapped_column(JSON, default=list)  # [{destinatario, canal, enviado, detalle, fecha}]
@@ -1046,6 +1055,9 @@ class Colaborador(Base):
     dado_de_alta_por: Mapped[str] = mapped_column(String(150), default="")
     candidato_origen_id: Mapped[Optional[int]] = mapped_column(ForeignKey("candidatos.id"), nullable=True)
     expediente_id: Mapped[Optional[int]] = mapped_column(ForeignKey("expedientes.id"), nullable=True)
+    # 2026-10-01 (Cambios ZESE): postulación de origen (la contratada) → «Ver expediente completo» lee su historial
+    # original (filtros, vehículo, entrevistas, evaluaciones, onboarding) sin duplicarlo. Sin FK (columna nueva).
+    postulacion_origen_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
     # Cuenta/Cliente (Fase A multi-cuenta) — hereda de la Vacante/Candidato de origen al dar de alta.
     cuenta_id: Mapped[Optional[int]] = mapped_column(ForeignKey("cuentas.id"), nullable=True, index=True)
@@ -1539,6 +1551,39 @@ class Curso(Base):
     adjuntos: Mapped[list] = mapped_column(JSON, default=list)  # [{nombre, ruta, caracteres}]
     evaluacion: Mapped[list] = mapped_column(JSON, default=list)  # [{pregunta, tipo, opciones, correcta, explicacion}]
     calificacion_minima: Mapped[int] = mapped_column(Integer, default=70)  # % para «Aprobado»
+
+    @property
+    def preguntas_evaluacion(self) -> list:
+        """Preguntas VÁLIDAS de la evaluación, venga como venga guardada (2026-10-01, bug «Evaluación 1/0»): lista,
+        {"preguntas": [...]} o texto JSON; acepta «texto» por «pregunta»; V/F sin opciones → Verdadero/Falso. Una pregunta
+        sin texto o con menos de 2 opciones se ignora. Es lo único que leen la sala pública y la calificación."""
+        import json as _json
+
+        crudo = self.evaluacion
+        if isinstance(crudo, str):
+            try:
+                crudo = _json.loads(crudo)
+            except ValueError:
+                crudo = []
+        if isinstance(crudo, dict):
+            crudo = crudo.get("preguntas") or crudo.get("evaluacion") or []
+        salida = []
+        for q in crudo if isinstance(crudo, list) else []:
+            if not isinstance(q, dict):
+                continue
+            texto = str(q.get("pregunta") or q.get("texto") or "").strip()
+            tipo = q.get("tipo") or "opcion"
+            opciones = [str(o) for o in (q.get("opciones") or []) if str(o).strip()]
+            if tipo == "vf" and len(opciones) < 2:
+                opciones = ["Verdadero", "Falso"]
+            if not texto or len(opciones) < 2:
+                continue
+            try:
+                correcta = int(q.get("correcta", 0))
+            except (TypeError, ValueError):
+                correcta = 0
+            salida.append({**q, "pregunta": texto, "tipo": tipo, "opciones": opciones, "correcta": correcta if 0 <= correcta < len(opciones) else 0})
+        return salida
 
     modulos: Mapped[List["ModuloCurso"]] = relationship(
         back_populates="curso", order_by="ModuloCurso.orden", cascade="all, delete-orphan"

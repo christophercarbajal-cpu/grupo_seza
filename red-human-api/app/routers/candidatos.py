@@ -1504,8 +1504,7 @@ async def _turno_prefiltro_reglas(db: Session, p: Postulacion, texto: str, canal
     pendiente = estado.get("pendiente")
     intro = ""
     if pendiente not in por_id:  # primer turno: todavía no se ha hecho ninguna pregunta
-        intro = (f"¡Perfecto, {nombre_ficha(p)}! Te haré unas preguntas rápidas sobre ti y tu vehículo "
-                 f"(máximo {len(lista)}). Contesta una por una.\n\n")
+        intro = "Te haré unas preguntas rápidas. Contesta una por una.\n\n"  # presentación corta (Cambios ZESE)
     else:
         q = lista[por_id[pendiente]]
         valor = prefiltro_reglas.interpretar(q, texto)
@@ -1585,24 +1584,46 @@ async def _turno_preguntas_agente(db: Session, p: Postulacion, texto: str, canal
     return await decir(cierre)
 
 
-async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp") -> dict:
-    """`/start <token>` (paso 2 del flujo de dos pasos): saludo personalizado con el nombre del candidato y el título de
-    la vacante e, inmediatamente, la primera pregunta del agente (o la pendiente, si retoma). NUNCA el cierre al inicio.
-    Fuera del flujo operativo, tras el saludo sigue el agente de siempre."""
+def _es_confirmacion(texto: str) -> bool:
+    """«Sí» o confirmaciones similares al aviso de cita (sí, si, claro, confirmo, ahí estaré, de acuerdo, ok…)."""
+    t = re.sub(r"[^a-záéíóúñü ]", " ", (texto or "").lower()).strip()
+    if prefiltro_reglas.interpretar({"id": "x", "tipo": "si_no"}, texto) == "si":
+        return True
+    return any(f in f" {t} " for f in (" confirm", " ahi estare ", " ahí estaré ", " asistire ", " asistiré ", " de acuerdo ", " ok ", " va ", " claro ", " por supuesto "))
+
+
+async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp", accion: str = "") -> dict:
+    """`/start <token>` o `/start <accion>_<token>` (Cambios ZESE, entrada dual):
+    * saludo corto: el agente es «Red Human»; la vacante es solo contexto;
+    * con acción (`cita` / `docs` / `vehiculo`) abre DIRECTO esa parte del proceso, sin volver a pedir datos, empresa ni
+      vacante;
+    * sin acción: si el filtro ya se contestó en la web, Telegram solo da seguimiento (en qué va + la liga que toca); si
+      no, el filtro sigue aquí desde la primera pregunta sin contestar (nunca repite lo ya contestado)."""
     vac = p.vacante
-    saludo = f"Hola {nombre_ficha(p)}. Vi que estás interesado en la vacante {vac.titulo if vac else 'que elegiste'}."
+    nombre = nombre_ficha(p)
+    saludo = f"Hola {nombre}, soy Red Human. Vi que estás interesado en la vacante {vac.titulo if vac else 'que elegiste'}."
     envio = await _enviar_whatsapp(p, saludo, canal)
     guardar_mensaje(db, p, "assistant", saludo, canal, envio)
     db.commit()
     if not flujo_operativo.es_operativo(p):
         return await procesar_prefiltro(db, p, "Hola", canal)
-    estado = (p.analisis or {}).get("preguntas_agente")
-    if estado and estado.get("completado_en"):  # ya las contestó: se le recuerda en qué va (eso sí es el estado final)
-        return await _turno_operativo(db, p, "", canal)
-    if not estado:
-        p.analisis = {**(p.analisis or {}), "preguntas_agente": {"respuestas": [], "pendiente": None, "origen": "telegram_handoff",
-                                                                 "iniciado_en": datetime.now(timezone.utc).isoformat()}}
-    return await _turno_preguntas_agente(db, p, "", canal)
+
+    async def decir(msg: str) -> dict:
+        e2 = await _enviar_whatsapp(p, msg, canal)
+        guardar_mensaje(db, p, "assistant", msg, canal, e2)
+        _actualizar_ultima_actividad(p)
+        db.commit()
+        return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": e2}
+
+    if accion == "cita":
+        eh = flujo_operativo.entrevista_actual(p)
+        if eh and not eh.asistencia:
+            return await decir(flujo_operativo.texto_cita(p, eh, db))
+    elif accion == "docs" and p.expediente:
+        return await decir(f"Sube tus documentos y referencias aquí (puedes volver las veces que necesites):\n📂 {flujo_operativo.liga_expediente(p.expediente)}")
+    elif accion == "vehiculo" and p.revision_vehiculo:
+        return await decir(vehiculo_srv.texto_liga(p, p.revision_vehiculo))
+    return await _turno_operativo(db, p, "", canal)
 
 
 async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
@@ -1615,8 +1636,9 @@ async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) 
         return await _turno_preguntas_agente(db, p, texto, canal)
     if v and prefiltro_reglas.activo(v.prefiltro_reglas) and p.etapa in (flujo_operativo.PREFILTRO, flujo_operativo.VEHICULO):
         return await _turno_prefiltro_reglas(db, p, texto, canal)
-    # vacante sin prefiltro por reglas (sin prefiltro web completo): igual se pregunta, una por mensaje — nunca el cierre
-    if v and p.etapa == flujo_operativo.PREFILTRO and not p.prefiltro_completo:
+    # vacante sin prefiltro por reglas: si el filtro ya se contestó en la web, no se repite (entrada dual); si entró
+    # directo al chat, las preguntas van aquí, una por mensaje
+    if v and p.etapa == flujo_operativo.PREFILTRO and not p.prefiltro_completo and not (p.analisis or {}).get("respuestas_web"):
         return await _turno_preguntas_agente(db, p, texto, canal)
 
     async def decir(msg: str) -> dict:
@@ -1630,10 +1652,10 @@ async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) 
     if p.etapa == flujo_operativo.ENTREVISTA:
         ev = flujo_operativo.entrevista_actual(p)
         if ev and not ev.confirmada_en and not ev.asistencia and not ev.realizada:
-            if prefiltro_reglas.interpretar({"id": "x", "tipo": "si_no"}, texto) == "si" or "confirm" in texto.lower():
-                r = await flujo_operativo.confirmar_cita(db, p, "candidato")
-                extra = " Te acabamos de compartir el material de inducción para que lo revises antes." if r.get("induccion") else ""
-                return await decir(f"¡Listo, {nombre}! Tu asistencia quedó confirmada. Te esperamos.{extra}")
+            if _es_confirmacion(texto):
+                # Cambios ZESE: se guarda «Confirmada» y se responde EXACTO; nunca reinicia el reclutamiento ni ofrece vacantes
+                await flujo_operativo.confirmar_cita(db, p, "candidato")
+                return await decir(f"Gracias, {nombre}. Tu asistencia quedó confirmada.")
             return await decir(f"{nombre}, ¿confirmas tu asistencia a la entrevista? Responde *Sí*. Si necesitas otra fecha, dinos y RH te reprograma.")
         if ev and ev.confirmada_en and not ev.asistencia:
             return await decir(f"Tu cita ya está confirmada, {nombre}. Si necesitas cambiarla, RH te contactará por aquí.")

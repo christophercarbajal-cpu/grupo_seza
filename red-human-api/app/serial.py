@@ -598,7 +598,7 @@ def curso_dict(c: Curso, detalle: bool = False) -> dict:
         "creadoPor": c.creado_por,
         "creado": hace(c.creado_en),
         "modulos": len(c.modulos),
-        "preguntas": len(c.evaluacion or []),
+        "preguntas": len(c.preguntas_evaluacion),
         "calificacionMinima": c.calificacion_minima or 70,
         "asignados": len(asigs),
         "completados": len(completadas),
@@ -610,7 +610,7 @@ def curso_dict(c: Curso, detalle: bool = False) -> dict:
         base["listaModulos"] = [{"orden": m.orden, "titulo": m.titulo, "contenido": m.contenido} for m in sorted(c.modulos, key=lambda m: m.orden)]
         base["evaluacion"] = [
             {"pregunta": q.get("pregunta", ""), "tipo": q.get("tipo", "opcion"), "opciones": q.get("opciones") or [], "correcta": q.get("correcta", 0), "explicacion": q.get("explicacion", "")}
-            for q in (c.evaluacion or [])
+            for q in c.preguntas_evaluacion
         ]
     return base
 
@@ -666,7 +666,7 @@ def asignacion_publica_dict(a: AsignacionCurso) -> dict:
     las respuestas correctas (una pregunta por pantalla) y su resultado al terminar."""
     curso = a.curso
     modulos = sorted(curso.modulos, key=lambda m: m.orden) if curso else []
-    preguntas = curso.evaluacion or [] if curso else []
+    preguntas = curso.preguntas_evaluacion if curso else []  # 2026-10-01: normalizadas (bug «Evaluación 1/0»)
     respondidas = len(((a.resultado_evaluacion or {}).get("respuestas")) or [])
     res = a.resultado_evaluacion or {}
     return {
@@ -686,6 +686,8 @@ def asignacion_publica_dict(a: AsignacionCurso) -> dict:
         "modulos": [{"orden": m.orden, "titulo": m.titulo, "contenido": m.contenido, "completado": i < a.modulo_actual} for i, m in enumerate(modulos)],
         "totalPreguntas": len(preguntas),
         "preguntasRespondidas": respondidas,
+        # sin preguntas válidas la sala lo dice claro (nunca «Cargando…» eterno ni «Terminado» sin resultado)
+        "evaluacionDisponible": len(preguntas) > 0,
         "pregunta": (
             {"indice": respondidas, "pregunta": preguntas[respondidas].get("pregunta", ""), "tipo": preguntas[respondidas].get("tipo", "opcion"), "opciones": preguntas[respondidas].get("opciones") or []}
             if a.modulo_actual >= len(modulos) and respondidas < len(preguntas) and a.estado != "completado" else None

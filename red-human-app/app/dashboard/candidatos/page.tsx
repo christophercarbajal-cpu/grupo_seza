@@ -1318,7 +1318,9 @@ function TarjetaKanban({
   const marcas = [
     c.esPrueba && { t: "Prueba", title: "Registro de Modo Prueba", cls: "bg-brand-soft text-brand" },
     c.yaAplicoAntes && { t: "Reaplicó", title: `Este candidato tiene ${c.totalPostulaciones} postulaciones`, cls: "bg-blue-500/10 text-blue-600" },
-    c.activa === false && { t: "Cerrada", title: `Postulación cerrada (${c.motivoCierre || "sin motivo"}) — queda como historial de la persona`, cls: "bg-ink-3/10 text-ink-3" },
+    // Cambios ZESE: al dar de alta la postulación queda «Contratado» en el pipeline (ligada al colaborador)
+    c.activa === false && c.motivoCierre === "contratado" && { t: "Contratado", title: "Dado de alta como colaborador — su expediente completo vive en Colaboradores", cls: "bg-good-soft text-good" },
+    c.activa === false && c.motivoCierre !== "contratado" && { t: "Cerrada", title: `Postulación cerrada (${c.motivoCierre || "sin motivo"}) — queda como historial de la persona`, cls: "bg-ink-3/10 text-ink-3" },
     esDup && { t: "Duplicado", title: "Posible candidato duplicado (coincide teléfono o correo)", cls: "bg-warn-soft text-warn" },
   ].filter(Boolean) as { t: string; title: string; cls: string }[];
   const fecha = c.ultimaActividadEn ? fechaCorta(c.ultimaActividadEn) : c.aplicado ? fechaCorta(c.aplicado) : null;

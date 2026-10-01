@@ -113,8 +113,8 @@ def main():
                 ultimo = db.query(Mensaje).filter(Mensaje.postulacion_id == p.id, Mensaje.rol == "assistant").order_by(Mensaje.id.desc()).first()
                 check(p.telegram_chat_id == "111" and p.telegram_vinculado_en and chat and chat.telefono == "2225550001"
                       and p.candidato.postulacion_conversacion_id == p.id, "el chat queda amarrado a la postulación y al teléfono de la ficha")
-                check(ultimo is not None and "*1/" in ultimo.texto and "Gracias" not in ultimo.texto,
-                      "tras el saludo arranca la primera pregunta del agente (no el cierre)")
+                check(ultimo is not None and "/vehiculo/" in ultimo.texto and "*1/" not in ultimo.texto,
+                      "filtro completo en la web: Telegram solo da seguimiento (la liga que toca), sin repetir preguntas")
             r = asyncio.run(webhooks.procesar_update_telegram(update_start(222, f"/start {tok}", 11)))
             check(r.get("accion") == "token_en_otro_chat" and any("otra cuenta de Telegram" in t for ch, t in enviados if ch == "222"),
                   "el mismo token en otro chat se rechaza")
@@ -275,12 +275,12 @@ def main():
 
 
 def flujo_por_chat():
-    """Arquitectura de dos pasos (2026-10-01): (1) el portal EXIGE el prefiltro web; (2) tras /start <token> el bot saluda
-    («Hola X. Vi que estás interesado en la vacante Y.») y hace las preguntas SECUNDARIAS del agente —nunca las del
-    prefiltro web—, una por una, guardando cada respuesta; el «Gracias» solo sale al contestar la última."""
+    """Cambios ZESE (2026-10-01): entrada dual, identidad «Red Human», ligas directas con acción, cita idéntica al
+    reenviar, «Sí» → Confirmada sin reiniciar el reclutamiento, expediente completo del colaborador y la evaluación de
+    capacitación (nunca «Terminado» sin preguntas respondidas)."""
     from app.config import settings
     from app.database import SessionLocal
-    from app.models import Mensaje, Postulacion, Vacante
+    from app.models import AsignacionCurso, Colaborador, Curso, Mensaje, Postulacion
     from app.routers import webhooks
     from app.services import flujo_operativo, prefiltro_reglas, telegram
 
@@ -295,81 +295,177 @@ def flujo_por_chat():
                                                 "from": {"id": chat_id, "is_bot": False, "first_name": "P"}, "text": t}}
         return asyncio.run(webhooks.procesar_update_telegram(upd))
 
+    llamadas = []
+
+    async def llamar_falso(metodo, json=None, data=None, files=None):
+        llamadas.append((metodo, json or {}))
+        return {"ok": True, "result": {"message_id": len(llamadas)}}
+
     with TestClient(app) as c, mock.patch.object(settings, "telegram_bot_token", "123:prueba"), \
-         mock.patch.object(telegram, "_enviar_a_chat", new=mock.AsyncMock(return_value={"enviado": True})), \
-         mock.patch.object(telegram, "pedir_contacto", new=mock.AsyncMock(return_value={"enviado": True})):
-        # ---- Paso 1: el portal exige el prefiltro (también con Telegram activo) ----
-        r = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Sin Prefiltro", "telefono": "2226660009", "consentimiento": "true"})
-        check(r.status_code == 400 and "prefiltro" in r.json()["detail"].lower(), "paso 1: sin contestar el prefiltro web no se guarda la postulación (ni hay token)")
-        d = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Chat Reglas", "telefono": "2226660001", "consentimiento": "true",
+         mock.patch.object(telegram, "llamar", side_effect=llamar_falso):
+        c.post("/auth/login", json={"correo": "admin@redhuman.mx", "password": "Verificar123!"})
+        cuentas = c.get("/cuentas").json()
+        h = {"X-Cuenta-Id": str(next((x["id"] for x in cuentas if "SEZA" in x.get("nombre", "")), 1))}
+
+        # ---- 2. presentación: «Red Human», corta y sin vista previa de ligas ----
+        asyncio.run(telegram._enviar_a_chat("9", "Sube tus fotos: https://app/vehiculo/x"))
+        cuerpo = llamadas[-1][1]
+        check(cuerpo.get("link_preview_options") == {"is_disabled": True} and "disable_web_page_preview" not in cuerpo,
+              "2 · los mensajes con ligas operativas salen sin vista previa publicitaria")
+        asyncio.run(telegram.pedir_contacto("9", "Ana López"))
+        check("Soy Red Human" in llamadas[-1][1]["text"] and len(llamadas[-1][1]["text"]) < 120, "2 · la presentación es corta y el agente se llama «Red Human»")
+
+        # ---- 1. entrada dual: filtro web completo → Telegram solo seguimiento ----
+        d = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Dual Web", "telefono": "2227770001", "consentimiento": "true",
                                                  "respuestas_reglas": json.dumps(R_OK)}).json()
         P, tok = d["postulacion"], d["telegram_onboarding_token"]
+        mandar(6001, f"/start {tok}")
         with SessionLocal() as db:
             p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
-            antes = len(asistente(db, p))
+            msgs = asistente(db, p)
             titulo = p.vacante.titulo
             web = [q["texto"] for q in prefiltro_reglas.preguntas(p.vacante.prefiltro_reglas)]
-            check(tok and p.prefiltro_completo and p.etapa == "Revisión de vehículo", "paso 1: con el prefiltro web guardado se genera el token del handoff")
+            check(msgs[-2] == f"Hola Dual, soy Red Human. Vi que estás interesado en la vacante {titulo}.",
+                  "2 · saludo: el agente se presenta como «Red Human» (la vacante es solo contexto)")
+            check("/vehiculo/" in msgs[-1] and not any(w in m for m in msgs[-2:] for w in web) and not (p.analisis or {}).get("preguntas_agente"),
+                  "1 · llegó por la web con el filtro completo: Telegram solo da seguimiento y la liga (no repite preguntas)")
 
-        # ---- Paso 2: saludo + preguntas del agente ----
-        mandar(5001, f"/start {tok}")
+        # ---- 1. entrada directa a Telegram: el filtro se completa en el chat sin repetir lo contestado ----
+        d2 = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Dual Chat", "telefono": "2227770002", "consentimiento": "true",
+                                                  "respuestas_reglas": json.dumps(R_OK)}).json()
+        with SessionLocal() as db:  # simula que entró por el chat y ya contestó 3 preguntas
+            p2 = db.query(Postulacion).filter(Postulacion.codigo == d2["postulacion"]).first()
+            p2.prefiltro_completo, p2.estado, p2.etapa = False, "pendiente", "Prefiltro"
+            p2.analisis = {"prefiltro_reglas": {"respuestas": {"municipio": "Puebla", "jornada": "si", "experiencia": "no"}, "textos": {}, "pendiente": None}}
+            db.commit()
+        mandar(6002, f"/start {d2['telegram_onboarding_token']}")
         with SessionLocal() as db:
-            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
-            nuevos = asistente(db, p)[antes:]
-            preguntas = flujo_operativo.preguntas_agente(p.vacante)
-            check(len(nuevos) == 2 and nuevos[0] == f"Hola Chat. Vi que estás interesado en la vacante {titulo}.",
-                  "paso 2: saludo personalizado con el nombre del candidato y el título de la vacante")
-            check(f"*1/{len(preguntas)}* {preguntas[0]}" in nuevos[1] and not any(w in nuevos[1] for w in web) and "Gracias" not in "".join(nuevos),
-                  "inmediatamente la primera pregunta del agente (no repite el prefiltro web, no manda el cierre)")
-        for i, respuesta in enumerate(["Nissan Versa 2020", "ABC-123-D", "El lunes"]):
-            mandar(5001, respuesta)
-            with SessionLocal() as db:
-                p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
-                ultimo = asistente(db, p)[-1]
-                if i < len(preguntas) - 1:
-                    check(f"*{i + 2}/{len(preguntas)}* {preguntas[i + 1]}" in ultimo and "Gracias" not in ultimo,
-                          f"respuesta {i + 1} guardada → pregunta {i + 2} (sin cierre)")
-        with SessionLocal() as db:
-            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
-            agente = (p.analisis or {}).get("preguntas_agente") or {}
-            check([x["respuesta"] for x in agente.get("respuestas", [])] == ["Nissan Versa 2020", "ABC-123-D", "El lunes"] and agente.get("completado_en"),
-                  "cada respuesta queda en el expediente de la postulación")
-            ultimo = asistente(db, p)[-1]
-            check("Gracias por tus respuestas" in ultimo and "/vehiculo/" in ultimo, "el «Gracias» solo al contestar la última (con el siguiente paso: liga del vehículo)")
-        c.post("/auth/login", json={"correo": "admin@redhuman.mx", "password": "Verificar123!"})
-        res = c.get(f"/candidatos/{P}/operativo", headers={"X-Cuenta-Id": str(p.cuenta_id)}).json()["resumen"]
-        check(len(res["respuestasAgente"]) == 3 and any(v["nombre"].startswith("Preguntas del agente") and v["estado"] == "Completadas" for v in res["validaciones"]),
-              "RH ve las respuestas del agente en el Resumen de la ficha")
-        mandar(5001, f"/start {tok}")
+            p2 = db.query(Postulacion).filter(Postulacion.codigo == d2["postulacion"]).first()
+            ultimo = asistente(db, p2)[-1]
+            lista = prefiltro_reglas.preguntas(p2.vacante.prefiltro_reglas)
+            siguiente = next(q for q in lista if q["id"] == "vehiculo_propio")
+            check(siguiente["texto"] in ultimo and lista[0]["texto"] not in ultimo and len(ultimo) < 200,
+                  "1 · filtro a medias: el chat sigue en la primera pregunta sin contestar (nunca repite las contestadas)")
+
+        # ---- 1. ligas directas con acción ----
+        check(telegram.separar_inicio(f"cita_{tok}") == ("cita", tok) and telegram.separar_inicio(tok) == ("", tok)
+              and telegram.liga_inicio(tok, "docs") == f"tg://resolve?domain=GrupoSeza_bot&start=docs_{tok}",
+              "1 · ligas directas: /start <accion>_<token> (cita, docs, vehiculo)")
+        mandar(6001, f"/start vehiculo_{tok}")
         with SessionLocal() as db:
             p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
             msgs = asistente(db, p)
-            check(msgs[-2].startswith("Hola Chat. Vi que") and "*1/" not in msgs[-1], "volver a abrir la liga: saluda y recuerda en qué va (no repite las preguntas)")
+            check("/vehiculo/" in msgs[-1] and "Vi que estás interesado" in msgs[-2], "1 · la liga de vehículo abre directo su proceso, sin pedir datos ni vacante")
 
-        # ---- vacante sin reglas: el agente no repite las preguntas web ----
+        # ---- 3. cita: reenviar la MISMA cita y «Sí» → Confirmada ----
+        tarjetas = {t["nombre"]: t for t in c.get("/candidatos", headers=h).json()}
+        mig = tarjetas["Miguel Ángel Rosas"]["id"]
         with SessionLocal() as db:
-            v = db.query(Vacante).filter(Vacante.slug == SLUG + "cdmx").first()
-            v.prefiltro_reglas = {**(v.prefiltro_reglas or {}), "activo": False}
-            v.preguntas_filtro = [{"pregunta": "¿Tienes licencia vigente?"}]
-            v.preguntas_filtro_whatsapp = [{"pregunta": "¿Tienes licencia vigente?"}, {"pregunta": "¿En qué colonia vives?"}]
+            pm = db.query(Postulacion).filter(Postulacion.codigo == mig).first()
+            pm.candidato.telefono = "2227770003"
             db.commit()
-        d = c.post("/candidatos/postular", data={"vacante": SLUG + "cdmx", "nombre": "Chat Libre", "telefono": "2226660002", "consentimiento": "true",
-                                                 "respuestas": json.dumps([{"pregunta": "¿Tienes licencia vigente?", "respuesta": "Sí"}])}).json()
-        P2 = d["postulacion"]
-        mandar(5002, f"/start {d['telegram_onboarding_token']}")
+        cita = {"tienda": "Tienda Centro", "direccion": "Av. Juárez 10", "fecha": "2030-02-03", "hora": "10:30", "capacitador_tipo": "externo",
+                "capacitador_nombre": "Laura Gerente", "capacitador_telefono": "5511110000"}
+        c.post(f"/candidatos/{mig}/operativo/entrevista", json=cita, headers=h)
         with SessionLocal() as db:
-            p = db.query(Postulacion).filter(Postulacion.codigo == P2).first()
-            msgs = asistente(db, p)
-            check("*1/1* ¿En qué colonia vives?" in msgs[-1] and "licencia" not in msgs[-1].lower(),
-                  "vacante sin reglas: el agente solo hace sus preguntas que NO estaban en la web")
-        mandar(5002, "Narvarte")
+            pm = db.query(Postulacion).filter(Postulacion.codigo == mig).first()
+            original = [m for m in asistente(db, pm) if "Te citamos" in m][-1]
+        c.post(f"/candidatos/{mig}/operativo/entrevista/reenviar", json={"destinatario": "candidato"}, headers=h)
         with SessionLocal() as db:
-            p = db.query(Postulacion).filter(Postulacion.codigo == P2).first()
-            check(p.prefiltro_completo and p.estado == "revision" and "Gracias por tus respuestas" in asistente(db, p)[-1],
-                  "al terminar: «Requiere revisión» (RH decide) y el «Gracias»")
-            v = db.query(Vacante).filter(Vacante.slug == SLUG + "cdmx").first()
-            v.prefiltro_reglas = {**(v.prefiltro_reglas or {}), "activo": True}
+            pm = db.query(Postulacion).filter(Postulacion.codigo == mig).first()
+            reenvio = [m for m in asistente(db, pm) if "Te citamos" in m][-1]
+            check(reenvio == original and all(x in reenvio for x in (pm.vacante.titulo, "Laura Gerente", "Tienda Centro", "Av. Juárez 10", "03/02/2030", "10:30")),
+                  "3 · «Reenviar cita» manda EXACTAMENTE la misma cita (vacante, empresa, entrevistador, fecha, hora y lugar)")
+            telegram.guardar_chat(db, "6003", "2227770003", "Miguel")
+            pm.candidato.postulacion_conversacion_id = None  # sin puntero: el «Sí» igual debe llegar a la cita
             db.commit()
+        with mock.patch("app.routers.webhooks.ventana_modo_prueba_min", return_value=1), \
+             mock.patch("app.routers.webhooks.modo_prueba_activo", return_value=True):
+            with SessionLocal() as db:  # la última actividad fue hace horas (antes: la ventana corta reiniciaba el reclutamiento)
+                from datetime import datetime, timedelta, timezone
+                pm = db.query(Postulacion).filter(Postulacion.codigo == mig).first()
+                pm.ultima_actividad_en = datetime.now(timezone.utc) - timedelta(hours=6)
+                for m in pm.mensajes:
+                    m.creado_en = datetime.now(timezone.utc) - timedelta(hours=6)
+                db.commit()
+            mandar(6003, "Sí")
+        with SessionLocal() as db:
+            pm = db.query(Postulacion).filter(Postulacion.codigo == mig).first()
+            eh = flujo_operativo.entrevista_actual(pm)
+            ultimo = asistente(db, pm)[-1]
+            check(pm.activa and eh.confirmada_en and eh.confirmada_por == "candidato" and ultimo == "Gracias, Miguel. Tu asistencia quedó confirmada.",
+                  "3 · «Sí» al aviso de cita → Confirmada en la base y respuesta exacta")
+            todos = " ".join(m.texto for m in db.query(Mensaje).filter(Mensaje.candidato_id == pm.candidato_id).order_by(Mensaje.id.desc()).limit(3))
+            check("vacantes" not in todos.lower() and pm.etapa == "Entrevista", "3 · confirmar no reinicia el reclutamiento ni ofrece otras vacantes")
+        panel = c.get(f"/candidatos/{mig}/operativo", headers=h).json()
+        check(panel["entrevista"]["confirmada"] and panel["entrevista"]["confirmadaPor"] == "candidato" and panel["ligasTelegram"]["cita"].endswith(f"cita_{panel['ligasTelegram']['proceso'].rsplit('=', 1)[1]}"),
+              "3 · el dashboard muestra la cita «Confirmada por el candidato» y la liga directa a la cita")
+
+        # ---- 4. expediente completo del colaborador ----
+        P = tarjetas["Hugo Sánchez Ibarra"]["id"]  # candidato demo con historial completo (filtro, fotos, documentos, entrevista)
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
+            from app.models import Usuario
+            admin = db.query(Usuario).filter(Usuario.correo == "admin@redhuman.mx").first()
+            with mock.patch("app.services.flujo_operativo.faltantes_para_alta", return_value=[]):
+                p.etapa = "Onboarding"
+                _, col = flujo_operativo.registrar_alta(db, p, admin, prueba=True)
+            db.commit()
+            col_cod, pid = col.codigo, p.id
+            check(col.postulacion_origen_id == pid and p.motivo_cierre == "contratado" and not p.activa,
+                  "4 · el alta liga al colaborador con su postulación original y la deja «Contratado»")
+        tarjeta = next(t for t in c.get("/candidatos?mostrar_cerradas=true", headers=h).json() if t["id"] == P)
+        check(tarjeta["motivoCierre"] == "contratado", "4 · en el pipeline la postulación queda como «Contratado»")
+        ex = c.get(f"/colaboradores/{col_cod}/expediente-completo", headers=h).json()
+        check(ex["postulacion"]["estadoPipeline"] == "Contratado" and len(ex["filtros"]["respuestas"]) >= 10 and ex["vehiculo"] is not None
+              and len(ex["vehiculo"]["fotos"]) == 4 and any(d["tipo"].startswith("Póliza") and d["url"] for d in ex["documentos"])
+              and any(e["tipo"] == "Entrevista" and e["resultado"] == "Apto" for e in ex["entrevistas"]) and ex["historial"],
+              "4 · «Ver expediente completo»: filtros, fotos del auto, documentos, entrevistas e historial desde el registro original")
+        foto = c.get(ex["vehiculo"]["fotos"][0]["url"], headers=h)
+        check(foto.status_code == 200, "4 · las fotos del auto se abren con la ruta original (sin duplicar archivos)")
+        with SessionLocal() as db:
+            check(db.query(Colaborador).filter(Colaborador.postulacion_origen_id == pid).count() == 1, "4 · no se duplica nada: un solo colaborador ligado")
+
+        # ---- 5. capacitación: sin preguntas nunca «Terminado»; contador correcto ----
+        with SessionLocal() as db:
+            curso = db.query(Curso).filter(Curso.titulo == "Inducción SEZA").first()
+            sin_eval = Curso(codigo="TMP", cuenta_id=curso.cuenta_id, titulo="Curso sin evaluación", estado="Publicado", evaluacion=[])
+            db.add(sin_eval)
+            db.flush()
+            sin_eval.codigo = f"CUR-{100 + sin_eval.id}"
+            from app.models import ModuloCurso
+            db.add(ModuloCurso(curso_id=sin_eval.id, orden=1, titulo="Único", contenido="Contenido"))
+            raro = Curso(codigo="TMP2", cuenta_id=curso.cuenta_id, titulo="Curso con evaluación en otro formato", estado="Publicado",
+                         evaluacion={"preguntas": [{"texto": "¿2+2?", "opciones": ["3", "4"], "correcta": 1}, {"pregunta": "Sin opciones", "opciones": []}]})
+            db.add(raro)
+            db.flush()
+            raro.codigo = f"CUR-{100 + raro.id}"
+            db.add(ModuloCurso(curso_id=raro.id, orden=1, titulo="Único", contenido="Contenido"))
+            import secrets as _s
+            a1 = AsignacionCurso(codigo="ASG-T1", curso_id=sin_eval.id, tipo="externo", externo_nombre="Prueba", token=_s.token_urlsafe(16))
+            a2 = AsignacionCurso(codigo="ASG-T2", curso_id=raro.id, tipo="externo", externo_nombre="Prueba", token=_s.token_urlsafe(16))
+            db.add_all([a1, a2])
+            db.commit()
+            t1, t2 = a1.token, a2.token
+        c.post(f"/capacitacion/publica/{t1}/avanzar", json={"modulo": 1})
+        pub = c.get(f"/capacitacion/publica/{t1}").json()
+        r = c.post(f"/capacitacion/publica/{t1}/responder", json={"indice": 0, "respuesta": 0})
+        check(pub["evaluacionDisponible"] is False and pub["estado"] != "completado" and pub["resultado"] is None and r.status_code == 409,
+              "5 · curso sin preguntas: no se marca «terminado» ni hay resultado (la sala lo dice; antes «Cargando…»/«Terminado»)")
+        c.post(f"/capacitacion/publica/{t2}/avanzar", json={"modulo": 1})
+        pub = c.get(f"/capacitacion/publica/{t2}").json()
+        check(pub["totalPreguntas"] == 1 and pub["pregunta"]["pregunta"] == "¿2+2?" and pub["estado"] != "completado",
+              "5 · la evaluación guardada en otro formato se lee bien: «Pregunta 1 de 1» (no «1/0»)")
+        r = c.post(f"/capacitacion/publica/{t2}/responder", json={"indice": 0, "respuesta": 1}).json()
+        check(r["estado"] == "completado" and r["resultado"]["calificacion"] == 100 and r["resultado"]["aprobado"],
+              "5 · solo al responder y guardar el resultado queda «completado» con su calificación")
+        tablero = c.get("/capacitacion/asignaciones", headers=h).json()
+        asg = next((x for x in tablero if x.get("id") == "ASG-T2"), None)
+        sin = next((x for x in tablero if x.get("id") == "ASG-T1"), None)
+        check(asg is not None and asg.get("calificacion") == 100 and asg.get("aprobado") is True and sin is not None and sin.get("calificacion") is None,
+              "5 · la calificación y el resultado se ven en el tablero de Capacitación (y el curso sin preguntas no tiene calificación)")
+        ex = c.get(f"/colaboradores/{col_cod}/expediente-completo", headers=h).json()
+        check(isinstance(ex["capacitacion"], list), "5 · el expediente del colaborador trae su capacitación con calificación")
 
 if __name__ == "__main__":
     main()

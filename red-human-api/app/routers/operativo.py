@@ -73,6 +73,8 @@ def entrevista_dict(db: Session, eh) -> Optional[dict]:
         "ligaCapacitador": flujo.liga_capacitador(eh),
         "confirmada": bool(eh.confirmada_en),
         "confirmadaEn": iso(eh.confirmada_en),
+        # Cambios ZESE: quién confirmó — el candidato por Telegram («Sí») o RH por él
+        "confirmadaPor": "candidato" if (eh.confirmada_por or "") == "candidato" else (eh.confirmada_por or ""),
         "asistencia": eh.asistencia or "",
         "resultado": eh.resultado or "",
         "resultadoEtiqueta": RESULTADOS_CAPACITACION.get(eh.resultado or "", ""),
@@ -86,6 +88,14 @@ def entrevista_dict(db: Session, eh) -> Optional[dict]:
         "cursoInduccion": {"codigo": curso.codigo, "titulo": curso.titulo} if curso else None,
         "envios": entregas.resolver(db, reversed(eh.envios or [])),  # con estado Pendiente/Enviado/Entregado/Fallido
     }
+
+
+def _ligas_telegram(p: Postulacion) -> dict:
+    from ..services import telegram as tg
+
+    tok = p.telegram_onboarding_token or ""
+    return {"proceso": tg.liga_inicio_web(tok), "cita": tg.liga_inicio_web(tok, "cita"), "docs": tg.liga_inicio_web(tok, "docs"),
+            "vehiculo": tg.liga_inicio_web(tok, "vehiculo")} if tok else {}
 
 
 def panel_dict(db: Session, p: Postulacion) -> dict:
@@ -112,6 +122,8 @@ def panel_dict(db: Session, p: Postulacion) -> dict:
         "evaluacionResumen": flujo.evaluacion_resumen(p),
         # v3: lo que falta para «Avanzar a Contratación» (entrevista Apta + evaluaciones con resultado y revisadas)
         "requisitosContratacion": flujo.requisitos_contratacion(db, p),
+        # Cambios ZESE: ligas directas al proceso en Telegram (abren la cita / documentos / vehículo sin pedir datos)
+        "ligasTelegram": _ligas_telegram(p),
         "resumen": flujo.resumen_ficha(db, p),  # pestaña «Resumen» (Zeze punto 7)
         "evaluacionesPendientes": len(flujo.evaluaciones_pendientes(flujo.evaluaciones_vivas(db, p))),
         "contratacion": {
@@ -152,7 +164,13 @@ def panel_dict(db: Session, p: Postulacion) -> dict:
 
 @router.get("/candidatos/{codigo}/operativo")
 def ver_panel(codigo: str, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual), cuenta: Cuenta = Depends(cuenta_actual)):
-    return panel_dict(db, _operativo(db, codigo, cuenta.id))
+    p = _operativo(db, codigo, cuenta.id)
+    from ..services import telegram as tg
+
+    if not p.telegram_onboarding_token:  # postulaciones previas al handoff: su liga directa nace aquí
+        tg.asegurar_token_onboarding(p)
+        db.commit()
+    return panel_dict(db, p)
 
 
 # ------------------------------------------------------------ Entrevista (capacitación en tienda)

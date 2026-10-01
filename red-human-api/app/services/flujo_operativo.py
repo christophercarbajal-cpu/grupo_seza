@@ -322,14 +322,25 @@ def liga_capacitador(eh: EntrevistaHumana) -> str:
 def _cuando(eh: EntrevistaHumana) -> str:
     from .notificaciones import TZ_MEXICO
 
-    return eh.fecha.astimezone(TZ_MEXICO).strftime("%d/%m/%Y a las %H:%M") if eh.fecha else "por confirmar"
+    if not eh.fecha:
+        return "por confirmar"
+    # 2026-10-01: una fecha releída SIN zona (p. ej. SQLite) es UTC; antes se tomaba como hora local y el reenvío
+    # de la cita salía con otra hora
+    f = eh.fecha if eh.fecha.tzinfo else eh.fecha.replace(tzinfo=timezone.utc)
+    return f.astimezone(TZ_MEXICO).strftime("%d/%m/%Y a las %H:%M")
 
 
 def texto_cita(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
+    """La cita COMPLETA (candidato, empresa, vacante, entrevistador, fecha, hora y lugar). «Reenviar cita» manda
+    exactamente este mismo texto de la misma `EntrevistaHumana` (Cambios ZESE)."""
+    from ..serial import nombre_empresa_candidato
+
     nombre = (p.nombre or "").split(" ")[0] or "hola"
     cap = capacitador_de(eh, db)
+    vac = p.vacante
+    empresa = nombre_empresa_candidato(vac) if vac else ""
     partes = [
-        f"¡Hola {nombre}! Te citamos a tu *entrevista*:",
+        f"¡Hola {nombre}! Te citamos a tu *entrevista*" + (f" para *{vac.titulo}*" if vac else "") + (f" en {empresa}" if empresa else "") + ":",
         f"📅 {_cuando(eh)} h",
         f"📍 {eh.tienda}" + (f" — {eh.ubicacion}" if eh.ubicacion else ""),
     ]
@@ -339,7 +350,7 @@ def texto_cita(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
         partes.append(f"📝 {eh.comentario}")
     if eh.curso_induccion_id:
         partes.append("📄 Te compartimos tu material de inducción para que lo revises antes.")
-    partes.append("\n¿Confirmas tu asistencia? Responde *Sí*.")
+    partes.append("\n✅ Tu asistencia ya está confirmada." if eh.confirmada_en else "\n¿Confirmas tu asistencia? Responde *Sí*.")
     return "\n".join(partes)
 
 
@@ -382,10 +393,15 @@ async def enviar_cita_candidato(db: Session, p: Postulacion, eh: EntrevistaHuman
     else:
         envio = {"enviado": False, "pendiente": True, "detalle": "El candidato no tiene teléfono registrado."}
     fila_msg = _registrar_envio(eh, "candidato", "mensaje", envio)
+    from . import telegram as tg
+
+    tok = tg.asegurar_token_onboarding(p)  # liga directa a la cita en Telegram (sin volver a pedir datos ni vacante)
     correo = await entregas.correo_candidato(
-        p, "Tu entrevista", f"Hola {(p.nombre or '').split(' ')[0]}, te citamos a tu entrevista. Responde por mensaje o comunícate con RH si necesitas otra fecha.",
-        [("Fecha", f"{_cuando(eh)} h"), ("Lugar", eh.tienda + (f" — {eh.ubicacion}" if eh.ubicacion else "")), ("Te recibe", capacitador_de(eh, db)["nombre"] or "—")]
-        + ([("Indicaciones", eh.comentario)] if eh.comentario else []))
+        p, "Tu entrevista", f"Hola {(p.nombre or '').split(' ')[0]}, te citamos a tu entrevista. Confírmala en Telegram o comunícate con RH si necesitas otra fecha.",
+        [("Vacante", p.vacante.titulo if p.vacante else "—"), ("Fecha", f"{_cuando(eh)} h"), ("Lugar", eh.tienda + (f" — {eh.ubicacion}" if eh.ubicacion else "")),
+         ("Te recibe", capacitador_de(eh, db)["nombre"] or "—")]
+        + ([("Indicaciones", eh.comentario)] if eh.comentario else []),
+        cta=("Confirmar en Telegram", tg.liga_inicio_web(tok, "cita")))
     _registrar_envio(eh, "candidato", "correo", correo)
     return fila_msg
 
@@ -522,6 +538,7 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
     if eh.confirmada_en:
         return {"entrevista": eh, "induccion": None, "ya_confirmada": True}
     eh.confirmada_en = _ahora()
+    eh.confirmada_por = actor[:150]
     induccion = None
     if not any(x.get("destinatario") == "candidato" and x.get("canal") == "induccion" and x.get("enviado") for x in (eh.envios or [])):
         induccion = await enviar_induccion(db, p, eh, actor)

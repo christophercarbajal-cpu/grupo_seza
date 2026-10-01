@@ -313,6 +313,124 @@ class BajaIn(BaseModel):
     motivo: str = ""
 
 
+def postulacion_origen(db: Session, col: Colaborador):
+    """La postulación CONTRATADA de este colaborador: `postulacion_origen_id` (altas desde 2026-10-01); para altas
+    previas, la del expediente con el que se dio de alta; si no, la última cerrada como «contratado» de su candidato."""
+    from ..models import Expediente, Postulacion
+
+    if col.postulacion_origen_id:
+        p = db.get(Postulacion, col.postulacion_origen_id)
+        if p:
+            return p
+    if col.expediente_id:
+        e = db.get(Expediente, col.expediente_id)
+        if e and e.postulacion:
+            return e.postulacion
+    if col.candidato_origen_id:
+        return (db.query(Postulacion).filter(Postulacion.candidato_id == col.candidato_origen_id, Postulacion.motivo_cierre == "contratado")
+                .order_by(Postulacion.id.desc()).first())
+    return None
+
+
+def expediente_completo_dict(db: Session, col: Colaborador, u: Usuario) -> dict:
+    """«Ver expediente completo» (Cambios ZESE, 2026-10-01): TODO el historial previo del colaborador leído de sus
+    registros ORIGINALES (postulación, vehículo, entrevistas, evaluaciones, expediente, onboarding, capacitación) — nada
+    se copia ni se duplica; los archivos se abren con las rutas de siempre (visor interno de la ficha)."""
+    from ..models import ESTADOS_VEHICULO, LADOS_VEHICULO, RESULTADOS_CAPACITACION, TareaOnboarding
+    from ..serial import evaluacion_candidato_dict, iso
+    from ..services import flujo_operativo, prefiltro_reglas
+    from .evaluaciones import evaluaciones_de
+
+    p = postulacion_origen(db, col)
+    c = p.candidato if p else col.candidato_origen
+    e = p.expediente if p else None
+    vac = p.vacante if p else None
+    a = (p.analisis or {}) if p else {}
+
+    # respuestas de filtros (web, chat y agente), tal como quedaron
+    pr = a.get("prefiltro_reglas") or {}
+    preguntas = {q["id"]: q["texto"] for q in prefiltro_reglas.preguntas(vac.prefiltro_reglas)} if vac and prefiltro_reglas.activo(vac.prefiltro_reglas) else {}
+    filtros = [{"pregunta": preguntas.get(k, k), "respuesta": (pr.get("textos") or {}).get(k) or v, "origen": pr.get("canal") or ""}
+               for k, v in (pr.get("respuestas") or {}).items()]
+    filtros += [{"pregunta": x.get("pregunta", ""), "respuesta": x.get("respuesta", ""), "origen": "web"} for x in (a.get("respuestas_web") or [])]
+    filtros += [{"pregunta": x.get("pregunta", ""), "respuesta": x.get("respuesta", ""), "origen": "agente"}
+                for x in ((a.get("preguntas_agente") or {}).get("respuestas") or [])]
+    ev_pr = (pr.get("evaluacion") or {})
+
+    r = p.revision_vehiculo if p else None
+    vehiculo = {
+        "estado": ESTADOS_VEHICULO.get(r.estado, r.estado), "decididoPor": r.decidido_por or "", "comentario": r.comentario or "",
+        "fotos": [{"lado": lado, "nombre": nombre, "url": f"/candidatos/{p.codigo}/vehiculo/foto/{lado}"}
+                  for lado, nombre in LADOS_VEHICULO.items() if lado in (r.fotos or {})],
+    } if r else None
+
+    entrevistas = []
+    for eh in (p.entrevistas_humanas if p else []):
+        entrevistas.append({
+            "tipo": "Entrevista", "fecha": iso(eh.fecha), "lugar": " — ".join(x for x in (eh.tienda, eh.ubicacion) if x),
+            "entrevistador": eh.entrevistador or "", "cancelada": bool(eh.cancelada),
+            "confirmada": bool(eh.confirmada_en), "asistencia": eh.asistencia or "",
+            "resultado": RESULTADOS_CAPACITACION.get(eh.resultado or "", "") or ({"aprobado": "Aprobado", "no_aprobado": "No aprobado"}.get(eh.resultado or "", eh.resultado or "")),
+            "observaciones": eh.comentario or "", "registradoPor": eh.registrado_por or "",
+        })
+    for ent in (p.entrevistas if p else []):
+        entrevistas.append({"tipo": "Entrevista Red Human", "fecha": iso(getattr(ent, "creada_en", None) or getattr(ent, "creado_en", None)), "lugar": "",
+                            "entrevistador": "Red Human", "cancelada": False, "confirmada": False, "asistencia": ent.estado or "",
+                            "resultado": str((ent.evaluacion or {}).get("recomendacion") or ""), "observaciones": str((ent.evaluacion or {}).get("resumen") or ""),
+                            "registradoPor": ""})
+
+    try:
+        evaluaciones = [evaluacion_candidato_dict(ev, u, db) for ev in (evaluaciones_de(db, p) if p else [])]
+    except Exception:  # noqa: BLE001 — módulo no disponible
+        evaluaciones = []
+
+    documentos = [{"tipo": d.tipo, "estado": flujo_operativo.estado_documento(d), "tieneArchivo": bool(d.archivo), "nombreArchivo": d.nombre_archivo or "",
+                   "revisadoPor": d.revisado_por or "", "interno": bool(d.interno),
+                   "url": f"/contratacion/expedientes/{e.id}/documentos/{d.tipo}/archivo" if d.archivo else None}
+                  for d in (e.documentos if e else []) if d.estado != "no_aplica"]
+    try:
+        tareas = db.query(TareaOnboarding).filter(TareaOnboarding.expediente_id == e.id).order_by(TareaOnboarding.id).all() if e else []
+    except Exception:  # noqa: BLE001
+        tareas = []
+    capacitacion = []
+    from sqlalchemy import or_
+
+    cond = [AsignacionCurso.colaborador_id == col.id] + ([AsignacionCurso.postulacion_id == p.id] if p else [])
+    asignaciones = db.query(AsignacionCurso).filter(or_(*cond)).order_by(AsignacionCurso.id).all()
+    for asg in asignaciones:
+        capacitacion.append({"curso": asg.curso.titulo if asg.curso else "", "codigo": asg.codigo, "tipo": asg.tipo, "estado": asg.estado,
+                             "calificacion": asg.calificacion, "aprobado": asg.aprobado, "completadoEn": iso(asg.completado_en),
+                             "preguntas": len(asg.curso.preguntas_evaluacion) if asg.curso else 0})
+    return {
+        "colaborador": {"codigo": col.codigo, "nombre": col.nombre, "puesto": col.puesto, "fechaIngreso": iso(col.fecha_ingreso)},
+        "candidato": {"codigo": c.codigo, "nombre": c.nombre, "fuente": c.fuente, "telefono": c.telefono, "correo": c.correo} if c else None,
+        "postulacion": {"codigo": p.codigo, "vacante": vac.titulo if vac else "", "vacanteCodigo": vac.codigo if vac else "",
+                        "etapa": p.etapa, "estadoPipeline": "Contratado" if p.motivo_cierre == "contratado" else ("Activa" if p.activa else (p.motivo_cierre or "Cerrada")),
+                        "creada": iso(p.creado_en), "cerrada": iso(p.cerrada_en)} if p else None,
+        "filtros": {"resultado": ev_pr.get("etiqueta") or "", "respuestas": filtros},
+        "vehiculo": vehiculo,
+        "referencias": (e.referencias or []) if e else [],
+        "documentos": documentos,
+        "entrevistas": entrevistas,
+        "evaluaciones": evaluaciones,
+        "onboarding": {
+            "expedienteId": e.id if e else None,
+            "condiciones": {"puesto": e.puesto, "sueldo": e.sueldo, "tipoContratacion": e.tipo_contratacion, "fechaIngreso": iso(e.fecha_ingreso),
+                            "ubicacion": e.ubicacion, "jefeDirecto": e.jefe_directo} if e else None,
+            "tareas": [{"nombre": t.nombre, "estado": t.estado, "responsable": t.responsable, "fechaLimite": iso(t.fecha_limite),
+                        "realizadaPor": t.realizada_por, "realizadaEn": iso(t.realizada_en)} for t in tareas],
+            "alta": {"por": e.alta_autorizada_por, "en": iso(e.alta_fecha)} if e and e.estado == "alta" else None,
+        },
+        "capacitacion": capacitacion,
+        "historial": list((p.historial if p else None) or []),
+    }
+
+
+@router.get("/{codigo}/expediente-completo")
+def expediente_completo(codigo: str, db: Session = Depends(get_db), u: Usuario = Depends(usuario_actual), cuenta: Cuenta = Depends(cuenta_actual)):
+    return expediente_completo_dict(db, _por_codigo(db, codigo, cuenta.id), u)
+
+
 @router.post("/{codigo}/baja")
 def dar_de_baja(
     codigo: str, datos: BajaIn, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor),

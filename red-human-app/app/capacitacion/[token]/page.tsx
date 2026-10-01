@@ -4,19 +4,22 @@
    1) externos con liga abierta: registro (solo nombre y correo o WhatsApp);
    2) módulos uno por uno con «Siguiente módulo»;
    3) evaluación integrada, UNA pregunta por pantalla, calificada al instante;
-   4) resultado: Aprobado / No aprobado + %. */
+   4) resultado: Aprobado / No aprobado + %.
+   2026-10-01 (bugfix): nunca «Cargando la evaluación…» eterno ni «Terminado» sin resultado. Contador «Pregunta X de Y»;
+   si el curso no trae preguntas válidas se dice claro; si falla la carga, mensaje + «Reintentar» (el avance vive en el
+   servidor, se conserva). Solo el backend marca «completado», al guardar el resultado de la última respuesta. */
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { ArrowRight, Award, BookOpen, CheckCircle2, Download, Loader2, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, Award, BookOpen, CheckCircle2, Download, Loader2, RotateCw, XCircle } from "lucide-react";
 import { Badge, Button, Card, Logo } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
-import { avanzarModulo, fetchAsignacionPublica, registrarExternoCurso, responderEvaluacion, urlPdfCursoPublico, type AsignacionPublica } from "@/lib/api";
+import { avanzarModulo, cargarAsignacionPublica, registrarExternoCurso, responderEvaluacion, urlPdfCursoPublico, type AsignacionPublica } from "@/lib/api";
 import { InstructorAvatar } from "@/components/capacitacion/instructor-avatar";
 import { useTotem } from "@/lib/use-totem";
 
-type Vista = "cargando" | "no_disponible" | "registro" | "portada" | "modulo" | "evaluacion" | "resultado";
+type Vista = "cargando" | "no_disponible" | "error_carga" | "registro" | "portada" | "modulo" | "evaluacion" | "sin_evaluacion" | "resultado";
 
 export default function SalaCurso() {
   const params = useParams();
@@ -28,6 +31,7 @@ export default function SalaCurso() {
   const [vista, setVista] = useState<Vista>("cargando");
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState("");
+  const [errorCarga, setErrorCarga] = useState("");
   // registro externo
   const [nombre, setNombre] = useState("");
   const [correo, setCorreo] = useState("");
@@ -36,17 +40,36 @@ export default function SalaCurso() {
   const [eleccion, setEleccion] = useState<number | null>(null);
   const [retro, setRetro] = useState<{ correcta: boolean; explicacion: string } | null>(null);
 
+  /** Vista que corresponde a lo que guarda el servidor. «Terminado» SOLO con resultado guardado. */
+  const vistaDe = (d: AsignacionPublica): Vista => {
+    if (d.requiereRegistro) return "registro";
+    if (d.estado === "completado" && d.resultado) return "resultado";
+    if (d.modulosCompletados >= d.totalModulos) {
+      if (d.evaluacionDisponible === false || d.totalPreguntas === 0) return "sin_evaluacion";
+      return "evaluacion"; // con pregunta → la pregunta; sin pregunta → aviso con «Reintentar» (nunca «Cargando…» eterno)
+    }
+    return d.modulosCompletados === 0 && d.estado === "pendiente" ? "portada" : "modulo";
+  };
+
   const colocar = useCallback((d: AsignacionPublica) => {
     setA(d);
-    if (d.requiereRegistro) return setVista("registro");
-    if (d.estado === "completado" && d.resultado) return setVista("resultado");
-    if (d.modulosCompletados >= d.totalModulos) return setVista(d.pregunta ? "evaluacion" : "resultado");
-    setVista(d.modulosCompletados === 0 && d.estado === "pendiente" ? "portada" : "modulo");
+    setVista(vistaDe(d));
   }, []);
 
-  useEffect(() => {
-    fetchAsignacionPublica(token).then((d) => (d ? colocar(d) : setVista("no_disponible")));
+  /** Carga (o recarga tras un error) desde el servidor: el avance se conserva porque vive ahí. */
+  const recargar = useCallback(async () => {
+    setErrorCarga("");
+    setError("");
+    const r = await cargarAsignacionPublica(token);
+    if (r.ok) return colocar(r.data);
+    if (r.noExiste) return setVista("no_disponible");
+    setErrorCarga(r.error);
+    setVista((v) => (v === "cargando" ? "error_carga" : v));
   }, [token, colocar]);
+
+  useEffect(() => {
+    void recargar();
+  }, [recargar]);
 
   async function registrar() {
     setOcupado(true);
@@ -65,7 +88,7 @@ export default function SalaCurso() {
     setOcupado(false);
     if (!r.ok) return setError(r.error);
     setA(r.data);
-    setVista(r.data.modulosCompletados >= r.data.totalModulos ? "evaluacion" : "modulo");
+    setVista(r.data.modulosCompletados >= r.data.totalModulos ? vistaDe(r.data) : "modulo");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -83,7 +106,8 @@ export default function SalaCurso() {
   function continuar() {
     setRetro(null);
     setEleccion(null);
-    if (a?.estado === "completado") setVista("resultado");
+    if (a?.estado === "completado" && a.resultado) setVista("resultado");
+    else if (a && !a.pregunta) void recargar(); // por si la siguiente pregunta no llegó: se pide de nuevo
   }
 
   const modulo = a && vista === "modulo" ? a.modulos[a.modulosCompletados] : null;
@@ -107,6 +131,15 @@ export default function SalaCurso() {
           </Card>
         )}
 
+        {vista === "error_carga" && (
+          <Card className="p-8 text-center">
+            <AlertTriangle className="mx-auto h-8 w-8 text-warn" />
+            <h1 className="font-display mt-2 text-xl font-bold">No pudimos cargar tu curso</h1>
+            <p className="mt-2 text-sm text-ink-2">{errorCarga || "Ocurrió un error."} Tu avance está guardado.</p>
+            <Button className={cn("mt-4", btnTotem)} onClick={() => void recargar()}><RotateCw className="h-4 w-4" /> Reintentar</Button>
+          </Card>
+        )}
+
         {a && vista !== "cargando" && vista !== "no_disponible" && (
           <div className="mb-6 text-center">
             <Badge tone="brand" dot>{a.empresa} · Capacitación</Badge>
@@ -117,7 +150,11 @@ export default function SalaCurso() {
                   <div className="h-full rounded-full bg-brand transition-all" style={{ width: `${Math.round(((a.modulosCompletados + (vista === "resultado" ? 1 : 0)) / (a.totalModulos + 1)) * 100)}%` }} />
                 </div>
                 <span className="font-mono text-[11px] text-ink-3">
-                  {vista === "evaluacion" ? `Evaluación ${a.preguntasRespondidas + 1}/${a.totalPreguntas}` : vista === "resultado" ? "Terminado" : `Módulo ${Math.min(a.modulosCompletados + 1, a.totalModulos)}/${a.totalModulos}`}
+                  {vista === "evaluacion"
+                    ? `Pregunta ${Math.min(a.preguntasRespondidas + 1, Math.max(a.totalPreguntas, 1))} de ${a.totalPreguntas}`
+                    : vista === "sin_evaluacion" ? "Evaluación pendiente"
+                    : vista === "resultado" ? "Terminado"
+                    : `Módulo ${Math.min(a.modulosCompletados + 1, a.totalModulos)} de ${a.totalModulos}`}
                 </span>
               </div>
             )}
@@ -217,7 +254,7 @@ export default function SalaCurso() {
 
         {a && vista === "evaluacion" && a.pregunta && (
           <Card className="p-6">
-            <p className="font-mono text-[11px] uppercase tracking-wide text-ink-3">Evaluación · pregunta {a.pregunta.indice + 1} de {a.totalPreguntas}</p>
+            <p className="font-mono text-[11px] uppercase tracking-wide text-ink-3">Evaluación · Pregunta {a.pregunta.indice + 1} de {a.totalPreguntas}</p>
             <h2 className="font-display mt-1 text-lg font-bold totem:text-2xl">{a.pregunta.pregunta}</h2>
             <div className="mt-4 flex flex-col gap-2 totem:gap-3">
               {a.pregunta.opciones.map((o, k) => (
@@ -245,7 +282,8 @@ export default function SalaCurso() {
             {error && <p className="mt-3 text-sm font-semibold text-bad">{error}</p>}
             {retro === null ? (
               <Button className={cn("mt-5 w-full", btnTotem)} onClick={responder} disabled={ocupado || eleccion === null}>
-                {ocupado ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4 totem:h-6 totem:w-6" />} Responder
+                {ocupado ? <Loader2 className="h-4 w-4 animate-spin" /> : error ? <RotateCw className="h-4 w-4 totem:h-6 totem:w-6" /> : <ArrowRight className="h-4 w-4 totem:h-6 totem:w-6" />}
+                {error ? " Reintentar" : " Responder"}
               </Button>
             ) : (
               <Button className={cn("mt-5 w-full", btnTotem)} onClick={continuar}>
@@ -256,7 +294,23 @@ export default function SalaCurso() {
         )}
 
         {a && vista === "evaluacion" && !a.pregunta && a.estado !== "completado" && (
-          <Card className="p-6 text-center text-sm text-ink-2">Cargando la evaluación…</Card>
+          <Card className="p-6 text-center">
+            <AlertTriangle className="mx-auto h-7 w-7 text-warn" />
+            <p className="mt-2 text-sm text-ink-2">No pudimos cargar la siguiente pregunta. Tu avance está guardado ({a.preguntasRespondidas} de {a.totalPreguntas} respondidas).</p>
+            {errorCarga && <p className="mt-1 text-xs text-ink-3">{errorCarga}</p>}
+            <Button className={cn("mt-4", btnTotem)} onClick={() => void recargar()}><RotateCw className="h-4 w-4" /> Reintentar</Button>
+          </Card>
+        )}
+
+        {a && vista === "sin_evaluacion" && (
+          <Card className="p-6 text-center">
+            <AlertTriangle className="mx-auto h-7 w-7 text-warn" />
+            <h2 className="font-display mt-2 text-lg font-bold">Terminaste los módulos</h2>
+            <p className="mt-1 text-sm text-ink-2">
+              La evaluación de este curso todavía no está disponible, así que aún no queda como terminado. Avisa a quien te asignó el curso; tu avance está guardado.
+            </p>
+            <Button variant="outline" className={cn("mt-4", btnTotem)} onClick={() => void recargar()}><RotateCw className="h-4 w-4" /> Reintentar</Button>
+          </Card>
         )}
 
         {a && vista === "resultado" && a.resultado && (

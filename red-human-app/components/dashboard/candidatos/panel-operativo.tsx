@@ -252,7 +252,16 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
               <p className="font-semibold text-ink">Cita al candidato</p>
               {/* mensaje y correo van por separado; cada uno con su estado (Pendiente / Enviado / Entregado / Fallido) */}
               <EstadosEnvio className="mt-1" envios={eh.envios.filter((x) => x.destinatario === "candidato" && x.canal !== "induccion")} />
-              <p className="mt-0.5 text-ink-3">{eh.confirmada ? `Confirmada ${fechaCorta(eh.confirmadaEn)}` : "Esperando su «Sí»"}</p>
+              {/* Cambios ZESE: estado de confirmación visible (el «Sí» del candidato en Telegram la deja «Confirmada») */}
+              <p className="mt-1.5">
+                {eh.confirmada ? (
+                  <Badge tone="good" dot>
+                    Confirmada{eh.confirmadaPor === "candidato" ? " por el candidato (Telegram)" : eh.confirmadaPor ? ` por ${eh.confirmadaPor}` : ""} · {fechaCorta(eh.confirmadaEn)}
+                  </Badge>
+                ) : (
+                  <Badge tone="warn" dot>Sin confirmar · esperando su «Sí»</Badge>
+                )}
+              </p>
               {puedeDecidir && (
                 <Button size="sm" variant="ghost" className="mt-1" disabled={Boolean(ocupado)}
                   onClick={() => ejecutar("reenviar-c", () => reenviarEntrevistaOperativa(codigo, "candidato"), (p) =>
@@ -261,6 +270,9 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                 </Button>
               )}
             </div>
+            {panel.ligasTelegram?.cita && (
+              <LigaAcciones etiqueta="Liga directa a la cita (Telegram)" liga={panel.ligasTelegram.cita} />
+            )}
             <LigaAcciones
               etiqueta="Liga del entrevistador"
               liga={eh.ligaCapacitador}
@@ -499,6 +511,9 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
               return "Se reenvió la liga de documentos y referencias.";
             }) : undefined}
           />
+          {panel.ligasTelegram?.docs && (
+            <LigaAcciones className="mt-2" etiqueta="Liga directa a documentos (Telegram)" liga={panel.ligasTelegram.docs} />
+          )}
           {ct.contrato === "despues" && (
             <p className="mt-3 rounded-xl bg-brand-soft/40 p-3 text-[13px] text-ink-2">
               <FileSignature className="mr-1 inline h-4 w-4 text-brand" /> El contrato quedó para esta etapa: usa «Generar contrato» en Contratación (arriba).

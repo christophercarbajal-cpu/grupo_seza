@@ -632,6 +632,7 @@ def _crear_colaborador(db: Session, e: Expediente, u: Usuario) -> Optional[Colab
         dado_de_alta_por=u.nombre,
         candidato_origen_id=c.id,
         expediente_id=e.id,
+        postulacion_origen_id=e.postulacion_id,  # 2026-10-01: liga al registro ORIGINAL del candidato (expediente completo)
     )
     # Registro histórico INMUTABLE de ingreso: lo que se firmó/acordó al momento del alta.
     col.condiciones_ingreso = {

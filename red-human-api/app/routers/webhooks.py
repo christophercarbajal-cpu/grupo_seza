@@ -580,15 +580,12 @@ async def _enviar_menu_vacantes(db: Session, telefono: str, alcance: List[Cuenta
 
 
 def _texto_aviso_privacidad(nombre: str, vacante: Optional[Vacante]) -> str:
-    """Mensaje de bienvenida + aviso de privacidad LFPDPPP."""
-    saludo = f"¡Hola{' ' + nombre if nombre else ''}! 👋"
+    """Bienvenida + aviso de privacidad LFPDPPP, corto (Cambios ZESE): el agente es «Red Human»; la vacante es contexto."""
     puesto = f" para *{vacante.titulo}*" if vacante else ""
     return (
-        f"{saludo} Gracias por tu interés{puesto}. Soy Red Human.\n\n"
-        "Antes de comenzar, necesito tu autorización: tus datos personales serán tratados conforme "
-        "a nuestro Aviso de Privacidad, exclusivamente para este proceso de selección. "
-        "Puedes consultar el aviso completo en redhuman.mx/privacidad.\n\n"
-        "¿Autorizas el uso de tus datos para continuar? (Responde *Sí* o *Acepto*)"
+        f"¡Hola{' ' + nombre if nombre else ''}! Soy Red Human. Gracias por tu interés{puesto}.\n\n"
+        "Usaremos tus datos solo para este proceso de selección (Aviso de Privacidad: redhuman.mx/privacidad). "
+        "¿Autorizas? Responde *Sí* o *Acepto*."
     )
 
 
@@ -623,7 +620,7 @@ async def telegram_entrante(request: Request, tareas: BackgroundTasks):
     return {"ok": True}
 
 
-async def _lanzar_evaluacion_telegram(db: Session, p: Postulacion, msg: dict, tel: str) -> dict:
+async def _lanzar_evaluacion_telegram(db: Session, p: Postulacion, msg: dict, tel: str, accion: str = "") -> dict:
     """Handoff: arranca la evaluación de ESA postulación (prefiltro por chat, o el siguiente paso si la web ya lo
     completó: liga del vehículo, cita…). Sin consentimiento registrado se va por el flujo normal (aviso de
     privacidad primero), con el puntero de conversación ya en la postulación."""
@@ -631,8 +628,9 @@ async def _lanzar_evaluacion_telegram(db: Session, p: Postulacion, msg: dict, te
         return await procesar_entrante(db, telegram.mensaje_para_agente({**msg, "texto": "Hola", "tipo": "text"}, tel))
     from .candidatos import iniciar_handoff
 
-    # saludo personalizado + primera pregunta del agente (paso 2); canal lógico «whatsapp»: sale por Telegram
-    r = await iniciar_handoff(db, p, "whatsapp")
+    # saludo («Red Human») + entrada dual: con el filtro web completo solo seguimiento/ligas; si no, el filtro sigue en el
+    # chat sin repetir lo contestado. Con acción (cita / docs / vehiculo) abre directo esa parte del proceso.
+    r = await iniciar_handoff(db, p, "whatsapp", accion)
     db.commit()
     return {"ok": True, "accion": "handoff_evaluacion", "postulacion": p.codigo, "respuesta": (r or {}).get("respuesta")}
 
@@ -642,6 +640,7 @@ async def _handoff_telegram(db: Session, msg: dict, token: str) -> dict:
     El token sirve en UN solo chat (otro chat con la misma liga se rechaza). Token desconocido/cerrado → igual que un
     `/start` vacío (menú general de vacantes)."""
     chat_id = msg["chat_id"]
+    accion, token = telegram.separar_inicio(token)  # `/start cita_<token>` → abre directo la cita
     p = telegram.postulacion_por_token(db, token)
     if p is None or not p.activa:
         await telegram._enviar_a_chat(chat_id, "Esta liga ya no está vigente. Te muestro las vacantes disponibles 👇")
@@ -668,7 +667,7 @@ async def _handoff_telegram(db: Session, msg: dict, token: str) -> dict:
         return {"ok": True, "accion": "handoff_sin_telefono", "postulacion": p.codigo}
     telegram.guardar_chat(db, chat_id, tel, msg.get("nombre", "") or c.nombre)
     db.commit()
-    return await _lanzar_evaluacion_telegram(db, p, msg, tel)
+    return await _lanzar_evaluacion_telegram(db, p, msg, tel, accion)
 
 
 async def procesar_update_telegram(update: dict) -> dict:

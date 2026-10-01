@@ -1842,12 +1842,25 @@ export interface AsignacionPublica {
   modulos: { orden: number; titulo: string; contenido: string; completado: boolean }[];
   totalPreguntas: number;
   preguntasRespondidas: number;
+  /** 2026-10-01: false = el curso no tiene preguntas válidas (la sala lo dice; nunca «Cargando…» eterno). */
+  evaluacionDisponible?: boolean;
   pregunta: { indice: number; pregunta: string; tipo: "opcion" | "vf"; opciones: string[] } | null;
   resultado: { calificacion: number; aprobado: boolean; aciertos: number; total: number; minimo: number; detalle: { pregunta: string; correcta: boolean; explicacion: string }[] } | null;
 }
 
 export function fetchAsignacionPublica(token: string) {
   return get<AsignacionPublica>(`/capacitacion/publica/${token}`);
+}
+/** Igual que `fetchAsignacionPublica` pero distingue «la liga no existe» (404) de un error de red (Reintentar). */
+export async function cargarAsignacionPublica(token: string): Promise<{ ok: true; data: AsignacionPublica } | { ok: false; noExiste: boolean; error: string }> {
+  try {
+    const r = await fetch(`${API}/capacitacion/publica/${token}`, { cache: "no-store" });
+    if (r.status === 404) return { ok: false, noExiste: true, error: "Liga no disponible" };
+    if (!r.ok) return { ok: false, noExiste: false, error: `No se pudo cargar (HTTP ${r.status}).` };
+    return { ok: true, data: (await r.json()) as AsignacionPublica };
+  } catch {
+    return { ok: false, noExiste: false, error: "No se pudo conectar. Revisa tu conexión." };
+  }
 }
 
 export function registrarExternoCurso(token: string, datos: { nombre: string; correo?: string; telefono?: string }) {
@@ -2282,6 +2295,30 @@ export interface ColaboradorDetalle extends Colaborador {
 
 export function fetchColaborador(codigo: string) {
   return get<ColaboradorDetalle>(`/colaboradores/${codigo}`);
+}
+
+/** «Ver expediente completo» (2026-10-01): historial ORIGINAL del colaborador desde su postulación (sin duplicar). */
+export interface ExpedienteCompleto {
+  colaborador: { codigo: string; nombre: string; puesto: string; fechaIngreso: string | null };
+  candidato: { codigo: string; nombre: string; fuente: string; telefono: string; correo: string } | null;
+  postulacion: { codigo: string; vacante: string; vacanteCodigo: string; etapa: string; estadoPipeline: string; creada: string | null; cerrada: string | null } | null;
+  filtros: { resultado: string; respuestas: { pregunta: string; respuesta: string; origen: string }[] };
+  vehiculo: { estado: string; decididoPor: string; comentario: string; fotos: { lado: string; nombre: string; url: string }[] } | null;
+  referencias: { nombre: string; telefono: string; parentesco: string; contactada?: boolean; validada?: boolean; resultado?: string; validada_por?: string }[];
+  documentos: { tipo: string; estado: string; tieneArchivo: boolean; nombreArchivo: string; revisadoPor: string; interno: boolean; url: string | null }[];
+  entrevistas: { tipo: string; fecha: string | null; lugar: string; entrevistador: string; cancelada: boolean; confirmada: boolean; asistencia: string; resultado: string; observaciones: string; registradoPor: string }[];
+  evaluaciones: EvaluacionCandidato[];
+  onboarding: {
+    expedienteId: number | null;
+    condiciones: { puesto: string; sueldo: string; tipoContratacion: string; fechaIngreso: string | null; ubicacion: string; jefeDirecto: string } | null;
+    tareas: { nombre: string; estado: string; responsable: string; fechaLimite: string | null; realizadaPor: string; realizadaEn: string | null }[];
+    alta: { por: string; en: string | null } | null;
+  };
+  capacitacion: { curso: string; codigo: string; tipo: string; estado: string; calificacion: number | null; aprobado: boolean | null; completadoEn: string | null; preguntas: number }[];
+  historial: { evento?: string; texto: string; usuario?: string; fecha?: string }[];
+}
+export function fetchExpedienteCompleto(codigo: string) {
+  return get<ExpedienteCompleto>(`/colaboradores/${codigo}/expediente-completo`);
 }
 
 /** Baja: activo=false conservando historial (reversible con reactivarColaborador). */
@@ -3689,6 +3726,8 @@ export interface EntrevistaOperativa {
   ligaCapacitador: string;
   confirmada: boolean;
   confirmadaEn: string | null;
+  /** «candidato» (respondió «Sí» en Telegram) o el nombre de quien confirmó desde RH. */
+  confirmadaPor?: string;
   asistencia: "" | "asistio" | "no_asistio";
   resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
   resultadoEtiqueta: string;
@@ -3722,6 +3761,8 @@ export interface PanelOperativo {
   };
   /** v3: lo que falta para «Avanzar a Contratación» (entrevista Apta + evaluaciones con resultado y revisadas). */
   requisitosContratacion: string[];
+  /** Ligas directas al proceso en Telegram (abren la cita / documentos / vehículo sin pedir datos ni vacante). */
+  ligasTelegram?: { proceso?: string; cita?: string; docs?: string; vehiculo?: string };
   evaluacionesPendientes: number;
   /** Pestaña «Resumen» del flujo operativo (Zeze punto 7). */
   resumen: {

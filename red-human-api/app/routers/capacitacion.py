@@ -286,7 +286,7 @@ def publicar(codigo: str, db: Session = Depends(get_db), u: Usuario = Depends(us
     """«Finalizar curso» (2026-09-19: Crear → Revisar → Finalizar → Asignar). El estado interno sigue siendo
     «Publicado» por compatibilidad; la UI lo muestra como Finalizado."""
     c = _por_codigo(db, codigo, cuenta.id)
-    if not c.modulos or not c.evaluacion:
+    if not c.modulos or not c.preguntas_evaluacion:
         raise HTTPException(409, "El curso necesita módulos y evaluación antes de finalizarse.")
     c.estado = "Publicado"
     registrar(db, u.nombre, "curso_publicado", "curso", c.codigo, {})
@@ -691,7 +691,7 @@ def _datos_pdf_curso(curso: Curso, a: Optional[AsignacionCurso] = None) -> dict:
              "puntos_clave": list(m.puntos_clave or [])}
             for m in sorted(curso.modulos or [], key=lambda x: x.orden)
         ],
-        "evaluacion": [{"pregunta": q.get("pregunta"), "opciones": q.get("opciones") or []} for q in (curso.evaluacion or [])],
+        "evaluacion": [{"pregunta": q.get("pregunta"), "opciones": q.get("opciones") or []} for q in curso.preguntas_evaluacion],
     }
     if a is not None:
         d["persona"] = a.nombre_persona
@@ -760,7 +760,9 @@ def responder(token: str, datos: ResponderIn, db: Session = Depends(get_db)):
     curso = a.curso
     if a.modulo_actual < len(curso.modulos):
         raise HTTPException(409, "Termina todos los módulos antes de la evaluación.")
-    preguntas = curso.evaluacion or []
+    preguntas = curso.preguntas_evaluacion
+    if not preguntas:  # 2026-10-01: sin evaluación válida no hay nada que responder ni se marca terminado
+        raise HTTPException(409, "Este curso todavía no tiene una evaluación disponible. Avisa a quien te lo asignó.")
     respuestas = list((a.resultado_evaluacion or {}).get("respuestas") or [])
     if datos.indice != len(respuestas) or datos.indice >= len(preguntas):
         raise HTTPException(409, f"Te toca la pregunta {len(respuestas) + 1} de {len(preguntas)}.")
