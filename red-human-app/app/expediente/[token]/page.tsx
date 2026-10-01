@@ -29,7 +29,7 @@ type Fase = "cargando" | "no_disponible" | "lista";
 
 const ESTADO_INFO: Record<DocumentoExpedientePublico["estado"], { label: string; tone: "good" | "warn" | "bad" | "neutral"; icon: typeof Clock }> = {
   recibido: { label: "Recibido", tone: "good", icon: CheckCircle2 },
-  revision: { label: "En revisión", tone: "warn", icon: Clock },
+  revision: { label: "Pendiente de revisión", tone: "warn", icon: Clock },
   rechazado: { label: "Requiere corrección — vuelve a subirlo", tone: "bad", icon: FileWarning },
   pendiente: { label: "Pendiente", tone: "neutral", icon: Clock },
 };
@@ -42,6 +42,8 @@ export default function ExpedientePublico() {
   const [info, setInfo] = useState<ExpedientePublico | null>(null);
   const [subiendo, setSubiendo] = useState<string | null>(null);
   const [error, setError] = useState("");
+  // validación básica (2026-10-01): el motivo del rechazo / archivo ilegible se muestra junto a SU requisito
+  const [errores, setErrores] = useState<Record<string, string>>({});
   // 2026-09-29: documentos por firmar (Dropbox Sign) — se firman AQUÍ, en un modal incrustado, sin salir de la página
   const [firmas, setFirmas] = useState<Awaited<ReturnType<typeof fetchFirmasPublicas>>>(null);
   const [firmando, setFirmando] = useState<number | null>(null);
@@ -87,10 +89,11 @@ export default function ExpedientePublico() {
     if (!archivos[0]) return;
     setSubiendo(tipo);
     setError("");
+    setErrores((e) => ({ ...e, [tipo]: "" }));
     const r = await subirDocumentoPublico(token, tipo, archivos[0]);
     setSubiendo(null);
     if (!r.ok) {
-      setError(r.error);
+      setErrores((e) => ({ ...e, [tipo]: r.error }));
       return;
     }
     cargar(); // re-sincroniza la lista completa desde el servidor en vez de mezclar formas de respuesta distintas
@@ -203,12 +206,16 @@ export default function ExpedientePublico() {
                       {d.estado === "rechazado" && d.motivo && (
                         <p className="mt-2 text-[13px] text-bad">Qué corregir: {d.motivo}</p>
                       )}
+                      {errores[d.tipo] && (
+                        <p role="alert" className="mt-2 rounded-xl border border-bad/25 bg-bad-soft px-3 py-2 text-[13px] text-bad">{errores[d.tipo]}</p>
+                      )}
                       <div className={cn("mt-3", d.estado === "recibido" && "opacity-70")}>
                         <Dropzone
                           compacto
                           cargando={subiendo === d.tipo}
+                          textoCargando="Revisando archivo..."
                           onArchivos={(archivos) => subir(d.tipo, archivos)}
-                          titulo={d.estado === "recibido" ? "Subir otra vez / reemplazar" : "Subir foto o PDF"}
+                          titulo={errores[d.tipo] ? "Reemplazar: carga el archivo solicitado" : d.estado === "recibido" ? "Subir otra vez / reemplazar" : "Subir foto o PDF"}
                         />
                       </div>
                     </Card>

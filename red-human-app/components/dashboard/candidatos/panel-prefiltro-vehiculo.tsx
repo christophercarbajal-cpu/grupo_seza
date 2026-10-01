@@ -31,7 +31,7 @@ import {
 
 const TONO_RESULTADO = { cumple: "good", revision: "warn", no_cumple: "bad", pendiente: "neutral" } as const;
 const TONO_VEHICULO = { sin_liga: "neutral", pendiente: "neutral", por_revisar: "warn", correccion: "warn", aprobado: "good", excepcion: "human" } as const;
-const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Revisado: "good", Recibido: "warn", "Requiere corrección": "bad", Pendiente: "neutral" };
+const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Revisado: "good", Recibido: "warn", "Requiere corrección": "bad", Pendiente: "neutral", "Pendiente de revisión": "warn" };
 const TONO_ESTADO_PREFILTRO: Record<string, "neutral" | "warn" | "brand"> = { "Sin iniciar": "neutral", "En curso": "warn", Completado: "brand" };
 
 type Modal = null | "aprobar_prefiltro" | "correccion" | "excepcion";
@@ -236,7 +236,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                 <figcaption className="flex items-center justify-between gap-1 px-2.5 py-1.5 text-[12px]">
                   <span>
                     <span className="font-medium text-ink">{f.nombre}</span>
-                    <span className="block text-ink-3">{f.cargada ? "Recibida" : "Pendiente"}</span>
+                    <span className={cn("block", f.pendienteRevision ? "text-warn" : "text-ink-3")}>{f.pendienteRevision ? "Pendiente de revisión" : f.cargada ? "Recibida" : "Pendiente"}</span>
                   </span>
                   {puedeDecidir && (
                     <SubirArchivo soloImagen reemplazar={f.cargada} ocupado={ocupado === `foto-${f.lado}`} titulo={`Subir foto: ${f.nombre}`}
@@ -383,7 +383,7 @@ function SubirArchivo({ onArchivo, ocupado, titulo, soloImagen = false, reemplaz
         onChange={(e) => { const a = e.target.files?.[0]; if (a) onArchivo(a); e.target.value = ""; }} />
       <button type="button" title={titulo} disabled={ocupado} onClick={() => ref.current?.click()}
         className="inline-flex h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">
-        <Upload className="h-3.5 w-3.5" /> {ocupado ? "…" : reemplazar ? "Reemplazar" : "Subir"}
+        <Upload className="h-3.5 w-3.5" /> {ocupado ? "Revisando archivo..." : reemplazar ? "Reemplazar" : "Subir"}
       </button>
     </>
   );

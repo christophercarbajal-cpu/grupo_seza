@@ -1890,6 +1890,51 @@ def validar_documento(
     return resp.output_parsed, True
 
 
+class ClasificacionArchivo(BaseModel):
+    """Validación BÁSICA (2026-10-01): solo el tipo de archivo — nada de vigencia, nombre, autenticidad ni estado físico."""
+    resultado: str = Field(description="«coincide» si el archivo ES claramente lo solicitado; «no_coincide» si se ve con claridad que es otra cosa; «ilegible» si está tan borroso, oscuro, cortado o pequeño que no se puede saber qué es.")
+    tipo_detectado: str = Field(description="Qué es el archivo en pocas palabras (p. ej. «credencial INE», «foto de un auto», «captura de pantalla», «recibo de luz»).")
+    observaciones: str = Field(default="", description="Una frase breve para RH, sin transcribir datos personales.")
+
+
+def clasificar_tipo_archivo(archivo_b64: str, extension: str, requisito: str, timeout: float = 30.0) -> ClasificacionArchivo:
+    """Identifica si el archivo corresponde al requisito. Lanza si el servicio falla o tarda más de `timeout` segundos
+    (quien llama lo deja «Pendiente de revisión»)."""
+    client = _client()
+    if client is None:
+        raise RuntimeError("OPENAI_API_KEY sin configurar")
+    client = client.with_options(timeout=timeout, max_retries=0)
+    ext = extension.lower().lstrip(".")
+    bloques = []
+    if ext == "pdf":
+        try:
+            import base64
+            import io
+
+            from pypdf import PdfReader
+
+            texto = "\n".join((pg.extract_text() or "") for pg in PdfReader(io.BytesIO(base64.b64decode(archivo_b64))).pages)[:6000]
+        except Exception:  # noqa: BLE001
+            texto = ""
+        bloques.append({"type": "input_text", "text": f"Texto del PDF:\n{texto}"} if texto.strip() else _bloque_archivo(archivo_b64, extension, "archivo"))
+    else:
+        bloques.append(_bloque_archivo(archivo_b64, extension, "archivo"))
+    bloques.append({"type": "input_text", "text": f"Requisito solicitado: {requisito}. ¿El archivo corresponde a esto?"})
+    resp = client.responses.parse(
+        model=MODEL,
+        instructions=(
+            "Clasificas archivos que un candidato sube a su expediente en México. Tu ÚNICO trabajo es decir si el archivo es del "
+            "TIPO solicitado. NO evalúes vigencia, nombres, datos, autenticidad, calidad del documento ni el estado del vehículo. "
+            "«coincide» = se reconoce claramente lo solicitado (para fotos del vehículo: se ve un automóvil). «no_coincide» = se "
+            "reconoce con claridad que es otra cosa (otro documento, una persona, una captura, un paisaje…). «ilegible» = no se "
+            "puede saber qué es (muy borroso, oscuro, cortado o diminuto). No transcribas datos personales."
+        ),
+        input=[{"role": "user", "content": bloques}],
+        text_format=ClasificacionArchivo,
+    )
+    return resp.output_parsed
+
+
 # ============================================================
 # Desempeño (andamiaje 2026-09-22) — «Crear evaluación con IA»
 # ============================================================

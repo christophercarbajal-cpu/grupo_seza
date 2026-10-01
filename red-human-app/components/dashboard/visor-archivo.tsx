@@ -163,7 +163,7 @@ export function AccionesArchivo({
           <input ref={ref} type="file" className="hidden" accept={accept}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) onSubir(f); e.target.value = ""; }} />
           <Button size="sm" variant="ghost" disabled={subiendo} onClick={() => ref.current?.click()}>
-            <Upload className="h-4 w-4" /> {subiendo ? "Subiendo…" : textoSubir ?? (archivo ? "Reemplazar" : "Subir")}
+            <Upload className="h-4 w-4" /> {subiendo ? "Revisando archivo..." : textoSubir ?? (archivo ? "Reemplazar" : "Subir")}
           </Button>
         </>
       )}

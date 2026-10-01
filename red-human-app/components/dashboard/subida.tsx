@@ -19,6 +19,7 @@ export function Dropzone({
   onArchivos,
   multiple = false,
   cargando = false,
+  textoCargando = "Procesando con IA…",
   titulo = "Arrastra el archivo o haz clic para elegirlo",
   ayuda = FORMATOS_TEXTO,
   compacto = false,
@@ -26,6 +27,8 @@ export function Dropzone({
   onArchivos: (archivos: File[]) => void;
   multiple?: boolean;
   cargando?: boolean;
+  /** Texto mientras carga (validación básica de documentos: «Revisando archivo...»). */
+  textoCargando?: string;
   titulo?: string;
   ayuda?: string;
   compacto?: boolean;
@@ -87,7 +90,7 @@ export function Dropzone({
       )}
       <div>
         <p className={cn("font-semibold", compacto ? "text-[13px]" : "text-sm")}>
-          {cargando ? "Procesando con IA…" : titulo}
+          {cargando ? textoCargando : titulo}
         </p>
         <p className="text-xs text-ink-3">{ayuda}</p>
       </div>

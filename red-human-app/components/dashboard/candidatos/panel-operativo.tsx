@@ -55,7 +55,7 @@ import {
   type Resultado,
 } from "@/lib/api";
 
-const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Revisado: "good", Recibido: "warn", "Requiere corrección": "bad", Pendiente: "neutral" };
+const TONO_DOC: Record<string, "good" | "warn" | "bad" | "neutral"> = { Revisado: "good", Recibido: "warn", "Requiere corrección": "bad", Pendiente: "neutral", "Pendiente de revisión": "warn" };
 const TONO_REFERENCIA: Record<string, "good" | "warn" | "bad" | "neutral"> = {
   Favorable: "good",
   "Con observaciones": "warn",

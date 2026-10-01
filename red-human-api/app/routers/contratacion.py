@@ -371,25 +371,34 @@ def _canal_recepcion(subido_por: str) -> str:
 def _registrar_documento(db: Session, e: Expediente, doc: Documento, validado, subido_por: str) -> dict:
     """Registra el archivo recibido (validación IA/Modo Prueba) y su trazabilidad (B3: `recibido_en`, `recibido_canal`).
     B5: NUNCA toca `postulacion.etapa` — el candidato sigue en Contratación/Onboarding hasta que RH lo mueva."""
-    titular = e.candidato.nombre if e.candidato else ""
+    from ..services import validacion_archivos as va
+
     if modo_prueba_activo(db):
         # 2026-09-18 (Modo Prueba TOTAL): se salta el OCR/IA y cualquier PDF o imagen queda válido de inmediato.
-        v = ia.DocumentoValidado(
-            tipo_detectado=doc.tipo, es_documento_oficial=True, coincide_tipo=True, legible=True, completo=True, vigente=None,
-            nombre_detectado=None, coincide_titular=None, motivo_rechazo=None,
-            observaciones="Modo Prueba: validación por IA omitida; documento aceptado automáticamente.",
-        )
-        con_ia = True
+        resultado, obs, detectado, con_ia = va.COINCIDE, "Modo Prueba: validación por IA omitida; documento aceptado automáticamente.", doc.tipo, True
     else:
-        v, con_ia = ia.validar_documento(validado.b64, validado.extension, doc.tipo, titular)
+        # 2026-10-01 — validación BÁSICA: solo el TIPO de archivo (sin vigencia, nombre ni autenticidad). No coincide o
+        # ilegible → NO se guarda (422 con el mensaje para el candidato); falla del servicio → «Pendiente de revisión».
+        resultado, obs, detectado = va.clasificar(validado.b64, validado.extension, doc.tipo)
+        con_ia = resultado != va.SIN_IA
+        if resultado in (va.NO_COINCIDE, va.ILEGIBLE):
+            registrar(db, "agente-ia", "documento_no_valido", "documento", f"{e.id}:{doc.tipo}",
+                      {"resultado": resultado, "tipo_detectado": detectado, "subido_por": subido_por})
+            db.commit()
+            va.exigir(resultado, doc.tipo)
 
     doc.archivo = fs.guardar(validado, f"expedientes/{e.id}", doc.tipo.replace(" ", "_"))
     doc.nombre_archivo = validado.nombre
     doc.mime = validado.mime
     doc.tamano = validado.tamano
     doc.subido_en = datetime.now(timezone.utc)
-    doc.validacion = v.model_dump()
-    doc.estado, doc.notas_ia = _resolver_estado(v, con_ia)
+    doc.validacion = {"resultado": resultado, "tipo_detectado": detectado, "observaciones": obs, "fallo_sistema": resultado == va.PENDIENTE}
+    if resultado == va.COINCIDE:
+        doc.estado, doc.notas_ia = "recibido", obs or "Tipo de archivo verificado."
+    elif resultado == va.PENDIENTE:  # el servicio falló o tardó: se guarda, pero el requisito NO queda completo
+        doc.estado, doc.notas_ia = "revision", f"{va.ETIQUETA_PENDIENTE}: {obs}"
+    else:  # sin IA configurada (modo demo): revisión humana, como siempre
+        doc.estado, doc.notas_ia = "revision", obs
     # vuelve a quedar pendiente de revisión humana («Por revisar»); en Modo Prueba queda «Aprobado» (Onboarding v2)
     # SALVO en el flujo operativo (demo SEZA, 2026-09-30): ahí Modo Prueba solo omite la IA y el documento queda
     # «Recibido» para que RH opere a mano «Marcar revisado» / «Pedir corrección».
@@ -407,12 +416,12 @@ def _registrar_documento(db: Session, e: Expediente, doc: Documento, validado, s
     _sincronizar_estado(e)
     registrar(
         db, "agente-ia", "documento_validado", "documento", f"{e.id}:{doc.tipo}",
-        {"ia": con_ia, "estado": doc.estado, "tipo_detectado": v.tipo_detectado, "subido_por": subido_por},
+        {"ia": con_ia, "estado": doc.estado, "resultado": resultado, "tipo_detectado": detectado, "subido_por": subido_por},
     )
     db.commit()
     return {
         "ia": con_ia,
-        "documento": {"tipo": doc.tipo, "estado": doc.estado, "notas": doc.notas_ia},
+        "documento": {"tipo": doc.tipo, "estado": doc.estado, "notas": doc.notas_ia, "validacion": resultado},
         "expediente": expediente_dict(e),
     }
 

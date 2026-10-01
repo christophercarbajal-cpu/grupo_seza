@@ -65,6 +65,7 @@ PARENTESCOS = ["Familiar", "Amistad", "Exjefe o excompañero", "Vecino(a)", "Otr
 
 # Estados del documento como los nombra el documento de requerimientos (se LEEN de los valores de siempre).
 DOC_PENDIENTE, DOC_RECIBIDO, DOC_REVISADO, DOC_CORRECCION = "Pendiente", "Recibido", "Revisado", "Requiere corrección"
+DOC_PENDIENTE_REVISION = "Pendiente de revisión"  # el archivo se guardó pero la validación automática falló
 
 # Resultado de la llamada a una referencia: depende de si se logró contactar.
 RESULTADOS_REFERENCIA = {
@@ -85,6 +86,8 @@ def estado_documento(d: Documento) -> str:
         return DOC_CORRECCION
     if d.aprobado:
         return DOC_REVISADO
+    if d.estado == "revision" and (d.validacion or {}).get("fallo_sistema"):
+        return DOC_PENDIENTE_REVISION  # 2026-10-01: la validación automática falló; RH lo revisa
     if d.archivo or d.estado == "recibido":
         return DOC_RECIBIDO
     return DOC_PENDIENTE

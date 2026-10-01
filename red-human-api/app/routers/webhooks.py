@@ -452,8 +452,11 @@ async def _recibir_documento_whatsapp(db: Session, p: Postulacion, msg: dict, te
             subido_por=f"whatsapp:{p.candidato.codigo if p.candidato else ''}",
         )
     except HTTPException as ex:
+        from ..services.validacion_archivos import ArchivoNoValido
+
         registrar(db, "sistema", "documento_whatsapp_rechazado", "documento", f"{e.id}:{doc.tipo}", {"detalle": str(ex.detail)})
-        aviso = f"No pude registrar tu archivo como «{doc.tipo}»: {ex.detail} Envíalo en PDF o foto (JPG/PNG) por favor. 🙏"
+        aviso = (str(ex.detail) if isinstance(ex, ArchivoNoValido)  # validación básica: no corresponde / ilegible
+                 else f"No pude registrar tu archivo como «{doc.tipo}»: {ex.detail} Envíalo en PDF o foto (JPG/PNG) por favor. 🙏")
         envio = await enviar_mensaje(telefono, aviso)
         guardar_mensaje(db, p, "assistant", aviso, "whatsapp", envio)
         db.commit()
@@ -463,6 +466,8 @@ async def _recibir_documento_whatsapp(db: Session, p: Postulacion, msg: dict, te
     estado = res["documento"]["estado"]
     if estado == "rechazado":
         respuesta = f"Recibí tu {doc.tipo}, pero no pasó la validación: {res['documento']['notas']} ¿Me lo mandas de nuevo? 🙏"
+    elif res["documento"].get("validacion") == "pendiente_revision":
+        respuesta = f"Recibí tu {doc.tipo}. No pude revisarlo en automático; RH lo revisa y te avisa por aquí."
     elif pendientes:
         respuesta = f"¡Listo! Recibí tu {doc.tipo} ✅ Me falta: {', '.join(pendientes)}. Mándamelos por aquí cuando puedas."
     else:

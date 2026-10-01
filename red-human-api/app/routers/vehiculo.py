@@ -63,6 +63,22 @@ def _publica_dict(r: RevisionVehiculo) -> dict:
     }
 
 
+def _validar_foto(db: Session, p, val, lado: str, quien: str) -> str:
+    """Validación básica (2026-10-01): la foto debe ser de un automóvil. No es → 422 y NO se guarda; ilegible → 422
+    pidiendo una más clara; el servicio falla → se guarda como «Pendiente de revisión». Modo Prueba omite la IA."""
+    from ..services import validacion_archivos as va
+    from ..services.configuracion import modo_prueba_activo
+
+    if modo_prueba_activo(db):
+        return va.COINCIDE
+    resultado, _obs, detectado = va.clasificar(val.b64, val.extension, va.FOTO_VEHICULO)
+    if resultado in (va.NO_COINCIDE, va.ILEGIBLE):
+        registrar(db, quien, "vehiculo_foto_no_valida", "postulacion", p.codigo, {"lado": lado, "resultado": resultado, "tipo_detectado": detectado})
+        db.commit()
+        va.exigir(resultado, f"la foto del vehículo ({LADOS_VEHICULO[lado].lower()})")
+    return resultado
+
+
 @router.get("/vehiculo/publica/{token}")
 def ver_publica(token: str, db: Session = Depends(get_db)):
     return _publica_dict(_por_token(db, token))
@@ -81,13 +97,14 @@ async def subir_foto(token: str, lado: str = Form(...), archivo: UploadFile = Fi
     if not val.es_imagen:
         raise HTTPException(415, "Sube una foto (JPG, PNG o WEBP), no un PDF.")
     p = r.postulacion
+    validacion = _validar_foto(db, p, val, lado, "candidato")  # 2026-10-01: ¿es la foto de un automóvil?
     marca = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     ruta = fs.guardar(val, f"vehiculo/{p.codigo}", f"{lado}-{marca}")
     a = Archivo(candidato_id=p.candidato_id, tipo=f"vehiculo_{lado}", nombre=val.nombre, ruta=ruta, mime=val.mime,
                 tamano=val.tamano, subido_por="candidato (liga de vehículo)")
     db.add(a)
     db.flush()
-    vehiculo_srv.registrar_foto(db, r, lado, a.id)
+    vehiculo_srv.registrar_foto(db, r, lado, a.id, validacion)
     db.commit()
     return _publica_dict(r)
 
@@ -195,13 +212,14 @@ async def subir_foto_rh(codigo: str, lado: str = Form(...), archivo: UploadFile 
     val = await fs.validar(archivo, "foto")
     if not val.es_imagen:
         raise HTTPException(415, "Sube una foto (JPG, PNG o WEBP), no un PDF.")
+    validacion = _validar_foto(db, p, val, lado, u.nombre)
     marca = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     ruta = fs.guardar(val, f"vehiculo/{p.codigo}", f"{lado}-{marca}")
     a = Archivo(candidato_id=p.candidato_id, tipo=f"vehiculo_{lado}", nombre=val.nombre, ruta=ruta, mime=val.mime,
                 tamano=val.tamano, subido_por=f"{u.nombre} (RH, ficha)")
     db.add(a)
     db.flush()
-    vehiculo_srv.registrar_foto(db, r, lado, a.id)
+    vehiculo_srv.registrar_foto(db, r, lado, a.id, validacion)
     registrar(db, u.nombre, "vehiculo_foto_rh", "postulacion", p.codigo, {"lado": lado})
     db.commit()
     return _salida(p)

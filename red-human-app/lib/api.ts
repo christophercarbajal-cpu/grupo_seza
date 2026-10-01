@@ -3573,7 +3573,7 @@ export interface RevisionVehiculo {
   decididoPor?: string;
   decididoEn?: string | null;
   ladosCorregir?: string[];
-  fotos: { lado: string; nombre: string; cargada: boolean; subidaEn: string; url: string }[];
+  fotos: { lado: string; nombre: string; cargada: boolean; subidaEn: string; url: string; pendienteRevision?: boolean }[];
   /** v2: licencia, tarjeta de circulación y póliza — viven en el expediente de la postulación. */
   documentos: DocumentoVehiculo[];
   expedienteId?: number | null;

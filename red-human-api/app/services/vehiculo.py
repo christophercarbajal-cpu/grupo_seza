@@ -72,7 +72,13 @@ def documento(p: Postulacion, clave: str) -> Optional[Documento]:
 
 
 def _doc_cargado(d: Optional[Documento]) -> bool:
-    return bool(d and d.archivo and d.estado != "rechazado")
+    """Cargado = con archivo, no rechazado y sin fallo de la validación automática (2026-10-01: «Pendiente de revisión»
+    no completa el requisito hasta que RH lo revise)."""
+    return bool(d and d.archivo and d.estado != "rechazado" and (d.aprobado or not (d.validacion or {}).get("fallo_sistema")))
+
+
+def foto_pendiente(dato: Optional[dict]) -> bool:
+    return bool(dato and dato.get("validacion") == "pendiente_revision")
 
 
 def lados_faltantes(r: RevisionVehiculo) -> list:
@@ -93,7 +99,9 @@ def documentos_faltantes(r: RevisionVehiculo) -> list:
 
 
 def completo(r: RevisionVehiculo) -> bool:
-    return all(l in (r.fotos or {}) for l in LADOS_VEHICULO) and not lados_faltantes_corr(r) and not documentos_faltantes(r)
+    fotos = r.fotos or {}
+    return (all(l in fotos and not foto_pendiente(fotos[l]) for l in LADOS_VEHICULO) and not lados_faltantes_corr(r)
+            and not documentos_faltantes(r))
 
 
 def lados_faltantes_corr(r: RevisionVehiculo) -> list:
@@ -141,9 +149,11 @@ async def enviar_liga(db: Session, p: Postulacion, actor: str) -> dict:
                        entregas.fila("candidato", "correo", correo, liga(r))]}
 
 
-def registrar_foto(db: Session, r: RevisionVehiculo, lado: str, archivo_id: int) -> None:
+def registrar_foto(db: Session, r: RevisionVehiculo, lado: str, archivo_id: int, validacion: str = "") -> None:
+    """`validacion` (2026-10-01): «coincide», «sin_ia» o «pendiente_revision» (el servicio falló: la foto se guarda pero
+    no completa el requisito hasta que RH la revise)."""
     fotos = dict(r.fotos or {})
-    fotos[lado] = {"archivo_id": archivo_id, "subida_en": datetime.now(timezone.utc).isoformat()}
+    fotos[lado] = {"archivo_id": archivo_id, "subida_en": datetime.now(timezone.utc).isoformat(), "validacion": validacion}
     r.fotos = fotos
     if r.estado == "correccion":
         r.lados_corregir = [l for l in (r.lados_corregir or []) if l != lado]
@@ -170,6 +180,7 @@ def decidir(db: Session, p: Postulacion, accion: str, usuario: str, comentario: 
     ahora = datetime.now(timezone.utc)
     if accion == "aprobar":
         r.estado, texto = "aprobado", "Vehículo aprobado (fotos, licencia, tarjeta y póliza revisadas)"
+        r.fotos = {k: {**v, "validacion": "revisada_rh"} for k, v in (r.fotos or {}).items()}  # RH revisó también las pendientes
         for c in DOCUMENTOS_VEHICULO:  # RH revisó los 3 documentos en el mismo panel
             d = documento(p, c)
             if d and d.archivo and not d.aprobado:
@@ -227,7 +238,8 @@ def revision_dict(p: Postulacion, url_foto) -> Optional[dict]:
         "ladosCorregir": r.lados_corregir or [],
         "fotos": [
             {"lado": l, "nombre": n, "cargada": l in (r.fotos or {}), "subidaEn": (r.fotos or {}).get(l, {}).get("subida_en", ""),
-             "url": url_foto(l) if l in (r.fotos or {}) else ""}
+             "url": url_foto(l) if l in (r.fotos or {}) else "",
+             "pendienteRevision": foto_pendiente((r.fotos or {}).get(l))}  # 2026-10-01: la validación automática falló
             for l, n in LADOS_VEHICULO.items()
         ],
         "documentos": documentos_dict(p, r),

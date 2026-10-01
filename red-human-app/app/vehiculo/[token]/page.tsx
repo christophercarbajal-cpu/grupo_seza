@@ -30,6 +30,7 @@ export default function FotosVehiculo() {
   const [info, setInfo] = useState<VehiculoPublico | null>(null);
   const [subiendo, setSubiendo] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [errores, setErrores] = useState<Record<string, string>>({});  // por foto/documento (validación básica)
   const [version, setVersion] = useState(0); // refresca las miniaturas tras subir
 
   const cargar = useCallback(() => {
@@ -47,9 +48,10 @@ export default function FotosVehiculo() {
     if (!archivo) return;
     setSubiendo(lado);
     setError("");
+    setErrores((e) => ({ ...e, [lado]: "" }));
     const r = await subirFotoVehiculo(token, lado, archivo);
     setSubiendo(null);
-    if (!r.ok) return setError(r.error);
+    if (!r.ok) return setErrores((e) => ({ ...e, [lado]: r.error }));
     setInfo(r.data);
     setVersion((v) => v + 1);
   }
@@ -58,9 +60,10 @@ export default function FotosVehiculo() {
     if (!archivo) return;
     setSubiendo(clave);
     setError("");
+    setErrores((e) => ({ ...e, [clave]: "" }));
     const r = await subirDocumentoVehiculo(token, clave, archivo);
     setSubiendo(null);
-    if (!r.ok) return setError(r.error);
+    if (!r.ok) return setErrores((e) => ({ ...e, [clave]: r.error }));
     setInfo(r.data);
   }
 
@@ -131,6 +134,7 @@ export default function FotosVehiculo() {
                   cargada={l.cargada}
                   habilitado={info.abierta && (info.estado === "pendiente" || l.pendiente)}
                   subiendo={subiendo === l.clave}
+                  error={errores[l.clave] ?? ""}
                   miniatura={l.cargada ? urlFotoVehiculoPublica(token, l.clave, String(version)) : ""}
                   onArchivo={(f) => void subir(l.clave, f)}
                 />
@@ -149,6 +153,7 @@ export default function FotosVehiculo() {
                       cargado={d.cargado}
                       habilitado={info.abierta && (info.estado === "pendiente" ? !d.cargado || d.pendiente : d.pendiente)}
                       subiendo={subiendo === d.clave}
+                      error={errores[d.clave] ?? ""}
                       onArchivo={(f) => void subirDoc(d.clave, f)}
                     />
                   ))}
@@ -175,12 +180,14 @@ function LadoFoto({
   subiendo,
   miniatura,
   onArchivo,
+  error = "",
 }: {
   nombre: string;
   guia: string;
   cargada: boolean;
   habilitado: boolean;
   subiendo: boolean;
+  error?: string;
   miniatura: string;
   onArchivo: (f?: File) => void;
 }) {
@@ -226,11 +233,12 @@ function LadoFoto({
               disabled={subiendo}
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-semibold text-brand-ink transition hover:brightness-110 disabled:opacity-60 totem:min-h-16 totem:text-xl"
             >
-              {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : cargada ? <RefreshCw className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
-              {subiendo ? "Subiendo…" : cargada ? "Volver a tomar" : "Tomar foto"}
+              {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : cargada || error ? <RefreshCw className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+              {subiendo ? "Revisando archivo..." : error ? "Tomar otra foto" : cargada ? "Volver a tomar" : "Tomar foto"}
             </button>
           </>
         )}
+        {error && <p role="alert" className="rounded-xl border border-bad/25 bg-bad-soft px-3 py-2 text-[12px] text-bad">{error}</p>}
       </div>
     </Card>
   );
@@ -244,6 +252,7 @@ function DocumentoVehiculo({
   habilitado,
   subiendo,
   onArchivo,
+  error = "",
 }: {
   nombre: string;
   estado: string;
@@ -251,6 +260,7 @@ function DocumentoVehiculo({
   cargado: boolean;
   habilitado: boolean;
   subiendo: boolean;
+  error?: string;
   onArchivo: (f?: File) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
@@ -282,11 +292,12 @@ function DocumentoVehiculo({
             disabled={subiendo}
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand px-4 text-sm font-semibold text-brand-ink transition hover:brightness-110 disabled:opacity-60 totem:min-h-16 totem:text-xl"
           >
-            {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : cargado ? <RefreshCw className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
-            {subiendo ? "Subiendo…" : cargado ? "Volver a subir" : "Subir foto o PDF"}
+            {subiendo ? <Loader2 className="h-4 w-4 animate-spin" /> : cargado || error ? <RefreshCw className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
+            {subiendo ? "Revisando archivo..." : error ? "Reemplazar archivo" : cargado ? "Volver a subir" : "Subir foto o PDF"}
           </button>
         </>
       )}
+      {error && <p role="alert" className="rounded-xl border border-bad/25 bg-bad-soft px-3 py-2 text-[12px] text-bad">{error}</p>}
     </Card>
   );
 }
