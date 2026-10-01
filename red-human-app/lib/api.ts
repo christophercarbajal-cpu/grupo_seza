@@ -3259,8 +3259,11 @@ export function fetchTablero() {
 }
 
 /* -------------------- Evaluaciones y verificaciones (2026-09-28) -------------------- */
-export type TipoEvaluacion = "psicometrica" | "tecnica" | "referencias" | "medico" | "socioeconomico" | "otra";
+export type TipoEvaluacion = "entrevista_humana" | "psicometrica" | "tecnica" | "referencias" | "medico" | "socioeconomico" | "otra";
+/** 2026-10-01 (SEZA): «Entrevista humana» adicional del flujo operativo (cita + entrevistador + Apto / No apto). En el
+ *  flujo de RH la entrevista humana tiene su propio modal (`onEntrevistaHumana`) y este tipo no se ofrece. */
 export const TIPOS_EVALUACION: { valor: TipoEvaluacion; texto: string }[] = [
+  { valor: "entrevista_humana", texto: "Entrevista humana" },
   { valor: "psicometrica", texto: "Psicométrica" },
   { valor: "tecnica", texto: "Técnica o caso práctico" },
   { valor: "referencias", texto: "Referencias" },
@@ -3303,6 +3306,14 @@ export interface EvaluacionCandidato {
   /** Médico: false hasta que el candidato acepta el consentimiento expreso. */
   ligaEvaluadorHabilitada: boolean;
   envios: { liga: string; destinatario: string; canal: string; enviado: boolean; detalle: string; fecha: string }[];
+  /** «Capacitación en tienda» de la v1: historial sin liga ni captura (ya vive en la Entrevista). */
+  legado?: boolean;
+  /** Entrevista humana: Apto / No apto que registró el entrevistador (RH lo confirma al revisar). */
+  aptoEvaluador?: "apto" | "no_apto" | null;
+  aptoEvaluadorTexto?: string;
+  mimeInforme?: string;
+  /** Aviso (no falla) cuando el adjunto venía vacío o ilegible y solo se guardó el texto. */
+  avisoArchivo?: string;
 }
 
 export interface DatosEvaluador {
@@ -3357,14 +3368,16 @@ export function enviarEnlaceEvaluacion(codigo: string) {
 export interface EvaluacionEvaluadorPublica {
   candidato: string; empresa: string; puesto: string; evaluacion: string; tipo: TipoEvaluacion; tipoTexto: string;
   evaluador: string; cita: string | null; citaLugar: string; habilitada: boolean; motivo: string; yaRegistrado: boolean; cancelada: boolean;
+  codigo?: string; historica?: boolean; pideApto?: boolean; avisoArchivo?: string;
 }
 export function fetchEvaluacionEvaluador(token: string) {
   return get<EvaluacionEvaluadorPublica>(`/evaluaciones/publica/evaluador/${token}`);
 }
-export function registrarResultadoEvaluador(token: string, datos: { resumen: string; evaluador: string; archivo?: File | null }) {
+export function registrarResultadoEvaluador(token: string, datos: { resumen: string; evaluador: string; archivo?: File | null; apto?: string }) {
   const form = new FormData();
   form.append("resumen", datos.resumen);
   form.append("evaluador", datos.evaluador);
+  if (datos.apto) form.append("apto", datos.apto);
   if (datos.archivo) form.append("archivo", datos.archivo);
   return subir<EvaluacionEvaluadorPublica>(`/evaluaciones/publica/evaluador/${token}/resultado`, form);
 }
@@ -3374,9 +3387,10 @@ export function enviarEvaluacion(codigo: string) {
 export function avanzarEvaluacionIntegrada(codigo: string) {
   return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/integracion/avanzar`, {});
 }
-export function cargarResultadoEvaluacion(codigo: string, resumen: string, archivo?: File | null) {
+export function cargarResultadoEvaluacion(codigo: string, resumen: string, archivo?: File | null, apto = "") {
   const form = new FormData();
   form.append("resumen", resumen);
+  if (apto) form.append("apto", apto);
   if (archivo) form.append("archivo", archivo);
   return subir<EvaluacionCandidato>(`/evaluaciones/${codigo}/resultado`, form);
 }
@@ -3390,8 +3404,9 @@ export function cancelarEvaluacion(codigo: string, motivo: string) {
 export function enviarLigaConsentimientoMedico(codigo: string) {
   return post<{ liga: string; resultados: ResultadoNotificacion[] }>(`/evaluaciones/${codigo}/consentimiento/enviar`, {});
 }
-export function urlInformeEvaluacion(codigo: string) {
-  return urlArchivo(`/evaluaciones/${codigo}/informe`);
+/** «Ver informe» (visor interno, inline) o «Descargar» (`descargar=true`, attachment). */
+export function urlInformeEvaluacion(codigo: string, descargar = false) {
+  return urlArchivo(`/evaluaciones/${codigo}/informe${descargar ? "?descargar=true" : ""}`);
 }
 export function fetchConsentimientoPublico(token: string) {
   return get<{ candidato: string; empresa: string; puesto: string; evaluacion: string; texto: string; aceptado: boolean; aceptadoEn: string | null; cancelada: boolean }>(
@@ -3580,13 +3595,12 @@ export function urlFotoVehiculoPublica(token: string, lado: string, version = ""
   return `${API}/vehiculo/publica/${token}/foto/${lado}${version ? `?v=${version}` : ""}`;
 }
 
-/* ---------- Demo SEZA: flujo operativo v2 (Kanban de 6 columnas) ---------- */
+/* ---------- Demo SEZA: flujo operativo v3 (Kanban de 5 columnas; sin «Evaluación» desde 2026-10-01) ---------- */
 
 export const ETAPAS_OPERATIVO = [
   "Prefiltro",
   "Revisión de vehículo",
   "Entrevista",
-  "Evaluación",
   "Contratación",
   "Onboarding",
 ] as const;
@@ -3669,6 +3683,9 @@ export interface PanelOperativo {
     vehiculo: { estado: string; etiqueta: string; decididoPor: string; comentario: string };
     entrevista: { estado: string; resultado: string; resultadoEtiqueta: string; observaciones: string; entrevistador: string; registradoPor: string; via: string; realizadaEn: string | null };
   };
+  /** v3: lo que falta para «Avanzar a Contratación» (entrevista Apta + evaluaciones con resultado y revisadas). */
+  requisitosContratacion: string[];
+  evaluacionesPendientes: number;
   contratacion: {
     condiciones: {
       puesto: string; sueldo: string; tipoContratacion: string; fechaIngreso: string | null; ubicacion: string;
@@ -3744,6 +3761,10 @@ export function resultadoEntrevistaOperativa(
   datos: { asistio: boolean; resultado?: string; comentario?: string; fecha_realizada?: string; entrevistador?: string },
 ) {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/entrevista/resultado`, datos);
+}
+/** «Avanzar a Contratación» (v3): única salida de Entrevista, manual; el backend valida los requisitos. */
+export function avanzarAContratacionOperativa(codigo: string) {
+  return post<PanelOperativo>(`/candidatos/${codigo}/operativo/avanzar-contratacion`, {});
 }
 export function decidirContratoOperativo(codigo: string, cuando: "ahora" | "despues") {
   return post<PanelOperativo>(`/candidatos/${codigo}/operativo/contrato`, { cuando });

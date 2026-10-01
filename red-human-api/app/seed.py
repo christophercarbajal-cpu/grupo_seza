@@ -262,3 +262,25 @@ def rellenar_slugs_cuentas(db: Session) -> int:
     if faltantes:
         db.commit()
     return len(faltantes)
+
+
+def normalizar_etapas_operativo(db: Session) -> int:
+    """Kanban operativo v3 (2026-10-01): la columna «Evaluación» ya no existe. Las postulaciones de Cuentas operativas
+    que seguían ahí regresan a «Entrevista» (queda en su historial y en bitácora). Solo cambia la columna: sus
+    evaluaciones, la entrevista y sus resultados quedan intactos. Idempotente."""
+    from datetime import datetime, timezone
+
+    from .models import Postulacion, registrar
+
+    ids = [c.id for c in db.query(Cuenta).filter(Cuenta.flujo_candidatos == "operativo").all()]
+    if not ids:
+        return 0
+    ps = db.query(Postulacion).filter(Postulacion.cuenta_id.in_(ids), Postulacion.etapa == "Evaluación").all()
+    for p in ps:
+        p.etapa = "Entrevista"
+        p.historial = [*(p.historial or []), {"evento": "etapa", "texto": "Evaluación → Entrevista (Kanban operativo v3: se eliminó la columna Evaluación)",
+                                              "usuario": "sistema", "fecha": datetime.now(timezone.utc).isoformat()}]
+        registrar(db, "sistema", "etapa_operativa", "postulacion", p.codigo, {"de": "Evaluación", "a": "Entrevista", "motivo": "Kanban operativo v3"})
+    if ps:
+        db.commit()
+    return len(ps)

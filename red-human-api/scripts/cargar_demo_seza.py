@@ -14,8 +14,8 @@ Deja en la base (entorno aislado de la demo):
     Cada una trae su pieza de Facebook (`publicaciones["facebook"]`: copy + destacados de la imagen); la
     liga única la arma `services/difusion.liga` (`/aplicar/{slug}?origen=facebook`).
 
-Flujo operativo v2 (scripts/demo_seza_operativo.py): Kanban operativo de 6 columnas, «Inducción SEZA» duplicada
-de un curso existente y 25 candidatos ficticios repartidos en las 6 columnas (sin teléfono, correo @demo.invalid:
+Flujo operativo v2 (scripts/demo_seza_operativo.py): Kanban operativo de 5 columnas (v3), «Inducción SEZA» duplicada
+de un curso existente y 25 candidatos ficticios repartidos en las 5 columnas (sin teléfono, correo @demo.invalid:
 ningún mensaje sale).
 
 Seguridad: sin `--ejecutar` es SIMULACRO (hace todo dentro de una transacción y la deshace). Idempotente:
@@ -291,7 +291,7 @@ def main() -> None:
         plantilla = _plantilla(db, cuenta, admin)
         vacantes = [_vacante(db, cuenta, admin, clientes["SEZA"], plantilla, d) for d in VACANTES]
 
-        # Flujo operativo v2: Kanban de 6 columnas, Inducción SEZA y candidatos ficticios
+        # Flujo operativo v2: Kanban de 5 columnas, Inducción SEZA y candidatos ficticios
         cuenta.flujo_candidatos = "operativo"
         por_plaza = {d["plaza"]: v for d, v in zip(VACANTES, vacantes)}
         curso = operativo.induccion(db, cuenta, admin)

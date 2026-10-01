@@ -41,9 +41,11 @@ ETAPAS_CANDIDATO = ["Prefiltro", "Entrevista IA", "Evaluación", "Entrevista Hum
 # Demo Grupo SEZA: Kanban OPERATIVO (reclutamiento masivo de choferes). Lo usa la Cuenta con
 # `Cuenta.flujo_candidatos == "operativo"`; `Postulacion.etapa` guarda estos valores tal cual. Las
 # transiciones las hace services/flujo_operativo.py (nunca el agente conversacional ni el Zero-Touch).
-# v2 (2026-09-30): 6 columnas. «Entrevista» = capacitación en tienda (sobre EntrevistaHumana); los
-# documentos y las referencias viven en «Onboarding»; «Dar de alta» CIERRA la postulación (contratado).
-ETAPAS_OPERATIVO = ["Prefiltro", "Revisión de vehículo", "Entrevista", "Evaluación", "Contratación", "Onboarding"]
+# v2 (2026-09-30): «Entrevista» = capacitación en tienda (sobre EntrevistaHumana); los documentos y las
+# referencias viven en «Onboarding»; «Dar de alta» CIERRA la postulación (contratado).
+# v3 (2026-10-01): 5 columnas — se eliminó «Evaluación»: las evaluaciones (y la entrevista humana adicional) se
+# agregan DESDE la columna Entrevista y nunca mueven la tarjeta; solo «Avanzar a Contratación» la mueve.
+ETAPAS_OPERATIVO = ["Prefiltro", "Revisión de vehículo", "Entrevista", "Contratación", "Onboarding"]
 # Valores de la v1 (8 columnas) → columna v2. Lo usa scripts/migrar_flujo_operativo_v2.py; «Alta realizada»
 # además se cierra como `contratado`.
 ETAPAS_OPERATIVO_LEGADO = {
@@ -53,6 +55,9 @@ ETAPAS_OPERATIVO_LEGADO = {
     "Documentos y referencias": "Onboarding",
     "Listo para alta": "Onboarding",
     "Alta realizada": "Onboarding",
+    # v3 (2026-10-01): la columna «Evaluación» desaparece; sus tarjetas regresan a «Entrevista» con todo intacto
+    # (lo aplica `seed.normalizar_etapas_operativo` al arrancar y el script de migración v2).
+    "Evaluación": "Entrevista",
 }
 FLUJOS_CANDIDATOS = ("rh", "operativo")
 
@@ -2099,6 +2104,9 @@ class TareaOnboarding(Base):
 # NUNCA mueven la columna del pipeline. Sin conexiones a proveedores todavía: el modo «Integrada» se simula a mano
 # (Asignada → Enviada → Iniciada → Completada → Resultado recibido). HITL: la IA no revisa ni dictamina nada.
 TIPOS_EVALUACION = {
+    # 2026-10-01 (SEZA): entrevista humana ADICIONAL del flujo operativo (la principal es la capacitación en tienda):
+    # se agenda, se asigna entrevistador (liga del evaluador) y se registra Apto / No apto + observaciones.
+    "entrevista_humana": "Entrevista humana",
     "psicometrica": "Psicométrica",
     "tecnica": "Técnica o caso práctico",
     "referencias": "Referencias",
@@ -2121,6 +2129,7 @@ PASOS_INTEGRADA = ("asignada", "enviada", "iniciada", "completada", "resultado_r
 ESTADO_POR_PASO = {"asignada": "pendiente", "enviada": "en_proceso", "iniciada": "en_proceso", "completada": "en_proceso", "resultado_recibido": "resultado_recibido"}
 DICTAMENES_GENERALES = {"favorable": "Favorable", "con_observaciones": "Con observaciones", "desfavorable": "Desfavorable"}
 DICTAMENES_MEDICOS = {"apto": "Apto", "apto_con_restricciones": "Apto con restricciones", "no_apto": "No apto"}
+DICTAMENES_ENTREVISTA = {"apto": "Apto", "no_apto": "No apto"}  # tipo «entrevista_humana»
 # Texto del consentimiento EXPRESO y POR ESCRITO (medio electrónico) para el estudio médico — LFPDPPP: los datos de
 # salud son sensibles. Se guarda la copia EXACTA que la persona aceptó.
 TEXTO_CONSENTIMIENTO_MEDICO = (

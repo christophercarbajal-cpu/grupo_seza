@@ -1,12 +1,14 @@
 "use client";
 
-/* «Entrevista, contratación y alta» (demo Grupo SEZA) — flujo operativo v2 (2026-09-30), después del vehículo:
+/* «Entrevista, contratación y alta» (demo Grupo SEZA) — flujo operativo v3 (2026-10-01), después del vehículo:
 
    1. Entrevista = capacitación en tienda (sobre la entrevista humana): tienda, fecha/hora y capacitador (usuario de la
       Cuenta o externo); sin grupos ni cupos. La cita al candidato y el aviso al capacitador se envían APARTE: si no
       salen, la cita y la liga siguen ahí (Abrir / Copiar / Reenviar). El resultado (Apto / Requiere seguimiento /
       No apto) lo registra el capacitador en su liga o RH a mano; nunca mueve la tarjeta solo.
-   2. Evaluación: el módulo de Evaluaciones (pestaña «Evaluación integral»); RH decide cuándo pasar a Contratación.
+   2. Ya no hay columna «Evaluación». Después de la entrevista: «Corregir registro», «Agregar entrevista humana o
+      evaluación» (pestaña «Evaluaciones»; nunca mueve la tarjeta) y «Avanzar a Contratación» — habilitado solo con la
+      entrevista Apta y todas las evaluaciones con resultado y revisadas. Es la ÚNICA acción que cambia la etapa.
    3. Contratación: condiciones (puesto, sueldo, tipo, fecha) + «Generar contrato» o «Generar después de Onboarding»
       → «Enviar a Onboarding».
    4. Onboarding: 6 documentos personales (los del vehículo ya están) + 3 referencias con registro de llamadas →
@@ -14,13 +16,15 @@
    Una acción principal por paso; toda decisión queda con el nombre de quien la tomó. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CalendarCheck, CheckCircle2, ClipboardCheck, FileCheck2, FileSignature, FileText, Phone, Send, ShieldCheck, Upload, UserCheck, Users, XCircle } from "lucide-react";
+import { ArrowRight, CalendarCheck, CheckCircle2, ClipboardCheck, ClipboardList, FileCheck2, FileSignature, FileText, Phone, Send, ShieldCheck, Upload, UserCheck, Users, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { CampoRH, ModalMarco, inputRH } from "@/components/dashboard/modulos-rh";
 import { LigaAcciones } from "@/components/dashboard/liga-acciones";
+import { ModalAgregarEvaluacion } from "@/components/dashboard/evaluaciones/panel-evaluaciones";
 import { cn } from "@/lib/utils";
 import {
+  avanzarAContratacionOperativa,
   cancelarEntrevistaOperativa,
   capturarReferenciasOperativo,
   confirmarCitaCapacitacion,
@@ -32,7 +36,6 @@ import {
   fetchPanelOperativo,
   guardarCondicionesContratacion,
   marcarReferencia,
-  moverEtapaCandidato,
   programarEntrevistaOperativa,
   reenviarEntrevistaOperativa,
   registrarAltaOperativa,
@@ -95,7 +98,9 @@ const CITA_VACIA: FormCita = {
   capacitador_nombre: "", capacitador_telefono: "", capacitador_correo: "", curso_induccion: null, indicaciones: "",
 };
 
-export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: string; puedeDecidir: boolean; onCambio?: () => void }) {
+export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEvaluaciones }: {
+  codigo: string; puesto?: string; puedeDecidir: boolean; onCambio?: () => void; onVerEvaluaciones?: () => void;
+}) {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [ocupado, setOcupado] = useState("");
   const [aviso, setAviso] = useState<{ tono: "ok" | "error" | "warn"; texto: string } | null>(null);
@@ -105,6 +110,7 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
   const [resultado, setResultado] = useState<{ asistio: boolean; resultado: string; comentario: string; fecha: string; entrevistador: string } | null>(null);
   const [capturaRefs, setCapturaRefs] = useState<{ nombre: string; telefono: string; parentesco: string }[] | null>(null);
   const [confirmarAlta, setConfirmarAlta] = useState(false);
+  const [agregarEval, setAgregarEval] = useState(false);
   const [usuarios, setUsuarios] = useState<Entrevistador[]>([]);
   const [cursos, setCursos] = useState<{ id: string; titulo: string }[]>([]);
   const [cond, setCond] = useState({ puesto: "", sueldo: "", tipo: "", fecha: "", ubicacion: "", jefe: "", instrucciones: "", duracion: "", unidad: "meses" });
@@ -304,24 +310,25 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
               </Button>
             )}
             {enEntrevista && eh?.asistencia === "asistio" && (
-              <Button size="sm" variant="outline" disabled={Boolean(ocupado)}
-                onClick={() => ejecutar("evaluacion", async () => {
-                  const r = await moverEtapaCandidato(codigo, "Evaluación", "Capacitación registrada", false, true);
-                  if (!r.ok) return r;
-                  const p = await fetchPanelOperativo(codigo);
-                  return p ? { ok: true as const, data: p } : { ok: false as const, error: "No se pudo recargar." };
-                }, () => "Pasó a Evaluación.")}>
-                Pasar a Evaluación →
+              <Button size="sm" variant="outline" disabled={Boolean(ocupado)} onClick={() => setAgregarEval(true)}>
+                <ClipboardList className="h-4 w-4" /> Agregar entrevista humana o evaluación
               </Button>
             )}
           </div>
         )}
       </Card>
 
-      {/* ---------- 2. Evaluación ---------- */}
-      {etapa === "Evaluación" && (
+      {/* ---------- 2. Resultados y avance a Contratación (v3: sin columna «Evaluación») ---------- */}
+      {enEntrevista && eh?.asistencia === "asistio" && (
         <Card className="p-5">
-          <Eyebrow>Evaluación</Eyebrow>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <Eyebrow>Resultados y evaluaciones</Eyebrow>
+            {panel.evaluacionesPendientes > 0 ? (
+              <Badge tone="warn" dot>{panel.evaluacionesPendientes} evaluación(es) pendiente(s)</Badge>
+            ) : (
+              <Badge tone="good" dot>Sin evaluaciones pendientes</Badge>
+            )}
+          </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-3">
             {[
               { t: "Prefiltro", v: panel.evaluacionResumen.prefiltro.etiqueta,
@@ -339,17 +346,22 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
             ))}
           </div>
           <p className="mt-3 text-[13px] text-ink-2">
-            Revisa el resumen (y, si hace falta, agrega evaluaciones en «Evaluación integral»). Tú decides si pasa a Contratación.
+            Agregar una entrevista humana o una evaluación no mueve al candidato: cada una conserva su estado y resultado
+            {onVerEvaluaciones && (
+              <> (<button type="button" className="font-semibold text-brand hover:underline" onClick={onVerEvaluaciones}>ver «Evaluaciones»</button>)</>
+            )}
+            . Solo «Avanzar a Contratación» cambia la etapa.
           </p>
+          {panel.requisitosContratacion.length > 0 && (
+            <ul className="mt-2 list-disc pl-5 text-[12px] text-ink-3">
+              {panel.requisitosContratacion.map((r) => <li key={r}>{r}</li>)}
+            </ul>
+          )}
           {puedeDecidir && !cerrada && (
-            <Button size="sm" className="mt-3" disabled={Boolean(ocupado)}
-              onClick={() => ejecutar("contratacion", async () => {
-                const r = await moverEtapaCandidato(codigo, "Contratación", "Evaluaciones revisadas", false, true);
-                if (!r.ok) return r;
-                const p = await fetchPanelOperativo(codigo);
-                return p ? { ok: true as const, data: p } : { ok: false as const, error: "No se pudo recargar." };
-              }, () => "Pasó a Contratación.")}>
-              Pasar a Contratación →
+            <Button size="sm" className="mt-3" disabled={Boolean(ocupado) || panel.requisitosContratacion.length > 0}
+              title={panel.requisitosContratacion.length ? "Se habilita con la entrevista Apta y todas las evaluaciones concluidas y revisadas." : undefined}
+              onClick={() => ejecutar("contratacion", () => avanzarAContratacionOperativa(codigo), () => "Avanzó a Contratación.")}>
+              <ArrowRight className="h-4 w-4" /> Avanzar a Contratación
             </Button>
           )}
         </Card>
@@ -765,11 +777,22 @@ export function PanelOperativo({ codigo, puedeDecidir, onCambio }: { codigo: str
               onClick={() => ejecutar("resultado", () => resultadoEntrevistaOperativa(codigo, {
                 asistio: resultado.asistio, resultado: resultado.resultado, comentario: resultado.comentario,
                 fecha_realizada: resultado.fecha, entrevistador: resultado.entrevistador,
-              }), () => { setResultado(null); return "Entrevista registrada. La tarjeta sigue en Entrevista hasta que la pases a Evaluación."; })}>
+              }), () => { setResultado(null); return "Entrevista registrada. La tarjeta sigue en Entrevista hasta que uses «Avanzar a Contratación»."; })}>
               Guardar registro
             </Button>
           </div>
         </ModalMarco>
+      )}
+
+      {/* ---------- Modal: agregar entrevista humana o evaluación (no mueve la tarjeta) ---------- */}
+      {agregarEval && (
+        <ModalAgregarEvaluacion codigo={codigo} puesto={puesto} conEntrevistaHumana onClose={() => setAgregarEval(false)}
+          onAgregada={async (ev) => {
+            setAgregarEval(false);
+            await cargar();
+            setAviso({ tono: "ok", texto: `«${ev.nombre}» agregada (${ev.estadoTexto}). El candidato sigue en Entrevista.` });
+            onCambio?.();
+          }} />
       )}
 
       {/* ---------- Modal: el contrato quedó pendiente → se ofrece antes del alta ---------- */}

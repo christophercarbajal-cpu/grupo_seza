@@ -13,8 +13,8 @@ export type EtapaCandidato =
   | "Entrevista Humana"
   | "Contratación"
   | "Onboarding"
-  // Demo SEZA: Kanban operativo v2 (Cuenta con flujo «operativo»): Prefiltro → Revisión de vehículo → Entrevista →
-  // Evaluación → Contratación → Onboarding
+  // Demo SEZA: Kanban operativo v3 (Cuenta con flujo «operativo»): Prefiltro → Revisión de vehículo → Entrevista →
+  // Contratación → Onboarding
   | "Revisión de vehículo"
   | "Entrevista";
 
@@ -195,7 +195,16 @@ export interface Candidato {
   /** Demo SEZA: prefiltro por reglas — resultado, motivos y siguiente acción (null si la vacante no lo usa). */
   prefiltroReglas?: import("./api").ResumenPrefiltroReglas | null;
   /** Flujo operativo v2: subestado de la columna (p. ej. «Prefiltro: En curso», «Cita confirmada», «Docs 4/9 · Refs 1/3»). */
-  operativo?: { texto: string; tono: "neutral" | "warn" | "good" | "bad" | "brand"; filtro?: string } | null;
+  operativo?: {
+    texto: string;
+    tono: "neutral" | "warn" | "good" | "bad" | "brand";
+    filtro?: string;
+    /** v3: todas las claves de filtro de su columna (p. ej. «realizada», «apto», «evaluaciones_pendientes»). */
+    filtros?: string[];
+    /** v3: resultados ya decididos — Perfil (cumple / no cumple), Vehículo (aprobado / no aprobado), Entrevista (apto / no apto). */
+    resultados?: { clave: "perfil" | "vehiculo" | "entrevista"; texto: string; tono: "good" | "bad" | "warn" }[];
+    evaluacionesPendientes?: number;
+  } | null;
   /** Demo SEZA: Kanban de la Cuenta de la postulación. */
   flujo?: "rh" | "operativo";
   /* --- Puntos 3/5: síntesis global (CV + Prefiltro + Entrevista IA + Entrevista Humana),

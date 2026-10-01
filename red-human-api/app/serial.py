@@ -1150,6 +1150,7 @@ def evaluacion_candidato_dict(ev, usuario=None, db=None) -> dict:
 
     restringido = ev.es_medico and not (usuario is not None and usuario.puede_ver_informe_medico())
     dictamenes = sev.dictamenes_de(ev.tipo)
+    legado = sev.es_legado(ev)
     salida = {
         "id": ev.codigo,
         "tipo": ev.tipo,
@@ -1189,15 +1190,21 @@ def evaluacion_candidato_dict(ev, usuario=None, db=None) -> dict:
         "cita": iso(ev.cita_en),
         "citaLugar": ev.cita_lugar or "",
         "resultadoOrigen": ev.resultado_origen or "",
-        "ligaEvaluador": f"{settings.app_url}/evaluacion/{ev.evaluador_token}" if ev.evaluador_token else None,
+        # 2026-10-01: la «Capacitación en tienda» de la v1 es historial (sin liga): su liga se confundía con la del médico
+        "legado": legado,
+        "ligaEvaluador": f"{settings.app_url}/evaluacion/{ev.evaluador_token}" if ev.evaluador_token and not legado else None,
         # Médico: la liga del médico se habilita hasta que el candidato acepta el consentimiento expreso
-        "ligaEvaluadorHabilitada": bool(ev.evaluador_token) and ev.estado not in ("revisada", "fallida", "en_espera_consentimiento"),
+        "ligaEvaluadorHabilitada": bool(ev.evaluador_token) and not legado and ev.estado not in ("revisada", "fallida", "en_espera_consentimiento"),
         "envios": list(reversed(ev.envios or [])),
+        # Entrevista humana adicional: Apto / No apto que registró el entrevistador (RH lo confirma al revisar)
+        "aptoEvaluador": sev.apto_del_evaluador(ev) or None,
+        "aptoEvaluadorTexto": sev.dictamenes_de(ev.tipo).get(sev.apto_del_evaluador(ev), "") if sev.apto_del_evaluador(ev) else "",
     }
     if not restringido:
         salida.update({
             "resultadoResumen": ev.resultado_resumen or "",
             "nombreArchivo": ev.nombre_archivo or "",
+            "mimeInforme": ev.mime or "",
             "notas": ev.notas or "",
             "comentarioRevision": ev.comentario_revision or "",
         })

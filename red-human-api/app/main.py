@@ -19,7 +19,7 @@ from .database import Base, SessionLocal, engine
 from .migraciones import crear_tablas_base, crear_tablas_conocimiento, crear_tablas_modulos_rh, candidatos_sin_postulacion, relajar_not_null, sincronizar
 from .migraciones import asegurar_reglas_entrevistador
 from .routers import agente, auth, candidatos, capacitacion, clientes, clima, colaboradores, configuracion, conocimiento, contratacion, cuentas, desempeno, emails_preview, empleados, entrevista_humana, entrevistas, evaluaciones, expediente_publico, feeds, firmas, webhooks_proveedores, metricas, notificaciones, onboarding, plantillas, requisiciones, vacantes, vehiculo, operativo, webhooks, integraciones
-from .seed import rellenar_slugs_cuentas, sembrar, sembrar_admin
+from .seed import normalizar_etapas_operativo, rellenar_slugs_cuentas, sembrar, sembrar_admin
 from .models import TABLAS_CONOCIMIENTO, TABLAS_MODULOS_RH
 from .services import modulos_rh, rag
 from .services.agenda import revisar_videollamadas_noshow
@@ -68,6 +68,9 @@ async def lifespan(app: FastAPI):
         sembrar_admin(db)
         if rellenar_slugs_cuentas(db):  # 2026-09-17: portal por Cuenta
             print("[cuentas] slugs generados para el portal por Cuenta", flush=True)
+        movidas = normalizar_etapas_operativo(db)  # 2026-10-01: Kanban operativo v3 (sin columna Evaluación)
+        if movidas:
+            print(f"[operativo] {movidas} postulación(es) de «Evaluación» regresaron a «Entrevista»", flush=True)
         # 2026-09-15 (Fase 1): «solo le llega al candidato» — Cuentas cuya regla de entrevista_agendada
         # nació apagada para el entrevistador antes de 7A y que nadie editó a mano: se encienden.
         rescatadas = asegurar_reglas_entrevistador(db)

@@ -154,7 +154,8 @@ const etapaColor: Record<EtapaCandidato, string> = {
   Entrevista: "var(--brand-2)",
 };
 
-/** Flujo operativo: filtros dentro de una columna (por el subestado de la tarjeta, `operativo.filtro`). */
+/** Flujo operativo: filtros dentro de una columna (por las claves de la tarjeta, `operativo.filtros`). En Entrevista
+ *  (v3): estados de agenda + «Realizadas» (con Todos / Aptos / No aptos) + «Evaluaciones pendientes». */
 const FILTROS_COLUMNA: Partial<Record<EtapaCandidato, { clave: string; texto: string }[]>> = {
   Prefiltro: [
     { clave: "sin_iniciar", texto: "Sin iniciar" },
@@ -165,10 +166,23 @@ const FILTROS_COLUMNA: Partial<Record<EtapaCandidato, { clave: string; texto: st
     { clave: "sin_agendar", texto: "Sin agendar" },
     { clave: "agendada", texto: "Agendada" },
     { clave: "confirmada", texto: "Confirmada" },
-    { clave: "realizada", texto: "Realizada" },
+    { clave: "realizada", texto: "Realizadas" },
     { clave: "no_asistio", texto: "No asistió" },
+    { clave: "evaluaciones_pendientes", texto: "Evaluaciones pendientes" },
   ],
 };
+/** Sub-filtro dentro de «Realizadas» (el filtro activo se guarda como «realizada» o «realizada:apto»). */
+const SUBFILTROS_REALIZADAS = [
+  { clave: "", texto: "Todos" },
+  { clave: "apto", texto: "Aptos" },
+  { clave: "no_apto", texto: "No aptos" },
+];
+/** ¿La tarjeta cumple el filtro de columna? «realizada:apto» exige ambas claves. */
+function coincideFiltroColumna(c: Candidato, filtro?: string) {
+  if (!filtro) return true;
+  const claves = c.operativo?.filtros ?? (c.operativo?.filtro ? [c.operativo.filtro] : []);
+  return filtro.split(":").every((k) => claves.includes(k));
+}
 
 const TONO_SUBESTADO: Record<string, string> = {
   neutral: "bg-surface-2 text-ink-3",
@@ -932,7 +946,7 @@ function CandidatosContenido() {
           .map((etapa) => ({
             etapa,
             todos: datosFiltrados.filter((c) => c.etapa === etapa),
-            cols: datosFiltrados.filter((c) => c.etapa === etapa && (!filtroColumna[etapa] || c.operativo?.filtro === filtroColumna[etapa])),
+            cols: datosFiltrados.filter((c) => c.etapa === etapa && coincideFiltroColumna(c, filtroColumna[etapa])),
           }));
         const visibles = columnas.filter(({ cols, etapa }) => vistaVacias !== "ocultar" || cols.length > 0 || etapa === columnaResaltada);
         const ocultas = columnas.length - visibles.length;
@@ -1017,13 +1031,29 @@ function CandidatosContenido() {
                     {filtrosEtapa && todos.length > 0 && (
                       <div className="scroll-x mb-2 gap-1 px-1">
                         {[{ clave: "", texto: "Todos" }, ...filtrosEtapa].map((fc) => {
-                          const n = fc.clave ? todos.filter((c) => c.operativo?.filtro === fc.clave).length : todos.length;
-                          const activo = (filtroColumna[etapa] ?? "") === fc.clave;
+                          const n = todos.filter((c) => coincideFiltroColumna(c, fc.clave)).length;
+                          const activo = (filtroColumna[etapa] ?? "").split(":")[0] === fc.clave;
                           return (
                             <button key={fc.clave || "todos"} type="button" onClick={() => setFiltroColumna((x) => ({ ...x, [etapa]: fc.clave }))}
                               className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold transition",
                                 activo ? "bg-brand text-white" : "bg-surface text-ink-3 hover:text-ink")}>
                               {fc.texto} {n}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {filtrosEtapa && (filtroColumna[etapa] ?? "").split(":")[0] === "realizada" && (
+                      <div className="scroll-x mb-2 gap-1 px-1" aria-label="Realizadas: resultado">
+                        {SUBFILTROS_REALIZADAS.map((sf) => {
+                          const clave = sf.clave ? `realizada:${sf.clave}` : "realizada";
+                          const n = todos.filter((c) => coincideFiltroColumna(c, clave)).length;
+                          const activo = (filtroColumna[etapa] ?? "") === clave;
+                          return (
+                            <button key={clave} type="button" onClick={() => setFiltroColumna((x) => ({ ...x, [etapa]: clave }))}
+                              className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold transition",
+                                activo ? "border-brand bg-brand-soft text-brand" : "border-border-soft bg-surface text-ink-3 hover:text-ink")}>
+                              {sf.texto} {n}
                             </button>
                           );
                         })}
@@ -1314,9 +1344,12 @@ function TarjetaKanban({
         className="card-hover group w-full min-w-0 overflow-hidden rounded-xl border border-border-soft bg-surface p-3 text-left transition-all hover:border-brand/40 hover:shadow-md"
       >
         <div className={cn("flex items-center gap-2.5", onAvanzar && "pr-7")}>
-          <div className="shrink-0" title={c.score != null ? `Score CV: ${c.score}%` : "Sin Score CV"}>
-            <ScoreRing score={c.score ?? 0} />
-          </div>
+          {/* Flujo operativo (SEZA): sin Score CV — la tarjeta muestra resultados identificados (abajo) */}
+          {c.flujo !== "operativo" && (
+            <div className="shrink-0" title={c.score != null ? `Score CV: ${c.score}%` : "Sin Score CV"}>
+              <ScoreRing score={c.score ?? 0} />
+            </div>
+          )}
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold group-hover:text-brand" title={c.nombre}>{c.nombre}</p>
             <p className="truncate text-xs text-ink-3" title={`${c.puesto || "Sin vacante"}${c.clienteVacante ? ` · ${c.clienteVacante}` : ""}`}>
@@ -1343,14 +1376,30 @@ function TarjetaKanban({
               {c.operativo.texto}
             </span>
           )}
-          {c.prefiltroReglas
-            ? (c.flujo !== "operativo" || c.prefiltroReglas.completo) && <BadgePrefiltroReglas r={c.prefiltroReglas} />
-            : <EstadoBadge estado={c.estado} />}
-          {c.resultadoApto === true && (
-            <span className="rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold text-good">Apto</span>
-          )}
-          {c.resultadoApto === false && (
-            <span className="rounded-md bg-bad-soft px-1.5 py-0.5 text-[10px] font-bold text-bad">No apto</span>
+          {c.flujo === "operativo" ? (
+            <>
+              {(c.operativo?.resultados ?? []).map((r) => (
+                <span key={r.clave} className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-bold", TONO_SUBESTADO[r.tono] ?? TONO_SUBESTADO.neutral)}
+                  title={{ perfil: "Resultado del prefiltro", vehiculo: "Revisión del vehículo", entrevista: "Resultado de la entrevista en tienda" }[r.clave]}>
+                  {r.texto}
+                </span>
+              ))}
+              {(c.operativo?.evaluacionesPendientes ?? 0) > 0 && (
+                <span className="rounded-md bg-warn-soft px-1.5 py-0.5 text-[10px] font-bold text-warn" title="Evaluaciones sin resultado o sin revisar">
+                  {c.operativo!.evaluacionesPendientes} eval. pendiente{c.operativo!.evaluacionesPendientes! > 1 ? "s" : ""}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              {c.prefiltroReglas ? <BadgePrefiltroReglas r={c.prefiltroReglas} /> : <EstadoBadge estado={c.estado} />}
+              {c.resultadoApto === true && (
+                <span className="rounded-md bg-good-soft px-1.5 py-0.5 text-[10px] font-bold text-good">Apto</span>
+              )}
+              {c.resultadoApto === false && (
+                <span className="rounded-md bg-bad-soft px-1.5 py-0.5 text-[10px] font-bold text-bad">No apto</span>
+              )}
+            </>
           )}
         </div>
 
@@ -1492,11 +1541,9 @@ function ModalCandidato({
     c.flujo === "operativo"
       ? c.prefiltroReglas && ["Prefiltro", "Revisión de vehículo"].includes(c.etapa)
         ? "vehiculo"
-        : c.etapa === "Evaluación"
-          ? "evaluaciones"
-          : ["Entrevista", "Contratación", "Onboarding"].includes(c.etapa)
-            ? "operativo"
-            : "resumen"
+        : ["Entrevista", "Contratación", "Onboarding"].includes(c.etapa)
+          ? "operativo"
+          : "resumen"
       : c.etapa === "Contratación"
         ? "contratacion"
         : "resumen",
@@ -1792,7 +1839,7 @@ function ModalCandidato({
                 { id: "resumen", label: "Resumen", icon: User, tone: "brand" },
                 ...(c.prefiltroReglas ? [{ id: "vehiculo", label: "Prefiltro / Vehículo", icon: Car, tone: "warn" }] : []),
                 ...(c.flujo === "operativo" ? [{ id: "operativo", label: "Entrevista, contratación y alta", icon: GraduationCap, tone: "human" }] : []),
-                { id: "evaluaciones", label: "Evaluación integral", icon: Sparkles, tone: "human" },
+                { id: "evaluaciones", label: c.flujo === "operativo" ? "Evaluaciones" : "Evaluación integral", icon: Sparkles, tone: "human" },
                 { id: "documentos", label: "CV y documentos", icon: FileText, tone: "brand" },
                 { id: "whatsapp", label: "WhatsApp", icon: MessageCircle, tone: "good", badge: c.mensajes },
                 // 2026-09-17: la pestaña del expediente (checklist de documentos) vive en Contratación Y
@@ -1859,7 +1906,7 @@ function ModalCandidato({
 
           {tab === "resumen" && <PestanaResumen c={c} live={live} onCambio={onCambio} setTab={setTab} />}
           {tab === "operativo" && c.flujo === "operativo" && (
-            <PanelOperativo codigo={c.id} puedeDecidir={Boolean(live && puedeDecidir)} onCambio={async () => { const n = await fetchCandidato(c.id); if (n) onCambio?.(n); }} />
+            <PanelOperativo codigo={c.id} puesto={c.puesto} puedeDecidir={Boolean(live && puedeDecidir)} onCambio={async () => { setVersionEval((x) => x + 1); const n = await fetchCandidato(c.id); if (n) onCambio?.(n); }} onVerEvaluaciones={() => setTab("evaluaciones")} />
           )}
           {tab === "vehiculo" && c.prefiltroReglas && (
             <PanelPrefiltroVehiculo codigo={c.id} puedeDecidir={Boolean(live && puedeDecidir)} onCambio={async () => { const n = await fetchCandidato(c.id); if (n) onCambio?.(n); }} />
@@ -1964,7 +2011,7 @@ function ModalCandidato({
                           disabled: Boolean(ocupado),
                         }]
                       : []),
-                    { etiqueta: c.flujo === "operativo" ? "Agregar evaluación" : "Agregar entrevista humana o evaluación", icono: <IconoEvaluacion />, onClick: () => setAgregarEval(true), disabled: Boolean(ocupado) || c.activa === false },
+                    { etiqueta: "Agregar entrevista humana o evaluación", icono: <IconoEvaluacion />, onClick: () => setAgregarEval(true), disabled: Boolean(ocupado) || c.activa === false },
                     { etiqueta: "Mover a otra etapa…", icono: <ArrowRightLeft />, onClick: () => setMoverA({ etapa: "", motivo: "" }), disabled: Boolean(ocupado) },
                     ...(c.etapa === "Entrevista Humana"
                       ? [{ etiqueta: "Agendar otra Entrevista Humana", icono: <CalendarClock />, onClick: () => setModalEntrevista(true), disabled: Boolean(ocupado) }]
@@ -2082,6 +2129,7 @@ function ModalCandidato({
           puesto={c.puesto}
           onClose={() => setAgregarEval(false)}
           onEntrevistaHumana={c.flujo === "operativo" ? undefined : () => { setAgregarEval(false); setModalEntrevista(true); }}
+          conEntrevistaHumana={c.flujo === "operativo"}
           onAgregada={(ev) => {
             setAgregarEval(false);
             setVersionEval((x) => x + 1);
@@ -2641,6 +2689,12 @@ function PestanaEvaluaciones({ c, live, onCambio, versionEval = 0 }: { c: Candid
     | null
     | undefined;
   const historialEh = c.entrevistasHumanas ?? [];
+
+  // Flujo operativo (SEZA, 2026-10-01): la pestaña «Evaluaciones» es solo la sección de evaluaciones (entrevista
+  // humana adicional, psicométrica, médico…); la entrevista en tienda vive en «Entrevista, contratación y alta».
+  if (c.flujo === "operativo") {
+    return <PanelEvaluaciones codigo={c.id} puesto={c.puesto} live={Boolean(live) && puedeDecidir} version={versionEval} operativo />;
+  }
 
   return (
     <div className="flex flex-col gap-5">

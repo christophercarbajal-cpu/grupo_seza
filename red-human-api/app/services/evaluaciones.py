@@ -18,8 +18,10 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from ..models import (
+    DICTAMENES_ENTREVISTA,
     DICTAMENES_GENERALES,
     DICTAMENES_MEDICOS,
+    NOMBRE_CAPACITACION_TIENDA,
     ESTADO_POR_PASO,
     ESTADOS_EVALUACION,
     MODOS_PRUEBA,
@@ -32,8 +34,43 @@ from ..models import (
 ESTADOS_ABIERTOS = ("en_espera_consentimiento", "pendiente", "en_proceso", "resultado_recibido")
 
 
+DICTAMENES_DESFAVORABLES = ("desfavorable", "no_apto")
+
+
 def dictamenes_de(tipo: str) -> dict:
+    if tipo == "entrevista_humana":
+        return DICTAMENES_ENTREVISTA
     return DICTAMENES_MEDICOS if tipo == "medico" else DICTAMENES_GENERALES
+
+
+def es_legado(ev: EvaluacionCandidato) -> bool:
+    """«Capacitación en tienda» de la v1 (sesión con cupo): ya vive como la Entrevista de la postulación. Se conserva
+    como historial pero no tiene liga, no cuenta como pendiente y no se captura (2026-10-01: su liga se confundía con
+    la del médico en la ficha)."""
+    return bool(ev.sesion_id) and ev.tipo == "otra" and ev.nombre == NOMBRE_CAPACITACION_TIENDA
+
+
+def apto_del_evaluador(ev: EvaluacionCandidato) -> str:
+    """Entrevista humana: Apto / No apto que registró el entrevistador con el resultado ("" si no hay)."""
+    return str((ev.resultado_json or {}).get("apto") or "") if ev.tipo == "entrevista_humana" else ""
+
+
+def archivo_opcional(contenido: bytes, nombre: str, etiqueta: str):
+    """Valida el informe adjunto SIN tumbar la captura: un archivo vacío (p. ej. una captura en blanco usada como
+    prueba) se ignora con un aviso — no se guarda, no se marca como falla y el texto se registra igual. Un formato
+    no admitido sí regresa su error para que la persona lo corrija. → (validado | None, aviso)."""
+    from fastapi import HTTPException
+
+    from . import archivos as fs
+
+    if not contenido or len(contenido) < fs.MIN_BYTES:
+        return None, "El archivo adjunto estaba vacío y no se guardó; el resultado quedó registrado."
+    try:
+        return fs.validar_bytes(contenido, nombre, etiqueta), ""
+    except HTTPException as ex:
+        if ex.status_code == 422:
+            return None, f"El archivo adjunto no se pudo leer y no se guardó ({ex.detail}); el resultado quedó registrado."
+        raise
 
 
 def consentimiento_ok(ev: EvaluacionCandidato, p: Optional[Postulacion]) -> bool:
@@ -121,7 +158,7 @@ def avisos_antes_onboarding(p: Postulacion, evaluaciones: List[EvaluacionCandida
     if not v or not v.avisar_evaluaciones_antes_onboarding:
         return []
     avisos = []
-    vivas = [e for e in evaluaciones if e.estado != "fallida"]
+    vivas = [e for e in evaluaciones if e.estado != "fallida" and not es_legado(e)]
     for s in v.evaluaciones_sugeridas or []:
         hay = any(e.tipo == s.get("tipo") and (not s.get("prueba_id") or e.prueba_id == s.get("prueba_id")) for e in vivas)
         if not hay:
@@ -158,7 +195,7 @@ def asegurar_token(ev: EvaluacionCandidato) -> bool:
 
 def evaluador_habilitado(ev: EvaluacionCandidato, p: Optional[Postulacion]) -> bool:
     """La liga del evaluador sirve cuando hay consentimientos (médico: el expreso ya aceptado) y sigue abierta."""
-    return ev.estado not in ("revisada", "fallida") and consentimiento_ok(ev, p)
+    return ev.estado not in ("revisada", "fallida") and not es_legado(ev) and consentimiento_ok(ev, p)
 
 
 def evaluador_de(ev: EvaluacionCandidato, db=None) -> dict:

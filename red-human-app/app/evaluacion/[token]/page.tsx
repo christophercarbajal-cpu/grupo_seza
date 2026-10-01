@@ -3,12 +3,16 @@
 /* Liga pública del EVALUADOR (2026-09-30): médico, socioeconómico, proveedor de psicométricas… Registra el resultado
    (resumen y/o informe) de la MISMA evaluación que RH puede capturar a mano desde la ficha. Sin sesión: el token es la
    credencial. Médico: solo funciona cuando el candidato ya aceptó el consentimiento expreso. La revisión y el
-   dictamen siguen siendo de RH. */
+   dictamen siguen siendo de RH.
+   2026-10-01: cada liga muestra el candidato, el nombre y el tipo EXACTOS de su evaluación (código EVA-####);
+   «Entrevista humana» pide Apto / No apto + observaciones; un adjunto vacío no tumba la captura (solo se avisa); la
+   «Capacitación en tienda» de la versión anterior se muestra como histórica. */
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { CheckCircle2, ClipboardCheck, FileUp, Loader2, Lock } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, FileUp, History, Loader2, Lock } from "lucide-react";
 import { Badge, Button, Card, Logo } from "@/components/ui";
+import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { fetchEvaluacionEvaluador, registrarResultadoEvaluador, type EvaluacionEvaluadorPublica } from "@/lib/api";
 
@@ -20,6 +24,8 @@ export default function LigaEvaluador() {
   const [resumen, setResumen] = useState("");
   const [nombre, setNombre] = useState("");
   const [archivo, setArchivo] = useState<File | null>(null);
+  const [apto, setApto] = useState("");
+  const [avisoArchivo, setAvisoArchivo] = useState("");
   const [error, setError] = useState("");
   const [enviando, setEnviando] = useState(false);
   const ref = useRef<HTMLInputElement>(null);
@@ -36,9 +42,10 @@ export default function LigaEvaluador() {
   async function enviar() {
     setEnviando(true);
     setError("");
-    const r = await registrarResultadoEvaluador(token, { resumen, evaluador: nombre, archivo });
+    const r = await registrarResultadoEvaluador(token, { resumen, evaluador: nombre, archivo, apto });
     setEnviando(false);
     if (!r.ok) return setError(r.error);
+    setAvisoArchivo(r.data.avisoArchivo ?? "");
     setInfo(r.data);
   }
 
@@ -66,6 +73,7 @@ export default function LigaEvaluador() {
               <p className="mx-auto mt-2 max-w-md text-sm text-ink-2">
                 Candidato: <b>{info.candidato}</b>{info.puesto ? ` · ${info.puesto}` : ""}
               </p>
+              {info.codigo && <p className="mt-1 font-mono text-[11px] text-ink-3">{info.codigo} · {info.tipoTexto}</p>}
               {info.cita && (
                 <p className="mt-1 text-sm text-ink-3">
                   Cita: {new Date(info.cita).toLocaleString("es-MX", { dateStyle: "long", timeStyle: "short" })}{info.citaLugar ? ` · ${info.citaLugar}` : ""}
@@ -73,12 +81,18 @@ export default function LigaEvaluador() {
               )}
             </div>
 
-            {info.cancelada ? (
+            {info.historica ? (
+              <Card className="mt-6 p-6 text-center">
+                <History className="mx-auto h-8 w-8 text-ink-3" />
+                <p className="mt-2 text-sm text-ink-2">Esta liga es de una versión anterior y ya no recibe resultados. Pide a RH la liga vigente de tu evaluación.</p>
+              </Card>
+            ) : info.cancelada ? (
               <Card className="mt-6 p-6 text-center text-sm text-ink-2">Esta evaluación fue cancelada.</Card>
             ) : info.yaRegistrado ? (
               <Card className="mt-6 p-6 text-center">
                 <CheckCircle2 className="mx-auto h-8 w-8 text-good" />
                 <p className="mt-2 text-sm text-ink-2">El resultado ya quedó registrado. ¡Gracias! RH lo revisa en el expediente.</p>
+                {avisoArchivo && <p className="mt-2 text-[13px] text-warn">{avisoArchivo}</p>}
               </Card>
             ) : !info.habilitada ? (
               <Card className="mt-6 p-6 text-center">
@@ -87,8 +101,22 @@ export default function LigaEvaluador() {
               </Card>
             ) : (
               <Card className="mt-6 flex flex-col gap-4 p-5">
+                {info.pideApto && (
+                  <div>
+                    <p className="text-sm font-semibold text-ink">Resultado de la entrevista</p>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      {([["apto", "Apto"], ["no_apto", "No apto"]] as const).map(([v, t]) => (
+                        <button key={v} type="button" onClick={() => setApto(v)}
+                          className={cn("h-12 rounded-xl border text-sm font-semibold transition totem:min-h-16 totem:text-xl",
+                            apto === v ? (v === "apto" ? "border-good bg-good-soft text-good" : "border-bad bg-bad-soft text-bad") : "border-border-soft text-ink-2")}>
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-sm font-semibold text-ink">Resultado</span>
+                  <span className="text-sm font-semibold text-ink">{info.pideApto ? "Observaciones" : "Resultado / comentarios"}</span>
                   <textarea rows={5} value={resumen} onChange={(e) => setResumen(e.target.value)}
                     className="rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
                 </label>
@@ -102,7 +130,7 @@ export default function LigaEvaluador() {
                     className="h-11 rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20" />
                 </label>
                 {error && <p className="rounded-xl border border-bad/25 bg-bad-soft px-3.5 py-2.5 text-[13px] text-bad">{error}</p>}
-                <Button onClick={enviar} disabled={enviando || nombre.trim().length < 3 || (!resumen.trim() && !archivo)}>
+                <Button onClick={enviar} disabled={enviando || nombre.trim().length < 3 || (info.pideApto ? !apto : !resumen.trim() && !archivo)}>
                   {enviando ? <Loader2 className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />} Registrar resultado
                 </Button>
               </Card>

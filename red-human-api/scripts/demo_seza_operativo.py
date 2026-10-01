@@ -1,10 +1,10 @@
 """Demo Grupo SEZA — flujo operativo v2 (2026-09-30). Lo usa `cargar_demo_seza.py` (no se corre solo).
 
-* Kanban operativo en la Cuenta (`Cuenta.flujo_candidatos = "operativo"`), 6 columnas: Prefiltro → Revisión de
-  vehículo → Entrevista → Evaluación → Contratación → Onboarding.
+* Kanban operativo en la Cuenta (`Cuenta.flujo_candidatos = "operativo"`), 5 columnas (v3): Prefiltro → Revisión de
+  vehículo → Entrevista → Contratación → Onboarding.
 * «Inducción SEZA»: DUPLICADO de un curso existente (el primero con módulos de cualquier Cuenta; si la base no
   tiene ninguno se crea antes un curso base de inducción para choferes y se duplica ese).
-* Candidatos FICTICIOS que recorren las 6 columnas con las funciones reales del flujo (prefiltro por reglas, fotos
+* Candidatos FICTICIOS que recorren las 5 columnas con las funciones reales del flujo (prefiltro por reglas, fotos
   y documentos del vehículo, capacitación en tienda con su capacitador, condiciones y contrato, documentos,
   referencias y alta). Sin teléfono y con correo `@demo.invalid`: ningún mensaje puede salir. Idempotente por
   correo. Uno queda dado de alta (postulación cerrada como `contratado`: se ve con «Mostrar cerradas»).
@@ -129,8 +129,8 @@ FICTICIOS = [
     ("Hugo Sánchez Ibarra", "CDMX", "Entrevista", "favorable", "Formulario"),
     ("Alejandro Vázquez Gil", "Puebla", "Entrevista", "con_observaciones", "Facebook"),
     ("Patricia León Trejo", "CDMX", "Entrevista", "desfavorable", "Telegram"),
-    ("Fernando Ruiz Olvera", "San José del Cabo", "Evaluación", "", "Facebook"),
-    ("Ricardo Jiménez Mora", "CDMX", "Evaluación", "", "Facebook"),
+    ("Fernando Ruiz Olvera", "San José del Cabo", "Entrevista", "eval_pendiente", "Facebook"),
+    ("Ricardo Jiménez Mora", "CDMX", "Entrevista", "eval_revisada", "Facebook"),
     ("Claudia Romero Estrada", "Puebla", "Contratación", "sin_condiciones", "Telegram"),
     ("Armando Gutiérrez Silva", "CDMX", "Contratación", "contrato_despues", "Facebook"),
     ("Gabriela Medina Luján", "San José del Cabo", "Onboarding", "sin_nada", "Formulario"),
@@ -183,6 +183,23 @@ def _referencias(db, p, contactadas, admin):
         flujo.validar_referencia(e, i, True, "Relación confirmada", admin.nombre)
 
 
+def _evaluacion_adicional(db, p, admin, revisada: bool):
+    """Psicométrica (captura manual) agregada con la función real del router: nunca mueve la tarjeta."""
+    from app.routers import evaluaciones as rev
+
+    ev = rev.agregar_evaluacion(p.codigo, rev.AgregarEvaluacionIn(tipo="psicometrica", nombre="Cleaver"), db=db, u=admin, cuenta=p.cuenta)
+    if revisada:
+        from app.models import EvaluacionCandidato
+        from app.services import evaluaciones as sev
+
+        e = db.query(EvaluacionCandidato).filter(EvaluacionCandidato.codigo == ev["id"]).first()
+        e.resultado_resumen, e.resultado_cargado_por, e.resultado_origen = "Perfil estable y orientado a resultados.", admin.nombre, "rh"
+        e.resultado_cargado_en = datetime.now(timezone.utc)
+        sev.mover(e, "resultado_recibido", admin.nombre, "Resultado cargado (demo)")
+        e.dictamen, e.comentario_revision, e.revisada_por, e.revisada_en = "favorable", "Sin observaciones.", admin.nombre, datetime.now(timezone.utc)
+        sev.mover(e, "revisada", admin.nombre, "Dictamen: Favorable")
+
+
 async def _llevar(db, p, plaza, etapa, variante, admin, curso):
     orden = flujo.ETAPAS_OPERATIVO.index(etapa)
     resp = {**BASE, **RESP_OK[plaza]}
@@ -219,7 +236,7 @@ async def _llevar(db, p, plaza, etapa, variante, admin, curso):
         return
     sup, tienda, direccion = CAPACITADORES[plaza]
     hoy = datetime.now(TZ_MEXICO)
-    pasada = variante in ("favorable", "con_observaciones", "desfavorable") or orden > 2
+    pasada = variante in ("favorable", "con_observaciones", "desfavorable", "eval_pendiente", "eval_revisada") or orden > 2
     cuando = (hoy - timedelta(days=3)) if pasada else (hoy + timedelta(days=2))
     await flujo.programar_entrevista(db, p, {
         "tienda": tienda, "direccion": direccion, "fecha": cuando.strftime("%Y-%m-%d"), "hora": "09:00",
@@ -235,12 +252,11 @@ async def _llevar(db, p, plaza, etapa, variante, admin, curso):
     comentario = {"con_observaciones": "Buen manejo, pero le costó usar la aplicación; reforzar en su primera semana.",
                   "desfavorable": "Llegó 40 minutos tarde y no siguió las indicaciones de seguridad."}.get(resultado, "Muy buena actitud y manejo.")
     flujo.registrar_resultado(db, p, flujo.entrevista_actual(p), True, resultado, comentario, f"{sup} (capacitador)", "entrevistador")
+    if variante in ("eval_pendiente", "eval_revisada"):  # v3: evaluación adicional desde la columna Entrevista
+        _evaluacion_adicional(db, p, admin, revisada=variante == "eval_revisada")
     if orden == 2:
         return
-    flujo.mover(db, p, flujo.EVALUACION, admin.nombre, "Capacitación aprobada")
-    if orden == 3:
-        return
-    flujo.mover(db, p, flujo.CONTRATACION, admin.nombre, "Evaluaciones revisadas")
+    flujo.avanzar_a_contratacion(db, p, admin.nombre, prueba=False)
     if variante == "sin_condiciones":
         return
     e = p.expediente
@@ -251,7 +267,7 @@ async def _llevar(db, p, plaza, etapa, variante, admin, curso):
     e.ubicacion = p.vacante.ubicacion or ""
     e.condiciones_guardadas_en = datetime.now(timezone.utc)
     flujo.decidir_contrato(db, p, "despues" if variante == "contrato_despues" else "ahora", admin.nombre)
-    if orden == 4:
+    if orden == 3:
         return
     await flujo.enviar_a_onboarding(db, p, admin.nombre, prueba=False)
     if variante == "sin_nada":

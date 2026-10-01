@@ -3,7 +3,7 @@
 Carga el ambiente (`cargar_demo_seza.py`) y comprueba: sueldo por día, pieza de Facebook con liga única y fuente
 «Facebook», prefiltro por reglas por la web (reglas distintas por plaza) y por chat (cuestionario con repregunta),
 CV opcional, revisión del vehículo (4 fotos + licencia, tarjeta y póliza; corrección, aprobación, excepción), que
-nadie pase a Entrevista sin el vehículo aprobado, y el flujo operativo de 6 columnas: subestado del Prefiltro,
+nadie pase a Entrevista sin el vehículo aprobado, y el flujo operativo de 5 columnas (v3, sin «Evaluación»): subestado del Prefiltro,
 contadores, capacitación en tienda sobre la entrevista humana (sin cupos; envío aparte; liga del capacitador y
 captura manual de RH), inducción, condiciones + tipos de contratación + contrato ahora/después, Onboarding con 6
 documentos + 3 referencias (registro de llamadas) y «Dar de alta» que cierra el proceso.
@@ -166,14 +166,14 @@ def _flujo_operativo(c, h, ana, fer):
     from collections import Counter
 
     fl = c.get("/candidatos-flujo", headers=h).json()
-    check(fl["flujo"] == "operativo" and fl["etapas"] == ["Prefiltro", "Revisión de vehículo", "Entrevista", "Evaluación", "Contratación", "Onboarding"],
-          "Kanban operativo de 6 columnas (Prefiltro → Onboarding)")
+    check(fl["flujo"] == "operativo" and fl["etapas"] == ["Prefiltro", "Revisión de vehículo", "Entrevista", "Contratación", "Onboarding"],
+          "Kanban operativo de 5 columnas (Prefiltro → Onboarding, sin «Evaluación»)")
     tarjetas = c.get("/candidatos", headers=h).json()
     lista = tarjetas if isinstance(tarjetas, list) else tarjetas.get("candidatos", [])
     por_etapa = Counter(t["etapa"] for t in lista)
-    minimos = {"Prefiltro": 7, "Revisión de vehículo": 4, "Entrevista": 6, "Evaluación": 2, "Contratación": 2, "Onboarding": 3}
+    minimos = {"Prefiltro": 7, "Revisión de vehículo": 4, "Entrevista": 8, "Contratación": 2, "Onboarding": 3}
     check(all(por_etapa.get(e, 0) >= n for e, n in minimos.items()) and set(por_etapa) <= set(minimos),
-          f"candidatos ficticios solo en las 6 columnas {dict(por_etapa)}")
+          f"candidatos ficticios solo en las 5 columnas {dict(por_etapa)}")
     sub = Counter((t.get("operativo") or {}).get("texto") for t in lista if t["etapa"] == "Prefiltro")
     check(sub["Sin iniciar"] >= 3 and sub["En curso"] >= 1 and sub["Completado"] >= 3
           and {(t.get("operativo") or {}).get("filtro") for t in lista if t["etapa"] == "Prefiltro"} == {"sin_iniciar", "en_curso", "completado"},
@@ -256,9 +256,10 @@ def _flujo_operativo(c, h, ana, fer):
     check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Onboarding", "manual": True}, headers=h).status_code == 409,
           "no se brinca a Onboarding sin condiciones ni contrato")
 
-    # Evaluación → Contratación
-    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Evaluación", "manual": True}, headers=h).status_code == 200, "RH pasa a Evaluación")
-    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Contratación", "manual": True}, headers=h).status_code == 200, "RH pasa a Contratación")
+    # Entrevista → Contratación (v3: «Avanzar a Contratación», manual)
+    check(c.patch(f"/candidatos/{ana}/etapa", json={"etapa": "Evaluación", "manual": True}, headers=h).status_code == 409, "la columna «Evaluación» ya no existe")
+    r = c.post(f"/candidatos/{ana}/operativo/avanzar-contratacion", headers=h)
+    check(r.status_code == 200 and r.json()["etapa"] == "Contratación", "RH ejecuta «Avanzar a Contratación»")
     panel = c.get(f"/candidatos/{ana}/operativo", headers=h).json()
     check({"Honorarios", "Prestación de servicios", "Comisión mercantil"} <= set(panel["contratacion"]["tiposContratacion"]),
           "tipos de contratación: Honorarios, Prestación de servicios, Comisión mercantil")

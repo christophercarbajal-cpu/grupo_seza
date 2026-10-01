@@ -1,4 +1,4 @@
-"""Flujo operativo (demo Grupo SEZA) v2 (2026-09-30) — rutas de RH de la ficha del candidato. La lógica vive en
+"""Flujo operativo (demo Grupo SEZA) v3 (2026-10-01: sin columna Evaluación; «Avanzar a Contratación») — rutas de RH de la ficha del candidato. La lógica vive en
 services/flujo_operativo.py.
 
 * Kanban: `GET /candidatos-flujo` → etapas del Kanban de la Cuenta actual.
@@ -109,6 +109,9 @@ def panel_dict(db: Session, p: Postulacion) -> dict:
         "induccion": induccion["texto"] if induccion else "",
         "resultadosCapacitacion": [{"valor": k, "texto": v} for k, v in RESULTADOS_CAPACITACION.items()],
         "evaluacionResumen": flujo.evaluacion_resumen(p),
+        # v3: lo que falta para «Avanzar a Contratación» (entrevista Apta + evaluaciones con resultado y revisadas)
+        "requisitosContratacion": flujo.requisitos_contratacion(db, p),
+        "evaluacionesPendientes": len(flujo.evaluaciones_pendientes(flujo.evaluaciones_vivas(db, p))),
         "contratacion": {
             "condiciones": {
                 "puesto": e.puesto if e else "", "sueldo": e.sueldo if e else "", "tipoContratacion": e.tipo_contratacion if e else "",
@@ -297,6 +300,24 @@ def resultado_entrevista(codigo: str, datos: ResultadoIn, db: Session = Depends(
 
 
 # ------------------------------------------------------------ Contratación
+
+
+class AvanzarIn(BaseModel):
+    motivo: str = ""
+
+
+@router.post("/candidatos/{codigo}/operativo/avanzar-contratacion")
+def avanzar_contratacion(codigo: str, datos: AvanzarIn = AvanzarIn(), db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor),
+                         cuenta: Cuenta = Depends(cuenta_actual)):
+    """«Avanzar a Contratación» (v3): la ÚNICA salida de Entrevista, siempre manual. Exige la entrevista Apta y todas
+    las evaluaciones con resultado y revisadas (Modo Prueba lo omite). Agregar/recibir/revisar evaluaciones nunca mueve."""
+    p = _abierta(_operativo(db, codigo, cuenta.id))
+    try:
+        flujo.avanzar_a_contratacion(db, p, u.nombre, modo_prueba_activo(db))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    db.commit()
+    return panel_dict(db, p)
 
 
 class ContratoIn(BaseModel):

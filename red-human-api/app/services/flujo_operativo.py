@@ -1,6 +1,6 @@
-"""Flujo OPERATIVO de candidatos (demo Grupo SEZA) — v2 (2026-09-30), Kanban de 6 columnas:
+"""Flujo OPERATIVO de candidatos (demo Grupo SEZA) — v3 (2026-10-01), Kanban de 5 columnas:
 
-    Prefiltro → Revisión de vehículo → Entrevista → Evaluación → Contratación → Onboarding
+    Prefiltro → Revisión de vehículo → Entrevista → Contratación → Onboarding
 
 Lo usa la Cuenta con `Cuenta.flujo_candidatos == "operativo"`. Aquí viven TODAS las transiciones (nada de
 Zero-Touch ni del agente conversacional) y sus candados:
@@ -15,8 +15,11 @@ Zero-Touch ni del agente conversacional) y sus candados:
   inducción; el entrevistador, cita, datos y su liga. El envío se registra aparte: un fallo NO bloquea. «Registrar
   entrevista» (fecha realizada, entrevistador, asistió, resultado, observaciones) por la liga o por RH a mano (aunque
   no esté confirmada ni agendada), con autor, fecha y vía. Subestados: Sin agendar / Agendada / Confirmada /
-  Realizada / No asistió.
-* Evaluación: el módulo de Evaluaciones; recibir un resultado nunca mueve la tarjeta (RH la mueve).
+  Realizada (Apto / No apto) / No asistió + «Evaluaciones pendientes».
+* v3: ya NO hay columna «Evaluación». Desde Entrevista RH agrega «Entrevista humana o evaluación» (psicométrica,
+  técnica, referencias, médico, socioeconómico, otra): ninguna mueve la tarjeta y cada una conserva su estado. La
+  ÚNICA salida es «Avanzar a Contratación» (manual), habilitada con la entrevista en tienda Apta y todas las
+  evaluaciones con resultado y revisadas (`requisitos_contratacion`).
 * Contratación: condiciones (puesto, sueldo, tipo, fecha) + «Generar contrato» (ahora) o «Generar después de
   Onboarding». «Enviar a Onboarding» pide los 6 documentos personales y 3 referencias.
 * Onboarding: documentos + referencias (registro de llamadas; contactada ≠ VALIDADA: validar es una decisión
@@ -45,7 +48,7 @@ from ..models import (
     registrar,
 )
 
-PREFILTRO, VEHICULO, ENTREVISTA, EVALUACION, CONTRATACION, ONBOARDING = ETAPAS_OPERATIVO
+PREFILTRO, VEHICULO, ENTREVISTA, CONTRATACION, ONBOARDING = ETAPAS_OPERATIVO
 
 # Lo que pide Onboarding. Los del vehículo (licencia, tarjeta, póliza) ya están en el expediente desde la
 # revisión del vehículo: NO se vuelven a pedir.
@@ -210,6 +213,8 @@ def entrevista_actual(p: Postulacion) -> Optional[EntrevistaHumana]:
 
 FILTROS_ENTREVISTA = {"sin_agendar": "Sin agendar", "agendada": "Agendada", "confirmada": "Confirmada",
                       "realizada": "Realizada", "no_asistio": "No asistió"}
+# v3: dentro de «Realizadas» → Todos / Aptos / No aptos; y «Evaluaciones pendientes» (cualquier subestado).
+FILTRO_APTO, FILTRO_NO_APTO, FILTRO_EVAL_PENDIENTES = "apto", "no_apto", "evaluaciones_pendientes"
 FILTROS_PREFILTRO = {"sin_iniciar": PREFILTRO_SIN_INICIAR, "en_curso": PREFILTRO_EN_CURSO, "completado": PREFILTRO_COMPLETADO}
 
 
@@ -221,6 +226,14 @@ def clave_entrevista(eh: Optional[EntrevistaHumana]) -> str:
     if eh.asistencia == "asistio":
         return "realizada"
     return "confirmada" if eh.confirmada_en else "agendada"
+
+
+def entrevista_apta(eh: Optional[EntrevistaHumana]) -> Optional[bool]:
+    """True = Apto (incluye «Requiere seguimiento», igual que `Postulacion.resultado_apto`); False = No apto;
+    None = sin resultado (no asistió, sin registrar o sin cita)."""
+    if not (eh and eh.asistencia == "asistio" and eh.resultado in RESULTADOS_CAPACITACION):
+        return None
+    return eh.resultado != "desfavorable"
 
 
 def estado_entrevista(eh: Optional[EntrevistaHumana]) -> Tuple[str, str]:
@@ -508,7 +521,7 @@ def registrar_resultado(db: Session, p: Postulacion, eh: Optional[EntrevistaHuma
     """«Registrar entrevista»: fecha realizada, entrevistador, asistió/no asistió, resultado y observaciones. Por la
     liga del entrevistador o por RH a mano (aunque no esté confirmada, e incluso sin cita: entonces la crea). Guarda
     autor (`registrado_por`), fecha (`evaluada_en`) y vía (`resultado_capturado_por`: entrevistador | rh). No mueve
-    la tarjeta: RH la pasa a Evaluación. «No asistió» deja la cita lista para reprogramar."""
+    la tarjeta: RH decide con «Avanzar a Contratación». «No asistió» deja la cita lista para reprogramar."""
     validar_resultado(asistio, resultado, comentario)
     if eh is None:
         eh = EntrevistaHumana(candidato_id=p.candidato_id, token=secrets.token_urlsafe(24), envios=[], modalidad="Presencial",
@@ -534,6 +547,86 @@ def registrar_resultado(db: Session, p: Postulacion, eh: Optional[EntrevistaHuma
     registrar(db, quien, "capacitacion_tienda_resultado", "postulacion", p.codigo,
               {"asistio": asistio, "resultado": resultado, "capturado_por": capturado_por, "realizada_en": eh.realizada_en.isoformat()})
     return eh
+
+
+# ------------------------------------------------------------ evaluaciones adicionales (sin columna propia)
+
+
+def evaluaciones_vivas(db: Session, p: Postulacion) -> list:
+    """Evaluaciones de la postulación que cuentan (sin canceladas ni la «Capacitación en tienda» de la v1, que ya vive
+    en la Entrevista). [] si el módulo no está disponible."""
+    from ..models import EvaluacionCandidato
+    from . import evaluaciones as sev
+
+    try:
+        evs = db.query(EvaluacionCandidato).filter(EvaluacionCandidato.postulacion_id == p.id).order_by(EvaluacionCandidato.id).all()
+    except Exception:  # noqa: BLE001 — tablas del paso NO fatal ausentes
+        return []
+    return [e for e in evs if e.estado != "fallida" and not sev.es_legado(e)]
+
+
+def evaluaciones_pendientes(evs: list) -> list:
+    """Solicitadas sin resultado o con resultado sin revisar."""
+    return [e for e in evs if e.estado != "revisada"]
+
+
+def requisitos_contratacion(db: Session, p: Postulacion) -> List[str]:
+    """Lo que falta para «Avanzar a Contratación»: entrevista en tienda Apta y TODAS las evaluaciones (incluida la
+    entrevista humana adicional) con resultado y revisadas; una entrevista humana adicional No apta también frena.
+    Un dictamen desfavorable de otra evaluación ya revisada NO frena: RH lo vio y decide."""
+    from ..models import ESTADOS_EVALUACION
+
+    faltan = []
+    apta = entrevista_apta(entrevista_actual(p))
+    if apta is None:
+        faltan.append("Registrar la entrevista (asistió y resultado)")
+    elif apta is False:
+        faltan.append("La entrevista quedó No apto")
+    for e in evaluaciones_vivas(db, p):
+        if e.estado == "resultado_recibido":
+            faltan.append(f"{e.nombre}: resultado recibido, falta «Marcar como revisada»")
+        elif e.estado != "revisada":
+            faltan.append(f"{e.nombre}: {ESTADOS_EVALUACION.get(e.estado, e.estado)} (falta resultado y revisión)")
+        elif e.tipo == "entrevista_humana" and e.dictamen == "no_apto":
+            faltan.append(f"{e.nombre}: No apto")
+    return faltan
+
+
+def avanzar_a_contratacion(db: Session, p: Postulacion, actor: str, prueba: bool) -> None:
+    """La ÚNICA forma de salir de Entrevista hacia adelante (manual, la ejecuta RH)."""
+    if p.etapa != ENTREVISTA:
+        raise ValueError("«Avanzar a Contratación» se usa desde la columna Entrevista.")
+    faltan = requisitos_contratacion(db, p)
+    if faltan and not prueba:
+        raise ValueError("Antes de avanzar a Contratación: " + "; ".join(faltan) + ".")
+    mover(db, p, CONTRATACION, actor, "Avanzar a Contratación" + (" (Modo Prueba)" if faltan else ""))
+
+
+def resultados_tarjeta(p: Postulacion) -> List[dict]:
+    """Resultados visibles en la tarjeta: Perfil (prefiltro), Vehículo y Entrevista. Solo los que ya existen."""
+    salida = []
+    if p.prefiltro_completo and p.estado in ("cumple", "no_cumple", "revision"):
+        aprobado = ((p.analisis or {}).get("prefiltro_reglas") or {}).get("aprobado_por_rh")
+        if p.estado == "cumple" or aprobado:
+            salida.append({"clave": "perfil", "texto": "Perfil cumple", "tono": "good"})
+        elif p.estado == "no_cumple":
+            salida.append({"clave": "perfil", "texto": "Perfil no cumple", "tono": "bad"})
+        else:
+            salida.append({"clave": "perfil", "texto": "Perfil en revisión", "tono": "warn"})
+    r = p.revision_vehiculo
+    if r and r.estado in ("aprobado", "excepcion"):
+        salida.append({"clave": "vehiculo", "texto": "Vehículo aprobado" + (" (excepción)" if r.estado == "excepcion" else ""), "tono": "good"})
+    elif r and r.estado == "correccion":
+        salida.append({"clave": "vehiculo", "texto": "Vehículo no aprobado", "tono": "bad"})
+    eh = entrevista_actual(p)
+    apta = entrevista_apta(eh)
+    if apta is True:
+        salida.append({"clave": "entrevista", "texto": "Entrevista apto" + (" · seguimiento" if eh.resultado == "con_observaciones" else ""), "tono": "good"})
+    elif apta is False:
+        salida.append({"clave": "entrevista", "texto": "Entrevista no apto", "tono": "bad"})
+    elif eh and eh.asistencia == "no_asistio":
+        salida.append({"clave": "entrevista", "texto": "Entrevista: no asistió", "tono": "bad"})
+    return salida
 
 
 def evaluacion_resumen(p: Postulacion) -> dict:
@@ -761,7 +854,29 @@ def registrar_alta(db: Session, p: Postulacion, u, prueba: bool) -> Tuple[object
 
 
 def subestado(p: Postulacion) -> dict:
-    """Lo que muestra la tarjeta del Kanban bajo el nombre: {texto, tono}."""
+    """Lo que muestra la tarjeta del Kanban: {texto, tono, filtro, filtros, resultados}. `resultados` = Perfil /
+    Vehículo / Entrevista (lo que ya se decidió); `filtros` = claves de los filtros de su columna."""
+    base = _subestado(p)
+    base["resultados"] = resultados_tarjeta(p)
+    filtros = [base["filtro"]] if base.get("filtro") else []
+    if p.etapa == ENTREVISTA:
+        from sqlalchemy.orm import object_session
+
+        apta = entrevista_apta(entrevista_actual(p))
+        if apta is True:
+            filtros.append(FILTRO_APTO)
+        elif apta is False:
+            filtros.append(FILTRO_NO_APTO)
+        db = object_session(p)
+        pendientes = evaluaciones_pendientes(evaluaciones_vivas(db, p)) if db is not None else []
+        if pendientes:
+            filtros.append(FILTRO_EVAL_PENDIENTES)
+        base["evaluacionesPendientes"] = len(pendientes)
+    base["filtros"] = filtros
+    return base
+
+
+def _subestado(p: Postulacion) -> dict:
     if p.etapa == PREFILTRO:
         texto = estado_prefiltro(p)
         clave = next(k for k, v in FILTROS_PREFILTRO.items() if v == texto)
@@ -776,8 +891,6 @@ def subestado(p: Postulacion) -> dict:
         eh = entrevista_actual(p)
         texto, tono = estado_entrevista(eh)
         return {"texto": texto, "tono": tono, "filtro": clave_entrevista(eh)}
-    if p.etapa == EVALUACION:
-        return {"texto": "Evaluaciones", "tono": "neutral"}
     e = p.expediente
     if p.etapa == CONTRATACION:
         if not condiciones_completas(e):
@@ -815,8 +928,8 @@ def validar_movimiento(db: Session, p: Postulacion, destino: str, prueba: bool) 
         if not citable:
             raise ValueError(motivo)
     if orden > _indice(ENTREVISTA):
-        eh = entrevista_actual(p)
-        if not (eh and eh.asistencia == "asistio" and eh.resultado):
-            raise ValueError("Antes, el capacitador (o RH) debe registrar la asistencia y el resultado de la capacitación.")
+        faltan = requisitos_contratacion(db, p)
+        if faltan:
+            raise ValueError("Antes de avanzar a Contratación: " + "; ".join(faltan) + ".")
     if destino == ONBOARDING and requisitos_onboarding(p):
         raise ValueError("Antes de enviar a Onboarding: " + "; ".join(requisitos_onboarding(p)) + ".")
