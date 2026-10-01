@@ -224,8 +224,9 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
     """El candidato (o RH por él) confirma la cita → se asigna el curso de inducción de la sesión y se SIMULA
     el envío de su PDF por WhatsApp (queda en el chat marcado como simulado; no sale por Meta)."""
     from ..models import Curso
-    from ..routers.candidatos import guardar_mensaje
+    from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje
     from ..routers.capacitacion import asignar_a_postulacion
+    from . import whatsapp
 
     ev = evaluacion_capacitacion(db, p)
     if not ev or not ev.sesion_id or ev.estado in ("revisada", "fallida"):
@@ -244,12 +245,20 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
             with db.begin_nested():
                 a = await asignar_a_postulacion(db, p, curso, actor=actor, notificar=False)
                 liga = f"{settings.app_url}/capacitacion/{a.token}"
+                real = whatsapp.proveedor() == "telegram"  # 2026-09-30: por Telegram el PDF sale de verdad
                 texto = (
-                    f"[Simulado · demo] 📄 {curso.titulo} (PDF)\n"
+                    ("" if real else "[Simulado · demo] ") + f"📄 {curso.titulo} (PDF)\n"
                     f"Antes de tu capacitación revisa este material. Descárgalo aquí: {liga}"
                 )
-                guardar_mensaje(db, p, "assistant", texto, "whatsapp", {"enviado": False, "proveedor": "simulado"})
-                induccion = {"curso": curso.codigo, "titulo": curso.titulo, "asignacion": a.codigo, "liga": liga, "simulado": True}
+                envio = {"enviado": False, "proveedor": "simulado"}
+                if real:
+                    envio = await _enviar_whatsapp(p, texto)
+                    pdf = await _pdf_induccion(curso, a)
+                    if pdf and p.telefono:
+                        envio["pdf"] = await whatsapp.enviar_documento(p.telefono, pdf, f"{curso.titulo}.pdf", f"📄 {curso.titulo}")
+                guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+                induccion = {"curso": curso.codigo, "titulo": curso.titulo, "asignacion": a.codigo, "liga": liga, "simulado": not real,
+                             "enviado": bool(envio.get("enviado"))}
                 registrar(db, actor, "induccion_pdf_simulado", "postulacion", p.codigo, induccion)
         except Exception as e:  # noqa: BLE001
             import traceback
@@ -259,6 +268,18 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
             registrar(db, actor, "induccion_pdf_fallido", "postulacion", p.codigo, {"curso": curso.codigo, "error": str(e)[:300]})
     nota(p, "cita_confirmada", "Cita de capacitación confirmada" + (f"; se simuló el envío del PDF «{curso.titulo}»" if induccion else ""), actor)
     return {"evaluacion": ev, "induccion": induccion, "ya_confirmada": False}
+
+
+async def _pdf_induccion(curso, asignacion) -> Optional[bytes]:
+    """PDF del curso de inducción (el mismo que se descarga de la liga); None si no se pudo generar."""
+    try:
+        from ..routers.capacitacion import _datos_pdf_curso
+        from .pdf import pdf_curso
+
+        return pdf_curso(_datos_pdf_curso(curso, asignacion))
+    except Exception as e:  # noqa: BLE001 — el texto con la liga ya salió; el adjunto es extra
+        print(f"[induccion] no se pudo generar el PDF de {curso.codigo}: {e}")
+        return None
 
 
 def registrar_asistencia(db: Session, ev: EvaluacionCandidato, asistio: bool, resultado: str, comentario: str, supervisor: str) -> None:

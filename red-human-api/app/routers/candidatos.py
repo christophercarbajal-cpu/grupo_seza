@@ -740,7 +740,10 @@ async def _disparar_plantilla_inicio(db: Session, p: Postulacion) -> dict:
     if not p.telefono:
         return {"enviado": False, "detalle": "El candidato no dejó WhatsApp."}
     primer_nombre = (p.nombre or "").split(" ")[0] or "candidato(a)"
-    envio = await enviar_plantilla(p.telefono, PLANTILLA_INICIO_ENTREVISTA, [primer_nombre])
+    envio = await enviar_plantilla(
+        p.telefono, PLANTILLA_INICIO_ENTREVISTA, [primer_nombre],
+        texto_alterno=f"Hola {primer_nombre}, ¡gracias por tu interés! Empecemos con tu proceso. Escríbeme *Hola* para continuar.",
+    )
     texto_mensaje = (
         f"[Plantilla de WhatsApp «{PLANTILLA_INICIO_ENTREVISTA}»] Hola {primer_nombre}, ¡gracias por tu interés! Empecemos con tu proceso."
         if envio.get("enviado")

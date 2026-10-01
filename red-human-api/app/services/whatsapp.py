@@ -6,6 +6,8 @@ Proveedores (`WHATSAPP_PROVIDER` en .env):
                   servidor extra que mantener. Se paga por conversación.
   · waha       →  https://waha.devlike.pro          (docker devlikeapro/waha)
   · evolution  →  https://github.com/EvolutionAPI/evolution-api
+  · telegram   →  bot de Telegram (demo Grupo SEZA, 2026-09-30). Se activa SOLO con
+                  TELEGRAM_BOT_TOKEN y manda sobre los demás (ver services/telegram.py).
   · ""         →  modo demo: el mensaje se guarda en la base como "no enviado".
 
 Webhook de entrada:  {API}/webhooks/whatsapp
@@ -40,7 +42,7 @@ def whatsapp_activo() -> bool:
 def proveedor() -> str:
     """Proveedor efectivo. Si no se declaró pero hay credenciales de Meta, es Meta:
     así un .env incompleto no deja la mensajería en modo demo sin avisar."""
-    if settings.whatsapp_provider in ("meta", "waha", "evolution"):
+    if settings.whatsapp_provider in ("meta", "waha", "evolution", "telegram"):
         return settings.whatsapp_provider
     if settings.meta_whatsapp_token and settings.meta_phone_number_id:
         return "meta"
@@ -146,8 +148,14 @@ async def enviar_plantilla(
     plantilla: str,
     parametros: Optional[List[str]] = None,
     idioma: Optional[str] = None,
+    texto_alterno: str = "",
 ) -> dict:
-    """Manda una plantilla aprobada (único formato válido fuera de la ventana de 24 h)."""
+    """Manda una plantilla aprobada (único formato válido fuera de la ventana de 24 h). Telegram no tiene
+    plantillas ni ventana: se manda `texto_alterno` (o los parámetros) como texto."""
+    if proveedor() == "telegram":
+        from . import telegram
+
+        return {**await telegram.enviar_texto(telefono, texto_alterno or "\n".join(parametros or [])), "formato": "texto"}
     componentes = []
     if parametros:
         componentes.append({
@@ -236,6 +244,10 @@ async def descargar_media(media_id: str) -> dict:
     detalle} y nunca lanza — el webhook le explica al candidato si algo falla."""
     if not media_id:
         return {"ok": False, "detalle": "sin media_id"}
+    if proveedor() == "telegram":
+        from . import telegram
+
+        return await telegram.descargar_archivo(media_id)
     if settings.whatsapp_provider != "meta" or not settings.meta_whatsapp_token:
         return {"ok": False, "detalle": "descarga de medios solo disponible con WHATSAPP_PROVIDER=meta"}
     cabeceras = {"Authorization": f"Bearer {settings.meta_whatsapp_token}"}
@@ -283,6 +295,10 @@ async def enviar_texto_sin_plantilla(telefono: str, texto: str) -> dict:
 
 async def enviar_mensaje(telefono: str, texto: str) -> dict:
     """Envía un mensaje de texto. Regresa {enviado, proveedor, detalle}."""
+    if proveedor() == "telegram":
+        from . import telegram
+
+        return await telegram.enviar_texto(telefono, texto)
     if settings.whatsapp_provider == "meta":
         resultado = await _meta_post({
             "messaging_product": "whatsapp",
@@ -479,6 +495,10 @@ async def enviar_lista_interactiva(
     `secciones` (2026-09-17, número compartido): [{"titulo": "Grupo CARBE", "opciones": [...]}] agrupa
     las filas por empresa; si se manda, `opciones` se ignora.
     """
+    if proveedor() == "telegram":
+        from . import telegram
+
+        return await telegram.enviar_lista(telefono, encabezado, cuerpo, opciones, secciones)
     if proveedor() != "meta":
         return _resultado(False, "Las listas interactivas solo existen en Meta Cloud API")
     if secciones:
@@ -525,3 +545,13 @@ async def enviar_lista_interactiva(
             },
         }
     )
+
+
+async def enviar_documento(telefono: str, contenido: bytes, filename: str, caption: str = "") -> dict:
+    """Manda un archivo (PDF) al candidato. Solo Telegram lo manda como adjunto; con los demás proveedores
+    se regresa {enviado: False} y quien llama comparte la liga de descarga como texto."""
+    if proveedor() == "telegram":
+        from . import telegram
+
+        return await telegram.enviar_documento(telefono, contenido, filename, caption)
+    return _resultado(False, "Envío de archivos adjuntos solo disponible con Telegram")

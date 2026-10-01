@@ -27,6 +27,12 @@ Plataforma SaaS de agente de IA de RH para México. `red-human-app` (Next.js 15)
 - Ventana de 24 h: fuera de ella Meta rechaza el texto libre (error 131047) y hay que usar plantilla aprobada (`META_PLANTILLA_AVISO`).
 - Ningún mensaje saliente decide nada: sigue siendo la persona de RH quien avanza o descarta.
 
+## Telegram (demo Grupo SEZA, 2026-09-30)
+
+- Con `TELEGRAM_BOT_TOKEN` (solo en el `.env` del servidor) TODA la mensajería del candidato va por el bot: `config._telegram_manda` fuerza `whatsapp_provider="telegram"` (apaga plantillas y ventana de 24 h de Meta) y `services/whatsapp.py` delega en `services/telegram.py` — los flujos siguen llamando `enviar_mensaje(telefono, …)` sin cambios. Sin el token, todo vuelve a Meta/WAHA/Evolution como antes.
+- Un bot no puede escribirle a un número: al primer mensaje pide «Compartir mi número» (`request_contact`, solo se acepta el contacto PROPIO) y guarda `ChatTelegram` (chat ↔ teléfono a 10 dígitos, tabla del paso NO fatal). Enviar a un teléfono sin chat → `{enviado: False, sin_chat: True}`.
+- Webhook PÚBLICO `POST /api/webhooks/telegram`: exige `X-Telegram-Bot-Api-Secret-Token` (= `telegram.secreto_webhook()`: `TELEGRAM_WEBHOOK_SECRET` o derivado del token), contesta 200 y procesa en segundo plano, deduplica por `update_id`; reutiliza `webhooks.procesar_entrante` (misma lógica que WhatsApp). Listas de Meta → botones en línea (callback_data = VAC-/P-/CTA-); `*negritas*` → HTML. Registro: `scripts/configurar_webhook_telegram.py`. Con Telegram la inducción sale de verdad (texto + PDF con `sendDocument`). Regresión: `scripts/verificar_telegram.py`.
+
 ## Legal (México)
 
 - LFPDPPP 2025: la IA solo recomienda; avanzar/descartar/alta siempre lo decide una persona de RH con nombre registrado en bitácora (human-in-the-loop).

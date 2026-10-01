@@ -212,7 +212,8 @@ def salud():
         "ia_configurada": ia_activa(),
         "whatsapp_configurado": whatsapp_activo(),
         "whatsapp_proveedor": whatsapp_proveedor(),
-        "whatsapp_webhook_firmado": bool(settings.meta_app_secret) if settings.whatsapp_provider == "meta" else None,
+        "whatsapp_webhook_firmado": (bool(settings.meta_app_secret) if settings.whatsapp_provider == "meta"
+                                     else True if settings.whatsapp_provider == "telegram" else None),
         "avatar_configurado": avatar_activo(),
         "modelo": settings.openai_model,
         "modo": "producción" if ia_activa() else "demo (sin OPENAI_API_KEY)",

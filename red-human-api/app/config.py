@@ -1,3 +1,4 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,6 +73,15 @@ class Settings(BaseSettings):
     # {{6}} liga al expediente. Si Meta la rechaza (no aprobada, nombre distinto) sale texto libre.
     meta_plantilla_entrevista: str = "alerta_entrevista_asignada"
 
+    # --- Telegram (demo Grupo SEZA, 2026-09-30) ---
+    # Con TELEGRAM_BOT_TOKEN la mensajería del candidato sale y entra por el bot de Telegram (manda sobre
+    # WHATSAPP_PROVIDER; las variables META_* dejan de usarse). Solo en el .env del servidor, nunca en código.
+    # Webhook: {API}/api/webhooks/telegram — se registra con scripts/configurar_webhook_telegram.py.
+    telegram_bot_token: str = ""
+    # Secreto que Telegram manda en X-Telegram-Bot-Api-Secret-Token. Vacío = se deriva del token del bot
+    # (mismo cálculo en el servidor y en el script de registro), así no hace falta otra variable.
+    telegram_webhook_secret: str = ""
+
     # --- Gateway propio (alternativa sin costo por mensaje) ---
     waha_url: str = "http://localhost:3001"
     waha_api_key: str = ""
@@ -122,6 +132,15 @@ class Settings(BaseSettings):
     psicometricas_url_candidato: str = ""
 
     cors_origins: str = "http://localhost:3000"
+
+
+    @model_validator(mode="after")
+    def _telegram_manda(self):
+        # Con bot de Telegram configurado, TODA la mensajería va por Telegram: así ninguna rama
+        # `whatsapp_provider == "meta"` (plantillas, ventana de 24 h) se dispara a medias.
+        if self.telegram_bot_token.strip():
+            self.whatsapp_provider = "telegram"
+        return self
 
 
 settings = Settings()

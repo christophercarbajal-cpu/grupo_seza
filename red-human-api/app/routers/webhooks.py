@@ -35,11 +35,12 @@ WhatsApp multi-tenant (2026-09-17) — UN número maestro para varias Cuentas:
 
 import json
 import re
+from collections import deque
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -50,6 +51,7 @@ from ..deps import cuenta_actual, usuario_actual
 from ..models import CONTEXTO_WHATSAPP_HORAS, ETAPAS_CONTEXTO_LARGO, Bitacora, Candidato, Cuenta, Postulacion, Usuario, Vacante, registrar
 from ..serial import nombre_empresa_candidato
 from ..services.configuracion import modo_prueba_activo, ventana_modo_prueba_min
+from ..services import telegram
 from ..services.whatsapp import descargar_media, enviar_mensaje, enviar_lista_interactiva, parsear_webhook
 from .candidatos import (
     _actualizar_ultima_actividad,
@@ -587,6 +589,74 @@ def _texto_aviso_privacidad(nombre: str, vacante: Optional[Vacante]) -> str:
 
 
 # ============================================================
+# Webhook de Telegram (demo Grupo SEZA, 2026-09-30)
+# ============================================================
+
+# update_id ya procesados (Telegram reintenta si no contestamos a tiempo): se deduplica en memoria.
+_UPDATES_TELEGRAM: "deque[int]" = deque(maxlen=2000)
+
+
+@router.post("/api/webhooks/telegram")
+@router.post("/webhooks/telegram", include_in_schema=False)
+async def telegram_entrante(request: Request, tareas: BackgroundTasks):
+    """Webhook PÚBLICO del bot de Telegram. Valida el secreto de `setWebhook`
+    (X-Telegram-Bot-Api-Secret-Token), contesta 200 de inmediato y procesa en segundo plano, deduplicando
+    por `update_id`."""
+    if not telegram.activo():
+        raise HTTPException(503, "TELEGRAM_BOT_TOKEN sin configurar.")
+    if not telegram.secreto_valido(request.headers.get("x-telegram-bot-api-secret-token", "")):
+        raise HTTPException(403, "Secreto del webhook inválido.")
+    try:
+        update = await request.json()
+    except Exception:
+        return {"ok": False, "error": "JSON no válido"}
+    uid = update.get("update_id")
+    if uid is not None:
+        if uid in _UPDATES_TELEGRAM:
+            return {"ok": True, "duplicado": True}
+        _UPDATES_TELEGRAM.append(uid)
+    tareas.add_task(procesar_update_telegram, update)
+    return {"ok": True}
+
+
+async def procesar_update_telegram(update: dict) -> dict:
+    """Un Update de Telegram → turno del agente con la misma lógica que WhatsApp. Si el chat todavía no
+    compartió su número, el bot se lo pide (botón nativo) y no hace nada más."""
+    from ..database import SessionLocal
+
+    msg = telegram.parsear_update(update)
+    if not msg or not msg["chat_id"]:
+        return {"ok": True, "ignorado": True}
+    if msg.get("callback_id"):
+        await telegram.responder_callback(msg["callback_id"])
+    db = SessionLocal()
+    try:
+        contacto = msg.get("contacto")
+        if contacto:
+            if not contacto.get("propio"):
+                await telegram.pedir_contacto(msg["chat_id"], msg.get("nombre", ""))
+                return {"ok": True, "accion": "contacto_ajeno"}
+            tel = telegram.guardar_chat(db, msg["chat_id"], contacto["telefono"], msg.get("nombre", ""))
+            db.commit()
+            await telegram.confirmar_contacto(msg["chat_id"])
+            msg = {**msg, "texto": "Hola", "tipo": "text"}  # arranca la conversación (menú de vacantes)
+        else:
+            tel = telegram.telefono_de_chat(db, msg["chat_id"])
+            if not tel:
+                await telegram.pedir_contacto(msg["chat_id"], msg.get("nombre", ""))
+                return {"ok": True, "accion": "contacto_solicitado"}
+        return await procesar_entrante(db, telegram.mensaje_para_agente(msg, tel))
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+        db.rollback()
+        return {"ok": False}
+    finally:
+        db.close()
+
+
+# ============================================================
 # Webhook GET — Handshake de verificación de Meta
 # ============================================================
 
@@ -628,7 +698,12 @@ async def whatsapp_entrante(request: Request, db: Session = Depends(get_db)):
     if not msg:
         print("[webhook-post] Webhook procesado sin mensaje de candidato (estado de entrega o evento ignorado).")
         return {"ok": True, "ignorado": True}
+    return await procesar_entrante(db, msg)
 
+
+async def procesar_entrante(db: Session, msg: dict) -> dict:
+    """Un mensaje entrante ya normalizado ({telefono, texto, nombre, wa_id, tipo, media, id_seleccionado,
+    numero_receptor}) → turno del agente. Lo comparten el webhook de WhatsApp y el de Telegram (2026-09-30)."""
     telefono = msg["telefono"]
     texto = msg["texto"].strip()
     nombre_wa = msg.get("nombre", "")

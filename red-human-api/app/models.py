@@ -1678,6 +1678,7 @@ TABLAS_MODULOS_RH = (
     "pruebas_psicometricas", "evaluaciones_candidato",  # Evaluaciones y verificaciones (2026-09-28)
     "firmas_documentos",  # Dropbox Sign (2026-09-29)
     "sesiones_capacitacion",  # demo SEZA (2026-09-29): capacitación en tienda con cupo
+    "chats_telegram",  # demo SEZA (2026-09-30): relación chat de Telegram ↔ teléfono
 )
 
 # --- Desempeño ---
@@ -2211,3 +2212,18 @@ class SesionCapacitacion(Base):
     estado: Mapped[str] = mapped_column(String(20), default="programada")  # programada | cerrada | cancelada
     creada_por: Mapped[str] = mapped_column(String(150), default="")
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
+class ChatTelegram(Base):
+    """Mensajería por Telegram (demo SEZA, 2026-09-30): un bot NO puede escribirle a un número, solo a un chat
+    que ya le habló. Al primer contacto el candidato comparte su número con el botón nativo de Telegram
+    (`request_contact`, verificado por Telegram) y aquí queda la relación chat ↔ teléfono a 10 dígitos. Todo el
+    resto de la plataforma sigue identificando a la persona por teléfono. Sin llaves foráneas (paso NO fatal)."""
+
+    __tablename__ = "chats_telegram"
+
+    chat_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    telefono: Mapped[str] = mapped_column(String(20), index=True)  # 10 dígitos, como Candidato.telefono
+    nombre: Mapped[str] = mapped_column(String(200), default="")
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
