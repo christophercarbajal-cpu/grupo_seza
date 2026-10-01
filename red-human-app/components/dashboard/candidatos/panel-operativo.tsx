@@ -2,12 +2,12 @@
 
 /* «Entrevista, contratación y alta» (demo Grupo SEZA) — flujo operativo v3 (2026-10-01), después del vehículo:
 
-   1. Entrevista = capacitación en tienda (sobre la entrevista humana): tienda, fecha/hora y capacitador (usuario de la
-      Cuenta o externo); sin grupos ni cupos. La cita al candidato y el aviso al capacitador se envían APARTE: si no
+   1. Entrevista (en tienda, sobre la entrevista humana): tienda, fecha/hora y entrevistador (usuario de la
+      Cuenta o externo); sin grupos ni cupos. La cita al candidato y el aviso al entrevistador se envían APARTE: si no
       salen, la cita y la liga siguen ahí (Abrir / Copiar / Reenviar). El resultado (Apto / Requiere seguimiento /
-      No apto) lo registra el capacitador en su liga o RH a mano; nunca mueve la tarjeta solo.
+      No apto) lo registra el entrevistador en su liga o RH a mano; nunca mueve la tarjeta solo.
    2. Ya no hay columna «Evaluación». Después de la entrevista: «Corregir registro», «Agregar entrevista humana o
-      evaluación» (pestaña «Evaluaciones»; nunca mueve la tarjeta) y «Avanzar a Contratación» — habilitado solo con la
+      evaluación» (pestaña «Evaluaciones»; nunca mueve la tarjeta) y «Pasar a Contratación» — habilitado solo con la
       entrevista Apta y todas las evaluaciones con resultado y revisadas. Es la ÚNICA acción que cambia la etapa.
    3. Contratación: condiciones (puesto, sueldo, tipo, fecha) + «Generar contrato» o «Generar después de Onboarding»
       → «Enviar a Onboarding».
@@ -20,8 +20,9 @@ import { ArrowRight, CalendarCheck, CheckCircle2, ClipboardCheck, ClipboardList,
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { CampoRH, ModalMarco, inputRH } from "@/components/dashboard/modulos-rh";
-import { LigaAcciones } from "@/components/dashboard/liga-acciones";
+import { EstadosEnvio, LigaAcciones } from "@/components/dashboard/liga-acciones";
 import { ModalAgregarEvaluacion } from "@/components/dashboard/evaluaciones/panel-evaluaciones";
+import { AccionesArchivo, VisorArchivo, type ArchivoVisor } from "@/components/dashboard/visor-archivo";
 import { cn } from "@/lib/utils";
 import {
   avanzarAContratacionOperativa,
@@ -44,7 +45,7 @@ import {
   revisarDocumentoOperativo,
   solicitarDocumentosReferencias,
   subirDocumento,
-  urlCartaIntencion,
+  urlCartaIntencionPdf,
   urlContratoPdf,
   urlDocumento,
   validarReferenciaOperativo,
@@ -111,6 +112,17 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
   const [capturaRefs, setCapturaRefs] = useState<{ nombre: string; telefono: string; parentesco: string }[] | null>(null);
   const [confirmarAlta, setConfirmarAlta] = useState(false);
   const [agregarEval, setAgregarEval] = useState(false);
+  const [visor, setVisor] = useState<ArchivoVisor | null>(null);  // fotos/PDF sobre la ficha (sin pestañas nuevas)
+  const [enviosDocs, setEnviosDocs] = useState<Panel["envios"]>(undefined);  // estado de la última liga de documentos
+  // Zeze punto 8: al «Pasar a Contratación» se abren las condiciones dentro de la ficha (scroll + foco en «Puesto»)
+  const refContratacion = useRef<HTMLDivElement>(null);
+  const [abrirCondiciones, setAbrirCondiciones] = useState(false);
+  useEffect(() => {
+    if (!abrirCondiciones || panel?.etapa !== "Contratación") return;
+    refContratacion.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    refContratacion.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+    setAbrirCondiciones(false);
+  }, [abrirCondiciones, panel?.etapa]);
   const [usuarios, setUsuarios] = useState<Entrevistador[]>([]);
   const [cursos, setCursos] = useState<{ id: string; titulo: string }[]>([]);
   const [cond, setCond] = useState({ puesto: "", sueldo: "", tipo: "", fecha: "", ubicacion: "", jefe: "", instrucciones: "", duracion: "", unidad: "meses" });
@@ -176,7 +188,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
       setCita(null);
       const c = p.envioCandidato;
       const k = p.envioCapacitador ?? [];
-      const partes = [modo === "reprogramar" ? "Capacitación reprogramada." : "Capacitación programada."];
+      const partes = [modo === "reprogramar" ? "Entrevista reprogramada." : "Entrevista programada."];
       partes.push(c?.enviado ? "La cita le llegó al candidato." : `La cita al candidato no salió${c?.detalle ? ` (${c.detalle})` : ""}.`);
       partes.push(k.some((x) => x.enviado) ? "El entrevistador recibió su liga." : "Al entrevistador no le llegó el aviso: comparte su liga.");
       if (p.induccionEnviada) partes.push(`Material de inducción «${p.induccionEnviada.titulo}» compartido.`);
@@ -198,18 +210,19 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
 
   return (
     <div className="flex flex-col gap-5">
+      {visor && <VisorArchivo archivo={visor} onClose={() => setVisor(null)} />}
       {aviso && (
         <Aviso tono={aviso.tono} onCerrar={() => setAviso(null)}>
           {aviso.texto}
         </Aviso>
       )}
 
-      {/* ---------- 1. Entrevista (capacitación en tienda) ---------- */}
+      {/* ---------- 1. Entrevista ---------- */}
       <Card className="p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <Eyebrow>Entrevista · capacitación en tienda</Eyebrow>
-            <p className="mt-1 text-[12px] text-ink-3">Tienda, fecha y capacitador. El capacitador registra asistencia y resultado en su liga.</p>
+            <Eyebrow>Entrevista</Eyebrow>
+            <p className="mt-1 text-[12px] text-ink-3">Tienda, fecha y entrevistador. El entrevistador registra asistencia y resultado en su liga.</p>
           </div>
           <Badge tone={(eh?.tono as "neutral" | "warn" | "good" | "bad" | "brand") ?? "neutral"} dot>
             {eh?.estado ?? "Por citar"}
@@ -223,7 +236,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
             </p>
             {eh.direccion && <p>{eh.direccion}</p>}
             <p>
-              Capacitador: <b>{eh.capacitador.nombre}</b> ({eh.capacitador.tipo === "interno" ? "usuario de la Cuenta" : "externo"})
+              Entrevistador: <b>{eh.capacitador.nombre}</b> ({eh.capacitador.tipo === "interno" ? "usuario de la Cuenta" : "externo"})
               {eh.capacitador.telefono ? ` · ${eh.capacitador.telefono}` : ""}
               {eh.capacitador.correo ? ` · ${eh.capacitador.correo}` : ""}
             </p>
@@ -237,25 +250,24 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <div className="rounded-xl border border-border-soft p-3 text-[12px]">
               <p className="font-semibold text-ink">Cita al candidato</p>
-              <p className={cn("mt-0.5", ultimoEnvio("candidato")?.enviado ? "text-good" : "text-warn")}>
-                {ultimoEnvio("candidato")?.enviado ? "Enviada" : `No se envió${ultimoEnvio("candidato")?.detalle ? `: ${ultimoEnvio("candidato")?.detalle}` : ""}`}
-              </p>
+              {/* mensaje y correo van por separado; cada uno con su estado (Pendiente / Enviado / Entregado / Fallido) */}
+              <EstadosEnvio className="mt-1" envios={eh.envios.filter((x) => x.destinatario === "candidato" && x.canal !== "induccion")} />
               <p className="mt-0.5 text-ink-3">{eh.confirmada ? `Confirmada ${fechaCorta(eh.confirmadaEn)}` : "Esperando su «Sí»"}</p>
               {puedeDecidir && (
                 <Button size="sm" variant="ghost" className="mt-1" disabled={Boolean(ocupado)}
                   onClick={() => ejecutar("reenviar-c", () => reenviarEntrevistaOperativa(codigo, "candidato"), (p) =>
-                    p.envios?.[0]?.enviado ? "Cita reenviada al candidato." : "La cita no salió; avísale por otro medio.")}>
+                    (p.envios ?? []).some((x) => x.enviado) ? "Cita reenviada al candidato." : "La cita no salió; avísale por otro medio.")}>
                   <Send className="h-3.5 w-3.5" /> Reenviar cita
                 </Button>
               )}
             </div>
             <LigaAcciones
-              etiqueta="Liga del capacitador"
+              etiqueta="Liga del entrevistador"
               liga={eh.ligaCapacitador}
-              ultimoEnvio={ultimoEnvio("capacitador")}
+              envios={eh.envios.filter((x) => x.destinatario === "capacitador")}
               enviando={ocupado === "reenviar-k"}
               onEnviar={puedeDecidir ? () => ejecutar("reenviar-k", () => reenviarEntrevistaOperativa(codigo, "capacitador"), (p) =>
-                (p.envios ?? []).some((x) => x.enviado) ? "Liga reenviada al capacitador." : "El aviso no salió; copia la liga y compártela.") : undefined}
+                (p.envios ?? []).some((x) => x.enviado) ? "Liga reenviada al entrevistador." : "El aviso no salió; copia la liga y compártela.") : undefined}
             />
           </div>
         )}
@@ -276,7 +288,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
           <div className="mt-4 flex flex-wrap gap-2">
             {(!eh || eh.asistencia === "no_asistio") && ["Revisión de vehículo", "Entrevista"].includes(etapa) && (
               <Button size="sm" onClick={() => abrirCita("nueva")}>
-                <CalendarCheck className="h-4 w-4" /> {eh ? "Programar nueva cita" : "Programar capacitación"}
+                <CalendarCheck className="h-4 w-4" /> {eh ? "Programar nueva cita" : "Programar entrevista"}
               </Button>
             )}
             {citaAbierta && (
@@ -293,10 +305,27 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                 )}
                 <Button size="sm" variant="ghost" onClick={() => abrirCita("reprogramar")}>Reprogramar…</Button>
                 <Button size="sm" variant="ghost" disabled={Boolean(ocupado)}
-                  onClick={() => ejecutar("cancelar", () => cancelarEntrevistaOperativa(codigo), () => "Capacitación cancelada.")}>
+                  onClick={() => ejecutar("cancelar", () => cancelarEntrevistaOperativa(codigo), () => "Entrevista cancelada.")}>
                   Cancelar cita
                 </Button>
               </>
+            )}
+            {/* Después de la entrevista (Zeze puntos 3 y 8): «Pasar a Contratación» (principal, solo con los requisitos
+                cumplidos), «Agregar evaluación» y «Corregir registro». «Descartar candidato» sigue en el menú «…». */}
+            {enEntrevista && eh?.asistencia === "asistio" && (
+              <Button size="sm" disabled={Boolean(ocupado) || panel.requisitosContratacion.length > 0}
+                title={panel.requisitosContratacion.length ? "Falta: " + panel.requisitosContratacion.join("; ") : undefined}
+                onClick={() => ejecutar("contratacion", () => avanzarAContratacionOperativa(codigo), () => {
+                  setAbrirCondiciones(true);
+                  return "Pasó a Contratación: captura las condiciones de contratación.";
+                })}>
+                <ArrowRight className="h-4 w-4" /> Pasar a Contratación
+              </Button>
+            )}
+            {enEntrevista && eh?.asistencia === "asistio" && (
+              <Button size="sm" variant="outline" disabled={Boolean(ocupado)} onClick={() => setAgregarEval(true)}>
+                <ClipboardList className="h-4 w-4" /> Agregar evaluación
+              </Button>
             )}
             {eh && conResultado && (
               <Button size="sm" variant="ghost" onClick={() => setResultado({ asistio: eh.asistencia === "asistio", resultado: eh.resultado, comentario: "",
@@ -309,66 +338,27 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                 <ClipboardCheck className="h-4 w-4" /> Registrar entrevista (sin cita)
               </Button>
             )}
-            {enEntrevista && eh?.asistencia === "asistio" && (
-              <Button size="sm" variant="outline" disabled={Boolean(ocupado)} onClick={() => setAgregarEval(true)}>
-                <ClipboardList className="h-4 w-4" /> Agregar entrevista humana o evaluación
-              </Button>
-            )}
           </div>
+        )}
+        {/* Qué impide pasar a Contratación, exacto (Zeze punto 8) */}
+        {enEntrevista && eh?.asistencia === "asistio" && !cerrada && (
+          panel.requisitosContratacion.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-warn/30 bg-warn-soft/40 px-3 py-2 text-[12px] text-ink-2">
+              <p className="font-semibold text-warn">Para pasar a Contratación falta:</p>
+              <ul className="mt-1 list-disc pl-5">{panel.requisitosContratacion.map((r) => <li key={r}>{r}</li>)}</ul>
+              {onVerEvaluaciones && panel.evaluacionesPendientes > 0 && (
+                <button type="button" className="mt-1 font-semibold text-brand hover:underline" onClick={onVerEvaluaciones}>Ver «Evaluaciones»</button>
+              )}
+            </div>
+          ) : (
+            <p className="mt-3 text-[12px] text-good">Requisitos y revisiones completos: ya puedes pasar a Contratación. Agregar evaluaciones no mueve al candidato.</p>
+          )
         )}
       </Card>
 
-      {/* ---------- 2. Resultados y avance a Contratación (v3: sin columna «Evaluación») ---------- */}
-      {enEntrevista && eh?.asistencia === "asistio" && (
-        <Card className="p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <Eyebrow>Resultados y evaluaciones</Eyebrow>
-            {panel.evaluacionesPendientes > 0 ? (
-              <Badge tone="warn" dot>{panel.evaluacionesPendientes} evaluación(es) pendiente(s)</Badge>
-            ) : (
-              <Badge tone="good" dot>Sin evaluaciones pendientes</Badge>
-            )}
-          </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
-            {[
-              { t: "Prefiltro", v: panel.evaluacionResumen.prefiltro.etiqueta,
-                d: panel.evaluacionResumen.prefiltro.aprobadoPorRH ? `Aprobado por ${panel.evaluacionResumen.prefiltro.aprobadoPorRH.usuario}` : panel.evaluacionResumen.prefiltro.motivos.slice(0, 2).join(" · ") },
-              { t: "Revisión de vehículo", v: panel.evaluacionResumen.vehiculo.etiqueta,
-                d: [panel.evaluacionResumen.vehiculo.decididoPor && `por ${panel.evaluacionResumen.vehiculo.decididoPor}`, panel.evaluacionResumen.vehiculo.comentario].filter(Boolean).join(" · ") },
-              { t: "Entrevista en tienda", v: panel.evaluacionResumen.entrevista.resultadoEtiqueta || panel.evaluacionResumen.entrevista.estado,
-                d: [panel.evaluacionResumen.entrevista.entrevistador, panel.evaluacionResumen.entrevista.observaciones].filter(Boolean).join(" · ") },
-            ].map((x) => (
-              <div key={x.t} className="rounded-xl border border-border-soft p-3">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-3">{x.t}</p>
-                <p className="mt-1 text-sm font-semibold text-ink">{x.v || "—"}</p>
-                {x.d && <p className="mt-0.5 text-[12px] text-ink-3">{x.d}</p>}
-              </div>
-            ))}
-          </div>
-          <p className="mt-3 text-[13px] text-ink-2">
-            Agregar una entrevista humana o una evaluación no mueve al candidato: cada una conserva su estado y resultado
-            {onVerEvaluaciones && (
-              <> (<button type="button" className="font-semibold text-brand hover:underline" onClick={onVerEvaluaciones}>ver «Evaluaciones»</button>)</>
-            )}
-            . Solo «Avanzar a Contratación» cambia la etapa.
-          </p>
-          {panel.requisitosContratacion.length > 0 && (
-            <ul className="mt-2 list-disc pl-5 text-[12px] text-ink-3">
-              {panel.requisitosContratacion.map((r) => <li key={r}>{r}</li>)}
-            </ul>
-          )}
-          {puedeDecidir && !cerrada && (
-            <Button size="sm" className="mt-3" disabled={Boolean(ocupado) || panel.requisitosContratacion.length > 0}
-              title={panel.requisitosContratacion.length ? "Se habilita con la entrevista Apta y todas las evaluaciones concluidas y revisadas." : undefined}
-              onClick={() => ejecutar("contratacion", () => avanzarAContratacionOperativa(codigo), () => "Avanzó a Contratación.")}>
-              <ArrowRight className="h-4 w-4" /> Avanzar a Contratación
-            </Button>
-          )}
-        </Card>
-      )}
-
       {/* ---------- 3. Contratación ---------- */}
       {(etapa === "Contratación" || etapa === "Onboarding") && (
+        <div ref={refContratacion} className="scroll-mt-4">
         <Card className="p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <Eyebrow>Contratación</Eyebrow>
@@ -434,7 +424,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
               {ct.contrato !== "generado" && (
                 <Button size="sm" disabled={Boolean(ocupado) || !ct.completas}
                   onClick={() => ejecutar("contrato", () => decidirContratoOperativo(codigo, "ahora"), (p) => {
-                    if (p.expediente) window.open(urlContratoPdf(p.expediente.id), "_blank");
+                    if (p.expediente) setVisor(visorContrato(p.expediente.id));
                     return "Contrato generado (se abrió la vista previa).";
                   })}>
                   <FileSignature className="h-4 w-4" /> Generar contrato
@@ -447,15 +437,15 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                 </Button>
               )}
               {ct.contrato === "generado" && exp && (
-                <a href={urlContratoPdf(exp.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1 rounded-xl px-3 text-sm font-semibold text-brand hover:bg-brand-soft">
+                <Button size="sm" variant="ghost" onClick={() => setVisor(visorContrato(exp.id))}>
                   <FileSignature className="h-4 w-4" /> Ver contrato
-                </a>
+                </Button>
               )}
               {ct.cartaDisponible && exp && (
                 <>
-                  <a href={urlCartaIntencion(exp.id)} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center gap-1 rounded-xl px-3 text-sm font-semibold text-brand hover:bg-brand-soft">
+                  <Button size="sm" variant="ghost" onClick={() => setVisor({ url: urlCartaIntencionPdf(exp.id), nombre: "carta-de-intencion.pdf", titulo: "Carta de intención" })}>
                     <FileText className="h-4 w-4" /> Carta de intención
-                  </a>
+                  </Button>
                   <Button size="sm" variant="ghost" disabled={Boolean(ocupado)} onClick={async () => {
                     setOcupado("carta");
                     const r = await enviarCartaIntencion(exp.id, "whatsapp");
@@ -485,6 +475,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
             </div>
           )}
         </Card>
+        </div>
       )}
 
       {/* ---------- 4. Onboarding: documentos, referencias y alta ---------- */}
@@ -502,7 +493,11 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
             liga={exp.liga}
             enviando={ocupado === "docs"}
             textoEnviar="Reenviar liga"
-            onEnviar={puedeDecidir && !cerrada ? () => ejecutar("docs", () => solicitarDocumentosReferencias(codigo), () => "Se reenvió la liga de documentos y referencias.") : undefined}
+            envios={enviosDocs}
+            onEnviar={puedeDecidir && !cerrada ? () => ejecutar("docs", () => solicitarDocumentosReferencias(codigo), (p) => {
+              setEnviosDocs(p.envios);
+              return "Se reenvió la liga de documentos y referencias.";
+            }) : undefined}
           />
           {ct.contrato === "despues" && (
             <p className="mt-3 rounded-xl bg-brand-soft/40 p-3 text-[13px] text-ink-2">
@@ -516,11 +511,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                 {exp.documentos.map((d) => (
                   <tr key={d.tipo} className="border-b border-border-faint last:border-0">
                     <td className="px-3 py-2 text-ink">
-                      {d.archivo ? (
-                        <a href={urlDocumento(exp.id, d.tipo)} target="_blank" rel="noreferrer" className="hover:text-brand hover:underline">{d.tipo}</a>
-                      ) : (
-                        d.tipo
-                      )}
+                      {d.tipo}
                       {d.delVehiculo && <span className="ml-1 text-[11px] text-ink-3">(vehículo)</span>}
                       {d.estadoSimple === "Requiere corrección" && d.notas && <span className="block text-[12px] text-bad">Corregir: {d.notas}</span>}
                       {d.estadoSimple === "Revisado" && d.revisadoPor && <span className="block text-[12px] text-ink-3">Revisado por {d.revisadoPor}</span>}
@@ -529,14 +520,18 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                       <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 text-right">
-                      {puedeDecidir && !cerrada && !d.aprobado && (
-                        <SubirDoc ocupado={ocupado === `subir-${d.tipo}`} onArchivo={(a) => ejecutar(`subir-${d.tipo}`, async () => {
+                      {/* Ver · Descargar · Subir/Reemplazar: acciones separadas */}
+                      <AccionesArchivo
+                        archivo={d.archivo ? { url: urlDocumento(exp.id, d.tipo), nombre: d.tipo, titulo: d.tipo, subtitulo: d.estadoSimple } : null}
+                        onVer={setVisor}
+                        subiendo={ocupado === `subir-${d.tipo}`}
+                        onSubir={puedeDecidir && !cerrada && !d.aprobado ? (a) => ejecutar(`subir-${d.tipo}`, async () => {
                           const r = await subirDocumento(exp.id, d.tipo, a);
                           if (!r.ok) return r;
                           const p = await fetchPanelOperativo(codigo);
                           return p ? { ok: true as const, data: p } : { ok: false as const, error: "No se pudo recargar." };
-                        }, () => `«${d.tipo}» cargado: queda «Recibido» para revisión.`)} />
-                      )}
+                        }, () => `«${d.tipo}» cargado: queda «Recibido» para revisión.`) : undefined}
+                      />
                       {puedeDecidir && !cerrada && d.archivo && !d.aprobado && (
                         <span className="inline-flex gap-1">
                           <Button size="sm" variant="ghost" disabled={Boolean(ocupado)}
@@ -672,9 +667,9 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
         </Card>
       )}
 
-      {/* ---------- Modal: programar / reprogramar capacitación ---------- */}
+      {/* ---------- Modal: programar / reprogramar entrevista ---------- */}
       {cita && (
-        <ModalMarco titulo={cita.modo === "reprogramar" ? "Reprogramar capacitación" : "Programar capacitación en tienda"}
+        <ModalMarco titulo={cita.modo === "reprogramar" ? "Reprogramar entrevista" : "Programar entrevista"}
           subtitulo="Sin grupos ni cupos: una cita por candidato." onClose={() => !ocupado && setCita(null)} ancho="max-w-xl">
           <div className="grid gap-3 sm:grid-cols-2">
             <CampoRH label="Tienda">
@@ -690,7 +685,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
               <input type="time" className={inputRH} value={cita.hora} onChange={(e) => setCita({ ...cita, hora: e.target.value })} />
             </CampoRH>
           </div>
-          <CampoRH label="Capacitador">
+          <CampoRH label="Entrevistador">
             <div className="flex gap-2">
               {(["interno", "externo"] as const).map((t) => (
                 <button key={t} type="button" onClick={() => setCita({ ...cita, capacitador_tipo: t })}
@@ -701,7 +696,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
             </div>
           </CampoRH>
           {cita.capacitador_tipo === "interno" ? (
-            <CampoRH label="¿Quién capacita?" ayuda="Su teléfono y correo salen de su perfil (Configuración → Usuarios).">
+            <CampoRH label="¿Quién entrevista?" ayuda="Su teléfono y correo salen de su perfil (Configuración → Usuarios).">
               <select className={inputRH} value={cita.capacitador_usuario_id ?? ""} onChange={(e) => setCita({ ...cita, capacitador_usuario_id: e.target.value ? Number(e.target.value) : null })}>
                 <option value="">Elige…</option>
                 {usuarios.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
@@ -723,7 +718,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
           <CampoRH label="Indicaciones (opcional)">
             <input className={inputRH} value={cita.indicaciones ?? ""} onChange={(e) => setCita({ ...cita, indicaciones: e.target.value })} placeholder="Llega 15 minutos antes con tu INE y licencia" />
           </CampoRH>
-          <p className="mt-2 text-[12px] text-ink-3">La cita y el aviso al capacitador se envían aparte: si alguno no sale, la cita se guarda igual y puedes reenviar o copiar la liga.</p>
+          <p className="mt-2 text-[12px] text-ink-3">La cita y el aviso al entrevistador se envían aparte: si alguno no sale, la cita se guarda igual y puedes reenviar o copiar la liga.</p>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setCita(null)} disabled={Boolean(ocupado)}>Cancelar</Button>
             <Button onClick={guardarCita} disabled={Boolean(ocupado) || !cita.tienda.trim() || !cita.fecha || !cita.hora}>
@@ -741,7 +736,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
             <CampoRH label="Fecha y hora realizada">
               <input type="datetime-local" className={inputRH} value={resultado.fecha} max={ahoraLocal()} onChange={(e) => setResultado({ ...resultado, fecha: e.target.value })} />
             </CampoRH>
-            <CampoRH label="Entrevistador / capacitador">
+            <CampoRH label="Entrevistador">
               <input className={inputRH} value={resultado.entrevistador} onChange={(e) => setResultado({ ...resultado, entrevistador: e.target.value })} />
             </CampoRH>
           </div>
@@ -777,7 +772,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
               onClick={() => ejecutar("resultado", () => resultadoEntrevistaOperativa(codigo, {
                 asistio: resultado.asistio, resultado: resultado.resultado, comentario: resultado.comentario,
                 fecha_realizada: resultado.fecha, entrevistador: resultado.entrevistador,
-              }), () => { setResultado(null); return "Entrevista registrada. La tarjeta sigue en Entrevista hasta que uses «Avanzar a Contratación»."; })}>
+              }), () => { setResultado(null); return "Entrevista registrada. La tarjeta sigue en Entrevista hasta que uses «Pasar a Contratación»."; })}>
               Guardar registro
             </Button>
           </div>
@@ -803,7 +798,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
             <Button disabled={Boolean(ocupado) || !ct.completas} onClick={() => ejecutar("alta", async () => {
               const r = await decidirContratoOperativo(codigo, "ahora");
               if (!r.ok) return r;
-              if (r.data.expediente) window.open(urlContratoPdf(r.data.expediente.id), "_blank");
+              if (r.data.expediente) setVisor(visorContrato(r.data.expediente.id));
               return registrarAltaOperativa(codigo);
             }, () => { setConfirmarAlta(false); return "Contrato generado y alta realizada: se creó el colaborador y se cerró el proceso."; })}>
               <FileSignature className="h-4 w-4" /> Generar contrato y dar de alta
@@ -894,16 +889,72 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
   );
 }
 
-/** Captura interna: RH sube el documento desde la ficha (queda «Recibido» para revisión, igual que por la liga). */
-function SubirDoc({ onArchivo, ocupado }: { onArchivo: (a: File) => void; ocupado: boolean }) {
-  const ref = useRef<HTMLInputElement>(null);
+function visorContrato(expedienteId: number): ArchivoVisor {
+  return { url: urlContratoPdf(expedienteId), nombre: `contrato-${expedienteId}.pdf`, titulo: "Contrato (borrador)" };
+}
+
+const TONO_RESUMEN: Record<string, "good" | "warn" | "bad" | "neutral" | "brand"> = { good: "good", warn: "warn", bad: "bad", neutral: "neutral", brand: "brand" };
+
+/** Historial con el vocabulario vigente (registros previos decían «capacitación en tienda» / «capacitador»). */
+export function textoOperativo(t: string) {
+  return t
+    .replace(/capacitaci[oó]n en tienda/gi, "entrevista")
+    .replace(/Capacitaci[oó]n/g, "Entrevista")
+    .replace(/capacitaci[oó]n/g, "entrevista")
+    .replace(/Capacitador/g, "Entrevistador")
+    .replace(/capacitador/g, "entrevistador");
+}
+
+/** Pestaña «Resumen» del flujo operativo (Zeze punto 7): etapa actual, resultado integral, estado de las validaciones,
+ *  observaciones relevantes y requisitos pendientes. Sale de `GET /candidatos/{c}/operativo` (resumen). */
+export function ResumenOperativo({ codigo, onVerEvaluaciones }: { codigo: string; onVerEvaluaciones?: () => void }) {
+  const [panel, setPanel] = useState<Panel | null>(null);
+  useEffect(() => {
+    fetchPanelOperativo(codigo).then(setPanel);
+  }, [codigo]);
+  if (!panel) return <p className="text-sm text-ink-3">Cargando resumen…</p>;
+  const r = panel.resumen;
   return (
-    <>
-      <input ref={ref} type="file" className="hidden" accept="image/jpeg,image/png,image/webp,application/pdf"
-        onChange={(e) => { const a = e.target.files?.[0]; if (a) onArchivo(a); e.target.value = ""; }} />
-      <Button size="sm" variant="ghost" disabled={ocupado} onClick={() => ref.current?.click()} title="Subir el archivo desde la ficha">
-        <Upload className="h-4 w-4" /> {ocupado ? "Subiendo…" : "Subir"}
-      </Button>
-    </>
+    <Card className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <Eyebrow>Etapa actual</Eyebrow>
+          <p className="mt-1 font-display text-lg font-bold text-ink">{r.etapa}</p>
+        </div>
+        <div className="text-right">
+          <Eyebrow>Resultado integral</Eyebrow>
+          <p className="mt-1"><Badge tone={TONO_RESUMEN[r.resultadoIntegral.tono]} dot>{r.resultadoIntegral.texto}</Badge></p>
+          <p className="mt-0.5 text-[11px] text-ink-3">{r.resultadoIntegral.detalle}</p>
+        </div>
+      </div>
+      <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Validaciones</p>
+      <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+        {r.validaciones.map((v) => (
+          <li key={v.nombre + (v.evaluacion ?? "")} className="flex items-center justify-between gap-2 rounded-xl border border-border-soft px-3 py-2 text-[13px]">
+            <span className="truncate text-ink">{v.nombre}</span>
+            <Badge tone={TONO_RESUMEN[v.tono] ?? "neutral"}>{v.estado}</Badge>
+          </li>
+        ))}
+      </ul>
+      {r.observaciones.length > 0 && (
+        <>
+          <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Observaciones relevantes</p>
+          <ul className="mt-1.5 flex flex-col gap-1 text-[13px] text-ink-2">
+            {r.observaciones.map((o, i) => <li key={i}>• {o}</li>)}
+          </ul>
+        </>
+      )}
+      <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Requisitos pendientes</p>
+      {r.pendientes.length ? (
+        <ul className="mt-1.5 list-disc pl-5 text-[13px] text-warn">{r.pendientes.map((p) => <li key={p}>{p}</li>)}</ul>
+      ) : (
+        <p className="mt-1.5 text-[13px] text-good">Nada pendiente para avanzar desde esta etapa.</p>
+      )}
+      {onVerEvaluaciones && panel.evaluacionesPendientes > 0 && (
+        <button type="button" onClick={onVerEvaluaciones} className="mt-2 text-[12px] font-semibold text-brand hover:underline">
+          Ver «Evaluaciones» ({panel.evaluacionesPendientes} pendiente{panel.evaluacionesPendientes > 1 ? "s" : ""})
+        </button>
+      )}
+    </Card>
   );
 }

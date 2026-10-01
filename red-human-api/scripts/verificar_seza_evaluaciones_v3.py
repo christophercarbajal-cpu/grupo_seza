@@ -134,7 +134,7 @@ def main():
 
         # ---- 8 y 10. texto + archivo desde la liga → evaluación correcta, con nombre y fecha ----
         r = c.post(f"/evaluaciones/publica/evaluador/{tok_med}/resultado",
-                   data={"resumen": "Apto para conducir. Presión arterial normal.", "evaluador": "Dra. Prueba"},
+                   data={"resumen": "Apto para conducir. Presión arterial normal.", "evaluador": "Dra. Prueba", "apto": "apto"},
                    files={"archivo": ("informe.pdf", PDF, "application/pdf")})
         check(r.status_code == 200 and r.json()["yaRegistrado"], "el médico registra texto + PDF desde su liga")
         lista = {e["id"]: e for e in c.get(f"/evaluaciones/postulaciones/{P}", headers=h).json()}  # «reabrir la ficha»

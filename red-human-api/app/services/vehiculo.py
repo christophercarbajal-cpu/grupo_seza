@@ -124,15 +124,21 @@ async def enviar_liga(db: Session, p: Postulacion, actor: str) -> dict:
     """Crea (o reutiliza) la revisión y manda la liga por WhatsApp. Regresa {liga, whatsapp}."""
     from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje  # import local: evita ciclo
 
+    from . import entregas
+
     r = obtener_o_crear(db, p)
     texto = texto_liga(p, r)
     envio = await _enviar_whatsapp(p, texto)
     guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+    # el correo sale aparte (nunca depende de WhatsApp/Telegram)
+    correo = await entregas.correo_candidato(p, "Fotos y documentos de tu vehículo", texto.split("\n\n")[0].replace("*", ""), cta=("Subir fotos y documentos", liga(r)))
     r.liga_enviada_en = datetime.now(timezone.utc)
     r.envios = (r.envios or 0) + 1
     _nota(r, "liga_enviada", "Liga del vehículo enviada" + ("" if envio.get("enviado") else " (el mensaje no salió: compártela a mano)"), actor)
-    registrar(db, actor, "vehiculo_liga_enviada", "postulacion", p.codigo, {"enviado": envio.get("enviado", False)})
-    return {"liga": liga(r), "whatsapp": envio}
+    registrar(db, actor, "vehiculo_liga_enviada", "postulacion", p.codigo, {"enviado": envio.get("enviado", False), "correo": correo.get("enviado", False)})
+    return {"liga": liga(r), "whatsapp": envio, "correo": correo,
+            "envios": [entregas.fila("candidato", "mensaje", envio if p.telefono else {**envio, "pendiente": True}, liga(r)),
+                       entregas.fila("candidato", "correo", correo, liga(r))]}
 
 
 def registrar_foto(db: Session, r: RevisionVehiculo, lado: str, archivo_id: int) -> None:
@@ -263,8 +269,8 @@ def resumen_prefiltro(p: Postulacion) -> Optional[dict]:
             "pendiente": "Esperando fotos y documentos del vehículo",
             "correccion": "Esperando la corrección del candidato",
             "por_revisar": "Revisar fotos y documentos: aprobar, pedir corrección o marcar excepción",
-            "aprobado": "Listo para citar a la capacitación en tienda (Entrevista)",
-            "excepcion": "Listo para citar a la capacitación en tienda (vehículo por excepción)",
+            "aprobado": "Listo para citar a la entrevista",
+            "excepcion": "Listo para citar a la entrevista (vehículo por excepción)",
         }.get(r.estado, "")
     return {
         "completo": True,

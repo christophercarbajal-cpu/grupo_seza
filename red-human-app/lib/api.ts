@@ -1389,7 +1389,21 @@ export function postular(datos: {
     cv: { procesado: boolean; avisos: string[] };
     clasificacion: { estado: string; score: number; evidencia: string } | null;
     vehiculo: { liga: string } | null;
+    /** Handoff web → Telegram (2026-10-01): token del deep link `tg://resolve?domain=<bot>&start=<token>`. */
+    telegram_onboarding_token?: string;
+    telegramBot?: string;
   }>("/candidatos/postular", form);
+}
+
+/** Bot de la demo (respaldo si la API no lo manda). */
+export const BOT_TELEGRAM_DEFAULT = "GrupoSeza_bot";
+/** Enlace NATIVO de Telegram al bot con /start <token> (abre la app directo, sin pasar por otra página). */
+export function ligaTelegramInicio(token: string, bot = BOT_TELEGRAM_DEFAULT) {
+  return `tg://resolve?domain=${bot}&start=${token}`;
+}
+/** Respaldo web (escritorio sin la app instalada). */
+export function ligaTelegramWeb(token: string, bot = BOT_TELEGRAM_DEFAULT) {
+  return `https://t.me/${bot}?start=${token}`;
 }
 
 export interface MensajePrefiltro {
@@ -3314,6 +3328,16 @@ export interface EvaluacionCandidato {
   mimeInforme?: string;
   /** Aviso (no falla) cuando el adjunto venía vacío o ilegible y solo se guardó el texto. */
   avisoArchivo?: string;
+  /** Zeze punto 5: la liga existe desde que se guarda; la CAPTURA espera el consentimiento. */
+  capturaHabilitada?: boolean;
+  consentimientoEstado?: "Pendiente" | "Aceptado";
+  /** Zeze punto 6: dictamen del EVALUADOR (médico / socioeconómico / entrevista humana), aparte de la revisión de RH. */
+  dictamenEvaluador?: string | null;
+  dictamenEvaluadorTexto?: string;
+  dictamenesEvaluador?: { valor: string; texto: string }[];
+  correcciones?: { fecha: string; por: string; origen: string; motivo: string;
+    antes?: { resumen: string; dictamenEvaluador: string; archivo: string; dictamenRH: string };
+    despues?: { resumen: string; dictamenEvaluador: string; archivo: string } }[];
 }
 
 export interface DatosEvaluador {
@@ -3369,15 +3393,20 @@ export interface EvaluacionEvaluadorPublica {
   candidato: string; empresa: string; puesto: string; evaluacion: string; tipo: TipoEvaluacion; tipoTexto: string;
   evaluador: string; cita: string | null; citaLugar: string; habilitada: boolean; motivo: string; yaRegistrado: boolean; cancelada: boolean;
   codigo?: string; historica?: boolean; pideApto?: boolean; avisoArchivo?: string;
+  dictamenesEvaluador?: { valor: string; texto: string }[];
+  consentimiento?: "Pendiente" | "Aceptado";
+  resultado?: { resumen: string; dictamenEvaluador: string; nombreArchivo: string; cargadoPor: string; cargadoEn: string | null; correcciones: number } | null;
 }
 export function fetchEvaluacionEvaluador(token: string) {
   return get<EvaluacionEvaluadorPublica>(`/evaluaciones/publica/evaluador/${token}`);
 }
-export function registrarResultadoEvaluador(token: string, datos: { resumen: string; evaluador: string; archivo?: File | null; apto?: string }) {
+export function registrarResultadoEvaluador(token: string, datos: { resumen: string; evaluador: string; archivo?: File | null; apto?: string; corregir?: boolean; motivo?: string }) {
   const form = new FormData();
   form.append("resumen", datos.resumen);
   form.append("evaluador", datos.evaluador);
   if (datos.apto) form.append("apto", datos.apto);
+  if (datos.corregir) form.append("corregir", "true");
+  if (datos.motivo) form.append("motivo", datos.motivo);
   if (datos.archivo) form.append("archivo", datos.archivo);
   return subir<EvaluacionEvaluadorPublica>(`/evaluaciones/publica/evaluador/${token}/resultado`, form);
 }
@@ -3387,10 +3416,13 @@ export function enviarEvaluacion(codigo: string) {
 export function avanzarEvaluacionIntegrada(codigo: string) {
   return post<EvaluacionCandidato>(`/evaluaciones/${codigo}/integracion/avanzar`, {});
 }
-export function cargarResultadoEvaluacion(codigo: string, resumen: string, archivo?: File | null, apto = "") {
+/** Registrar resultado (o «Corregir resultado» con `corregir`: guarda historial y regresa a «Pendiente de revisión»). */
+export function cargarResultadoEvaluacion(codigo: string, resumen: string, archivo?: File | null, apto = "", corregir = false, motivo = "") {
   const form = new FormData();
   form.append("resumen", resumen);
   if (apto) form.append("apto", apto);
+  if (corregir) form.append("corregir", "true");
+  if (motivo) form.append("motivo", motivo);
   if (archivo) form.append("archivo", archivo);
   return subir<EvaluacionCandidato>(`/evaluaciones/${codigo}/resultado`, form);
 }
@@ -3526,7 +3558,7 @@ export interface DocumentoVehiculo {
 export interface FlujoVehiculo {
   prefiltro: ResumenPrefiltroReglas | null;
   vehiculo: RevisionVehiculo | null;
-  envio?: { liga: string; whatsapp: { enviado?: boolean; detalle?: unknown } } | null;
+  envio?: { liga: string; whatsapp: { enviado?: boolean; detalle?: unknown }; envios?: EnvioOperativo[] } | null;
 }
 
 export function fetchFlujoVehiculo(codigo: string) {
@@ -3630,12 +3662,17 @@ export interface ReferenciaCandidato {
   validacion_nota?: string;
 }
 
+/** Envío por canal con estado visible (2026-10-01): pendiente | enviado | entregado | fallido. */
+export type EstadoEnvio = "pendiente" | "enviado" | "entregado" | "fallido";
 export interface EnvioOperativo {
   destinatario: string;
   canal: string;
   enviado: boolean;
   detalle: string;
   fecha: string;
+  estado?: EstadoEnvio;
+  estadoTexto?: string;
+  liga?: string;
 }
 
 /** Capacitación en tienda (la «Entrevista» del flujo operativo) — vive en EntrevistaHumana. */
@@ -3686,6 +3723,14 @@ export interface PanelOperativo {
   /** v3: lo que falta para «Avanzar a Contratación» (entrevista Apta + evaluaciones con resultado y revisadas). */
   requisitosContratacion: string[];
   evaluacionesPendientes: number;
+  /** Pestaña «Resumen» del flujo operativo (Zeze punto 7). */
+  resumen: {
+    etapa: string;
+    resultadoIntegral: { texto: string; tono: "good" | "bad" | "warn"; detalle: string };
+    validaciones: { nombre: string; estado: string; tono: string; evaluacion?: string }[];
+    observaciones: string[];
+    pendientes: string[];
+  };
   contratacion: {
     condiciones: {
       puesto: string; sueldo: string; tipoContratacion: string; fechaIngreso: string | null; ubicacion: string;
@@ -3721,6 +3766,7 @@ export interface PanelOperativo {
   envios?: EnvioOperativo[];
   induccionEnviada?: { titulo: string; liga: string; simulado: boolean } | null;
   liga?: string;
+  correo?: { enviado?: boolean; detalle?: unknown } | null;
 }
 
 export interface DatosEntrevistaOperativa {

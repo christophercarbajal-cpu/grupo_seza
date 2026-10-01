@@ -21,6 +21,7 @@ from ..database import get_db
 from ..deps import cuenta_actual, usuario_actual, usuario_decisor
 from ..models import RESULTADOS_CAPACITACION, TIPOS_CONTRATACION, Cuenta, Curso, Postulacion, Usuario, plantilla_contrato, registrar
 from ..serial import iso
+from ..services import entregas
 from ..services import flujo_operativo as flujo
 from ..services.configuracion import modo_prueba_activo
 from ..services.notificaciones import TZ_MEXICO
@@ -83,7 +84,7 @@ def entrevista_dict(db: Session, eh) -> Optional[dict]:
         "tono": tono,
         "clave": flujo.clave_entrevista(eh),
         "cursoInduccion": {"codigo": curso.codigo, "titulo": curso.titulo} if curso else None,
-        "envios": list(reversed(eh.envios or [])),
+        "envios": entregas.resolver(db, reversed(eh.envios or [])),  # con estado Pendiente/Enviado/Entregado/Fallido
     }
 
 
@@ -111,6 +112,7 @@ def panel_dict(db: Session, p: Postulacion) -> dict:
         "evaluacionResumen": flujo.evaluacion_resumen(p),
         # v3: lo que falta para «Avanzar a Contratación» (entrevista Apta + evaluaciones con resultado y revisadas)
         "requisitosContratacion": flujo.requisitos_contratacion(db, p),
+        "resumen": flujo.resumen_ficha(db, p),  # pestaña «Resumen» (Zeze punto 7)
         "evaluacionesPendientes": len(flujo.evaluaciones_pendientes(flujo.evaluaciones_vivas(db, p))),
         "contratacion": {
             "condiciones": {
@@ -231,13 +233,13 @@ async def reenviar_entrevista(codigo: str, datos: ReenviarIn, db: Session = Depe
     p = _operativo(db, codigo, cuenta.id)
     eh = flujo.entrevista_actual(p)
     if eh is None:
-        raise HTTPException(409, "No hay una capacitación programada.")
+        raise HTTPException(409, "No hay una entrevista programada.")
     if datos.destinatario == "candidato":
-        envio = [await flujo.enviar_cita_candidato(db, p, eh)]
-    elif datos.destinatario == "capacitador":
+        envio = [await flujo.enviar_cita_candidato(db, p, eh), (eh.envios or [])[-1]]  # mensaje + correo (aparte)
+    elif datos.destinatario in ("capacitador", "entrevistador"):
         envio = await flujo.enviar_aviso_capacitador(db, p, eh)
     else:
-        raise HTTPException(400, "destinatario debe ser candidato o capacitador.")
+        raise HTTPException(400, "destinatario debe ser candidato o entrevistador.")
     registrar(db, u.nombre, "capacitacion_tienda_reenviada", "postulacion", p.codigo, {"destinatario": datos.destinatario,
                                                                                          "enviado": any(x["enviado"] for x in envio)})
     db.commit()
@@ -349,7 +351,7 @@ async def enviar_a_onboarding(codigo: str, db: Session = Depends(get_db), u: Usu
     except ValueError as e:
         raise HTTPException(409, str(e))
     db.commit()
-    return {**panel_dict(db, p), "liga": r["liga"], "whatsapp": r["whatsapp"]}
+    return {**panel_dict(db, p), "liga": r["liga"], "whatsapp": r["whatsapp"], "correo": r.get("correo"), "envios": r.get("envios", [])}
 
 
 # ------------------------------------------------------------ Onboarding
@@ -366,7 +368,7 @@ async def solicitar_documentos(codigo: str, db: Session = Depends(get_db), u: Us
         raise HTTPException(409, "Falta el consentimiento de privacidad del candidato.")
     r = await flujo.solicitar_documentos_referencias(db, p, u.nombre)
     db.commit()
-    return {**panel_dict(db, p), "liga": r["liga"], "whatsapp": r["whatsapp"]}
+    return {**panel_dict(db, p), "liga": r["liga"], "whatsapp": r["whatsapp"], "correo": r.get("correo"), "envios": r.get("envios", [])}
 
 
 class DocumentoIn(BaseModel):

@@ -102,22 +102,27 @@ with TestClient(app) as client:
     r = client.post(f"/evaluaciones/postulaciones/{P}", json={"tipo": "medico", "nombre": "Examen médico", "evaluador_tipo": "externo",
                                                              "evaluador_nombre": "Dr. Ruiz", "evaluador_telefono": "5598765432"})
     MED = r.json()
-    check(MED["ligaConsentimiento"] and MED["ligaEvaluador"] and not MED["ligaEvaluadorHabilitada"],
-          "el médico muestra primero la liga de consentimiento; la del médico existe pero aún no se habilita")
-    check(client.post(f"/evaluaciones/{MED['id']}/evaluador/enviar").status_code == 409, "no se manda la liga al médico sin consentimiento")
+    # 2026-10-01 (Zeze punto 5): la liga del médico se genera y se comparte al guardar; lo que espera es la CAPTURA
+    check(MED["ligaConsentimiento"] and MED["ligaEvaluador"] and MED["ligaEvaluadorHabilitada"] and not MED["capturaHabilitada"]
+          and MED["consentimientoEstado"] == "Pendiente",
+          "el médico: liga de consentimiento + liga del médico desde el inicio; consentimiento «Pendiente» y captura bloqueada")
+    check(client.post(f"/evaluaciones/{MED['id']}/evaluador/enviar").status_code == 200, "la liga del médico se puede mandar sin esperar el consentimiento")
     tok_med = MED["ligaEvaluador"].rsplit("/", 1)[1]
     pub = client.get(f"/evaluaciones/publica/evaluador/{tok_med}").json()
-    check(not pub["habilitada"] and "consentimiento" in pub["motivo"].lower(), "la liga del médico explica que falta el consentimiento")
+    check(not pub["habilitada"] and pub["consentimiento"] == "Pendiente" and "consentimiento" in pub["motivo"].lower(),
+          "la liga del médico muestra «Consentimiento: Pendiente» y explica que falta")
     check(client.post(f"/evaluaciones/publica/evaluador/{tok_med}/resultado", data={"resumen": "x", "evaluador": "Dr. Ruiz"}).status_code == 409,
           "…y no deja registrar antes")
     tok_c = MED["ligaConsentimiento"].rsplit("/", 1)[1]
     client.post(f"/evaluaciones/publica/consentimiento/{tok_c}/aceptar", json={"nombre": "Laura Pérez Gómez", "acepto": True})
     vista = next(x for x in client.get(f"/evaluaciones/postulaciones/{P}").json() if x["id"] == MED["id"])
-    check(vista["ligaEvaluadorHabilitada"] and vista["estado"] == "pendiente", "aceptado el consentimiento → se habilita la liga del médico")
+    check(vista["capturaHabilitada"] and vista["consentimientoEstado"] == "Aceptado" and vista["estado"] == "pendiente",
+          "aceptado el consentimiento → se habilita la captura del médico")
     r = client.post(f"/evaluaciones/{MED['id']}/evaluador/enviar")
     check(r.status_code == 200 and r.json()["envios"][0]["destinatario"] == "evaluador" and r.json()["ligaEvaluador"],
           "se manda la liga al médico (el resultado del envío se ve aparte; la liga sigue ahí)")
-    r = client.post(f"/evaluaciones/{MED['id']}/resultado", data={"resumen": "Apto sin restricciones"})
+    check(client.post(f"/evaluaciones/{MED['id']}/resultado", data={"resumen": "Sin dictamen"}).status_code == 400, "el médico exige dictamen (Apto / Apto con restricciones / No apto)")
+    r = client.post(f"/evaluaciones/{MED['id']}/resultado", data={"resumen": "Apto sin restricciones", "apto": "apto"})
     check(r.status_code == 200 and r.json()["resultadoOrigen"] == "rh", "captura manual de RH disponible aunque el médico tenga su liga")
     check(client.post(f"/evaluaciones/publica/evaluador/{tok_med}/resultado", data={"resumen": "x", "evaluador": "Dr. Ruiz"}).status_code == 409,
           "las dos vías alimentan la MISMA evaluación (la liga ya no duplica)")

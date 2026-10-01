@@ -228,6 +228,29 @@ async def enviar_plantilla_entrevista(telefono: str, parametros: List[str], text
     return await enviar_mensaje(telefono, texto_fallback)
 
 
+async def enviar_notificacion(telefono: str, texto: str, plantilla: str = "", parametros: Optional[List[str]] = None) -> dict:
+    """Aviso que NO exige que la persona haya escrito antes (2026-10-01, Zeze punto 4). Con Meta va DIRECTO por
+    plantilla aprobada (`plantilla` con sus `parametros`, o META_PLANTILLA_AVISO con el texto como única variable) —
+    sin intentar primero el texto libre que Meta rechaza fuera de la ventana de 24 h; si la plantilla falla, texto
+    libre. Con Telegram (opcional) o los gateways, texto normal. Nunca lanza."""
+    try:
+        if proveedor() != "meta":
+            return await enviar_mensaje(telefono, texto)
+        nombre = (plantilla or settings.meta_plantilla_aviso or "").strip()
+        if not nombre:
+            return await enviar_mensaje(telefono, texto)
+        params = [str(x or "-") for x in parametros] if (plantilla and parametros) else [texto]
+        r = await enviar_plantilla(telefono, nombre, params, settings.meta_plantilla_idioma, texto_alterno=texto)
+        if r.get("enviado"):
+            r["plantilla"] = nombre
+            return r
+        alterno = await enviar_mensaje(telefono, texto)
+        alterno["motivo_fallback"] = f"plantilla {nombre}: {r.get('detalle')}"
+        return alterno
+    except Exception as e:  # noqa: BLE001
+        return _resultado(False, f"error al enviar: {e}")
+
+
 # Meta → extensión aceptada por services/archivos.FORMATOS (documentos de expediente).
 _EXT_POR_MIME = {
     "application/pdf": "pdf",

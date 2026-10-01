@@ -1141,6 +1141,12 @@ def _url_psico(clave: str):
     return psi.url_candidato(clave) if clave else None
 
 
+def _envios_con_estado(db, filas) -> list:
+    from .services import entregas
+
+    return entregas.resolver(db, filas)
+
+
 def evaluacion_candidato_dict(ev, usuario=None, db=None) -> dict:
     """El informe médico COMPLETO (archivo, resumen, notas, comentario) solo viaja a quien tiene permiso; el resto
     ve únicamente el estado y el dictamen. 2026-09-30: ligas (consentimiento → evaluador → enlace), evaluador, cita y
@@ -1193,12 +1199,20 @@ def evaluacion_candidato_dict(ev, usuario=None, db=None) -> dict:
         # 2026-10-01: la «Capacitación en tienda» de la v1 es historial (sin liga): su liga se confundía con la del médico
         "legado": legado,
         "ligaEvaluador": f"{settings.app_url}/evaluacion/{ev.evaluador_token}" if ev.evaluador_token and not legado else None,
-        # Médico: la liga del médico se habilita hasta que el candidato acepta el consentimiento expreso
-        "ligaEvaluadorHabilitada": bool(ev.evaluador_token) and not legado and ev.estado not in ("revisada", "fallida", "en_espera_consentimiento"),
-        "envios": list(reversed(ev.envios or [])),
+        # 2026-10-01 (Zeze punto 5): la liga existe y se comparte desde que se guarda; la CAPTURA espera el consentimiento
+        "ligaEvaluadorHabilitada": bool(ev.evaluador_token) and not legado and ev.estado not in ("revisada", "fallida"),
+        "capturaHabilitada": ev.estado not in ("en_espera_consentimiento", "fallida"),
+        "consentimientoEstado": "Pendiente" if ev.estado == "en_espera_consentimiento" or (ev.requiere_consentimiento_expreso and not ev.consentimiento_aceptado_en) else "Aceptado",
+        "envios": _envios_con_estado(db, reversed(ev.envios or [])),
         # Entrevista humana adicional: Apto / No apto que registró el entrevistador (RH lo confirma al revisar)
-        "aptoEvaluador": sev.apto_del_evaluador(ev) or None,
-        "aptoEvaluadorTexto": sev.dictamenes_de(ev.tipo).get(sev.apto_del_evaluador(ev), "") if sev.apto_del_evaluador(ev) else "",
+        "aptoEvaluador": sev.dictamen_del_evaluador(ev) or None,
+        "aptoEvaluadorTexto": sev.dictamenes_evaluador(ev.tipo).get(sev.dictamen_del_evaluador(ev), "") if sev.dictamen_del_evaluador(ev) else "",
+        # Zeze punto 6: dictamen del EVALUADOR (aparte de la revisión de RH) y sus correcciones
+        "dictamenEvaluador": sev.dictamen_del_evaluador(ev) or None,
+        "dictamenEvaluadorTexto": sev.dictamenes_evaluador(ev.tipo).get(sev.dictamen_del_evaluador(ev), "") if sev.dictamen_del_evaluador(ev) else "",
+        "dictamenesEvaluador": [{"valor": k, "texto": t} for k, t in sev.dictamenes_evaluador(ev.tipo).items()],
+        "correcciones": list(reversed(ev.correcciones or [])) if not restringido else [
+            {k: v for k, v in x.items() if k not in ("antes", "despues")} for x in reversed(ev.correcciones or [])],
     }
     if not restringido:
         salida.update({

@@ -129,7 +129,8 @@ import { SwitchModoPrueba } from "@/components/dashboard/switch-modo-prueba";
 import { Toast, type ToastMsg } from "@/components/dashboard/toast";
 import { INTERVALO_TABLERO_MS, usePolling } from "@/lib/use-polling";
 import { PanelPrefiltroVehiculo } from "@/components/dashboard/candidatos/panel-prefiltro-vehiculo";
-import { PanelOperativo } from "@/components/dashboard/candidatos/panel-operativo";
+import { PanelOperativo, ResumenOperativo, textoOperativo } from "@/components/dashboard/candidatos/panel-operativo";
+import { AccionesArchivo, VisorArchivo, type ArchivoVisor } from "@/components/dashboard/visor-archivo";
 import { ETAPAS_OPERATIVO, fetchFlujoCandidatos } from "@/lib/api";
 import { cn, etiquetaRecordatorio } from "@/lib/utils";
 
@@ -2011,7 +2012,7 @@ function ModalCandidato({
                           disabled: Boolean(ocupado),
                         }]
                       : []),
-                    { etiqueta: "Agregar entrevista humana o evaluación", icono: <IconoEvaluacion />, onClick: () => setAgregarEval(true), disabled: Boolean(ocupado) || c.activa === false },
+                    { etiqueta: c.flujo === "operativo" ? "Agregar evaluación" : "Agregar entrevista humana o evaluación", icono: <IconoEvaluacion />, onClick: () => setAgregarEval(true), disabled: Boolean(ocupado) || c.activa === false },
                     { etiqueta: "Mover a otra etapa…", icono: <ArrowRightLeft />, onClick: () => setMoverA({ etapa: "", motivo: "" }), disabled: Boolean(ocupado) },
                     ...(c.etapa === "Entrevista Humana"
                       ? [{ etiqueta: "Agendar otra Entrevista Humana", icono: <CalendarClock />, onClick: () => setModalEntrevista(true), disabled: Boolean(ocupado) }]
@@ -2372,6 +2373,45 @@ function PestanaResumen({
   datosPrincipales.push({ icon: Globe, v: `Canal: ${c.fuente}` });
 
   const tonoRecomendacion = c.recomendacionRedHuman ? TONOS_RECOMENDACION[c.recomendacionRedHuman] : null;
+
+  // Flujo operativo (Zeze punto 7, 2026-10-01): etapa, resultado integral, validaciones, observaciones y pendientes
+  // primero; el CV solo si existe (o se señala que falta); sin Entrevista Red Human ni su recomendación (este flujo no
+  // la usa); «Entrevista» en lugar de «Capacitación»; el historial queda como sección secundaria (plegada).
+  if (c.flujo === "operativo") {
+    return (
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-wrap gap-2">
+          {datosPrincipales.map((d, i) => <Info key={i} icon={d.icon} v={d.v} />)}
+        </div>
+        <ResumenOperativo codigo={c.id} onVerEvaluaciones={() => setTab("evaluaciones")} />
+        <Card className="p-4">
+          <Eyebrow>Currículum</Eyebrow>
+          {ultimoCv ? (
+            <div className="mt-1.5 text-sm text-ink-2">
+              <p>Recibido: <b className="text-ink">{ultimoCv.nombre}</b> · {ultimoCv.subido}</p>
+              {cv.resumen_profesional && <p className="mt-1 text-[13px] leading-relaxed">{cv.resumen_profesional}</p>}
+              <button type="button" onClick={() => setTab("documentos")} className="mt-1 text-[12px] font-semibold text-brand hover:underline">Ver en «CV y documentos»</button>
+            </div>
+          ) : (
+            <p className="mt-1.5 text-sm text-ink-3">Sin CV: el candidato no adjuntó currículum (es opcional para esta vacante).</p>
+          )}
+        </Card>
+        {(c.historial?.length ?? 0) > 0 && (
+          <details className="rounded-2xl border border-border-soft px-4 py-3">
+            <summary className="cursor-pointer text-sm font-semibold text-ink-2">Historial del proceso ({c.historial!.length})</summary>
+            <ul className="mt-2 space-y-1.5">
+              {c.historial!.map((h, i) => (
+                <li key={i} className="flex items-start gap-2 text-[12px] text-ink-2">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
+                  <span>{textoOperativo(h.texto)}{h.motivo ? <span className="text-ink-3"> · {textoOperativo(h.motivo)}</span> : null}</span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -2991,6 +3031,7 @@ function PestanaDocumentos({
 }) {
   const puedeDecidir = usePuedeDecidir();
   const [cargandoCV, setCargandoCV] = useState(false);
+  const [visor, setVisor] = useState<ArchivoVisor | null>(null);
   // 2026-09-20 (B3): documentos requeridos del expediente con su trazabilidad (solicitud → recepción)
   const [expediente, setExpediente] = useState<NuevoIngreso | null>(null);
   const cargarExpediente = useCallback(async () => {
@@ -3196,16 +3237,12 @@ function PestanaDocumentos({
                 </div>
               </div>
 
-              <a
-                href={urlArchivoCandidato(c.id, a.id)}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1.5 shrink-0 rounded-xl border border-border-soft bg-surface-2 px-3 py-1.5 text-xs font-semibold text-ink transition hover:bg-surface hover:text-brand"
-              >
-                <Download className="h-3.5 w-3.5" /> Descargar
-              </a>
+              {/* Ver (visor sobre la ficha) · Descargar: acciones separadas */}
+              <AccionesArchivo className="shrink-0" onVer={setVisor}
+                archivo={{ url: urlArchivoCandidato(c.id, a.id), nombre: a.nombre, titulo: a.nombre, subtitulo: `${a.tipo} · ${a.subido}` }} />
             </Card>
           ))}
+          {visor && <VisorArchivo archivo={visor} onClose={() => setVisor(null)} />}
 
           {live && puedeDecidir && (
             <Dropzone compacto onArchivos={subirCV} cargando={cargandoCV} titulo="Subir nuevo CV o actualización" />
@@ -4560,14 +4597,12 @@ function FilaDocumentoSimple({
   live: boolean;
   onActualizado: (e: NuevoIngreso) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
   const [subiendo, setSubiendo] = useState(false);
+  const [visor, setVisor] = useState<ArchivoVisor | null>(null);
   const cargado = Boolean(d.tieneArchivo);
 
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file || !expedienteId) return;
+  async function onFile(file: File) {
+    if (!expedienteId) return;
     setSubiendo(true);
     const r = await subirDocumento(expedienteId, d.nombre, file);
     setSubiendo(false);
@@ -4585,27 +4620,12 @@ function FilaDocumentoSimple({
         ) : (
           <Badge tone={cargado ? "good" : "neutral"}>{cargado ? "Cargado" : "Pendiente"}</Badge>
         )}
-        {cargado && expedienteId ? (
-          <a
-            href={urlDocumento(expedienteId, d.nombre)}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs font-semibold text-brand hover:underline"
-          >
-            Ver
-          </a>
-        ) : live && expedienteId ? (
-          <>
-            <input ref={inputRef} type="file" accept="image/*,application/pdf" className="hidden" onChange={onFile} />
-            <button
-              onClick={() => inputRef.current?.click()}
-              disabled={subiendo}
-              className="text-xs font-semibold text-brand hover:underline disabled:opacity-50"
-            >
-              {subiendo ? "Subiendo…" : "Subir documento"}
-            </button>
-          </>
-        ) : null}
+        {expedienteId && (cargado || live) && (
+          <AccionesArchivo onVer={setVisor} subiendo={subiendo} accept="image/*,application/pdf"
+            archivo={cargado ? { url: urlDocumento(expedienteId, d.nombre), nombre: d.nombre, titulo: d.nombre } : null}
+            onSubir={live && !cargado ? onFile : undefined} textoSubir="Subir documento" />
+        )}
+        {visor && <VisorArchivo archivo={visor} onClose={() => setVisor(null)} />}
       </div>
     </div>
   );

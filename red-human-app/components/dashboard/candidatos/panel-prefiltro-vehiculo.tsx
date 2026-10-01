@@ -9,10 +9,11 @@
    que el vehículo esté aprobado o en excepción no se puede citar al candidato. Las decisiones son de RH (HITL). */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, Camera, Check, CheckCircle2, Clock, FileText, ShieldCheck, Upload, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, Camera, Check, CheckCircle2, Clock, Download, Eye, FileText, ShieldCheck, Upload, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { LigaAcciones } from "@/components/dashboard/liga-acciones";
+import { VisorArchivo, conDescarga, type ArchivoVisor } from "@/components/dashboard/visor-archivo";
 import { cn } from "@/lib/utils";
 import {
   aprobarPrefiltroReglas,
@@ -42,6 +43,8 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
   const [modal, setModal] = useState<Modal>(null);
   const [texto, setTexto] = useState("");
   const [lados, setLados] = useState<string[]>([]);
+  const [visor, setVisor] = useState<ArchivoVisor | null>(null);  // fotos y documentos se ven SOBRE la ficha
+  const [enviosLiga, setEnviosLiga] = useState<NonNullable<FlujoVehiculo["envio"]>["envios"]>(undefined);  // estado por canal
 
   const cargar = useCallback(async () => {
     const r = await fetchFlujoVehiculo(codigo);
@@ -58,6 +61,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
     setOcupado("");
     if (!r.ok) return setAviso({ tono: "error", texto: r.error });
     setFlujo(r.data);
+    if (r.data.envio?.envios) setEnviosLiga(r.data.envio.envios);
     setModal(null);
     setTexto("");
     setLados([]);
@@ -81,6 +85,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
 
   return (
     <div className="flex flex-col gap-5">
+      {visor && <VisorArchivo archivo={visor} onClose={() => setVisor(null)} />}
       {aviso && (
         <Aviso tono={aviso.tono} onCerrar={() => setAviso(null)}>
           {aviso.texto}
@@ -207,6 +212,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
             onGenerar={puedeDecidir ? () => ejecutar("generar", () => generarLigaVehiculo(codigo), "Liga generada: ábrela, cópiala o envíala.") : undefined}
             enviando={ocupado === "liga"}
             ultimoEnvio={vh.ligaEnviadaEn ? { enviado: true, fecha: vh.ligaEnviadaEn } : null}
+            envios={enviosLiga}
             onEnviar={puedeDecidir && vh.estado !== "aprobado" && vh.estado !== "excepcion"
               ? () => ejecutar("liga", () => enviarLigaVehiculo(codigo), "Liga del vehículo enviada.") : undefined}
           />
@@ -216,10 +222,11 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
               <figure key={f.lado} className={cn("overflow-hidden rounded-xl border", vh.ladosCorregir?.includes(f.lado) && vh.estado === "correccion" ? "border-warn" : "border-border-soft")}>
                 <div className="aspect-[4/3] bg-surface-2">
                   {f.cargada ? (
-                    <a href={urlArchivo(f.url)} target="_blank" rel="noreferrer" title="Abrir en tamaño completo">
+                    <button type="button" className="block h-full w-full" title="Ver en tamaño completo"
+                      onClick={() => setVisor({ url: urlArchivo(f.url), urlDescarga: conDescarga(urlArchivo(f.url)), nombre: `vehiculo-${f.lado}.jpg`, titulo: `Vehículo · ${f.nombre}` })}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={urlArchivo(f.url)} alt={`Vehículo: ${f.nombre}`} className="h-full w-full object-cover" />
-                    </a>
+                    </button>
                   ) : (
                     <div className="grid h-full place-items-center text-ink-3">
                       <Camera className="h-7 w-7" />
@@ -232,7 +239,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                     <span className="block text-ink-3">{f.cargada ? "Recibida" : "Pendiente"}</span>
                   </span>
                   {puedeDecidir && (
-                    <SubirArchivo soloImagen ocupado={ocupado === `foto-${f.lado}`} titulo={`Subir foto: ${f.nombre}`}
+                    <SubirArchivo soloImagen reemplazar={f.cargada} ocupado={ocupado === `foto-${f.lado}`} titulo={`Subir foto: ${f.nombre}`}
                       onArchivo={(a) => ejecutar(`foto-${f.lado}`, () => subirFotoVehiculoRH(codigo, f.lado, a), `Foto «${f.nombre}» cargada.`)} />
                   )}
                 </figcaption>
@@ -247,17 +254,24 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
                 vh.estado === "correccion" && vh.ladosCorregir?.includes(d.clave) ? "border-warn" : "border-border-soft")}>
                 <span className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-ink-3" />
-                  {d.cargado && vh.expedienteId ? (
-                    <a href={urlDocumento(vh.expedienteId, d.tipo)} target="_blank" rel="noreferrer" className="text-ink hover:text-brand hover:underline">{d.tipo}</a>
-                  ) : (
-                    <span className="text-ink">{d.tipo}</span>
-                  )}
+                  <span className="text-ink">{d.tipo}</span>
                   {d.estadoSimple === "Requiere corrección" && d.notas && <span className="text-[12px] text-bad">· {d.notas}</span>}
                 </span>
                 <span className="flex items-center gap-1.5">
                   <Badge tone={TONO_DOC[d.estadoSimple] ?? "neutral"}>{d.estadoSimple}</Badge>
+                  {d.cargado && vh.expedienteId && (
+                    <>
+                      <button type="button" className="inline-flex h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-semibold text-brand hover:bg-brand-soft"
+                        onClick={() => setVisor({ url: urlDocumento(vh.expedienteId!, d.tipo), nombre: d.tipo, titulo: `Vehículo · ${d.tipo}` })}>
+                        <Eye className="h-3.5 w-3.5" /> Ver
+                      </button>
+                      <a href={conDescarga(urlDocumento(vh.expedienteId, d.tipo))} download className="inline-flex h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-semibold text-brand hover:bg-brand-soft">
+                        <Download className="h-3.5 w-3.5" /> Descargar
+                      </a>
+                    </>
+                  )}
                   {puedeDecidir && (
-                    <SubirArchivo ocupado={ocupado === `doc-${d.clave}`} titulo={`Subir ${d.tipo}`}
+                    <SubirArchivo reemplazar={d.cargado} ocupado={ocupado === `doc-${d.clave}`} titulo={`Subir ${d.tipo}`}
                       onArchivo={(a) => ejecutar(`doc-${d.clave}`, () => subirDocumentoVehiculoRH(codigo, d.clave, a), `«${d.tipo}» cargado.`)} />
                   )}
                 </span>
@@ -361,7 +375,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
 }
 
 /** Captura interna: RH sube el archivo desde la ficha (alimenta la misma revisión que la liga del candidato). */
-function SubirArchivo({ onArchivo, ocupado, titulo, soloImagen = false }: { onArchivo: (a: File) => void; ocupado: boolean; titulo: string; soloImagen?: boolean }) {
+function SubirArchivo({ onArchivo, ocupado, titulo, soloImagen = false, reemplazar = false }: { onArchivo: (a: File) => void; ocupado: boolean; titulo: string; soloImagen?: boolean; reemplazar?: boolean }) {
   const ref = useRef<HTMLInputElement>(null);
   return (
     <>
@@ -369,7 +383,7 @@ function SubirArchivo({ onArchivo, ocupado, titulo, soloImagen = false }: { onAr
         onChange={(e) => { const a = e.target.files?.[0]; if (a) onArchivo(a); e.target.value = ""; }} />
       <button type="button" title={titulo} disabled={ocupado} onClick={() => ref.current?.click()}
         className="inline-flex h-7 items-center gap-1 rounded-lg px-1.5 text-[11px] font-semibold text-brand hover:bg-brand-soft disabled:opacity-50">
-        <Upload className="h-3.5 w-3.5" /> {ocupado ? "…" : "Subir"}
+        <Upload className="h-3.5 w-3.5" /> {ocupado ? "…" : reemplazar ? "Reemplazar" : "Subir"}
       </button>
     </>
   );

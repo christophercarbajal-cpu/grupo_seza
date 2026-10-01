@@ -58,6 +58,7 @@ from ..services.configuracion import modo_prueba_activo, permite_duplicados, pue
 from ..services.notificaciones import RE_CORREO, TZ_MEXICO, NotificarIn, override_de
 from ..services.whatsapp import enviar_mensaje, enviar_plantilla
 from ..services import teams as teams_srv
+from ..services import telegram as telegram_srv
 
 router = APIRouter(prefix="/candidatos", tags=["candidatos"])
 
@@ -864,6 +865,7 @@ async def postular(
     cierre_reglas = None
     if reglas_respuestas is not None and not p.prefiltro_completo:
         cierre_reglas = await cerrar_prefiltro_reglas(db, p, reglas_respuestas, reglas_textos, "web")
+    token_telegram = telegram_srv.asegurar_token_onboarding(p)  # handoff web → Telegram (2026-10-01)
     db.commit()
 
     # Zero-Touch: dispara la plantilla de Meta ("recibimos tu postulación") ya con la postulación
@@ -885,6 +887,10 @@ async def postular(
         "cv": {"procesado": resultado_cv.get("ok", False), "avisos": resultado_cv.get("avisos", [])},
         # Demo SEZA: el candidato NO ve el resultado (lo decide RH); solo la liga de fotos si ya le toca.
         "vehiculo": {"liga": cierre_reglas["vehiculo"]["liga"]} if cierre_reglas and cierre_reglas.get("vehiculo") else None,
+        # Handoff (2026-10-01): sin redirigir, el portal abre tg://resolve?domain=<bot>&start=<token>
+        "telegram_onboarding_token": token_telegram,
+        "telegramBot": telegram_srv.usuario_bot(),
+        "telegramLiga": telegram_srv.liga_inicio(token_telegram),
     }
 
 
@@ -934,6 +940,7 @@ async def subir_archivo(
 def descargar_archivo(
     codigo: str,
     archivo_id: int,
+    descargar: bool = False,
     db: Session = Depends(get_db),
     _: Usuario = Depends(usuario_actual),
     cuenta: Cuenta = Depends(cuenta_actual),
@@ -944,7 +951,8 @@ def descargar_archivo(
         raise HTTPException(404, "Archivo no encontrado")
     if not fs.existe(a.ruta):
         raise HTTPException(410, "El archivo ya no está disponible en el servidor.")
-    return FileResponse(a.ruta, media_type=a.mime or "application/octet-stream", filename=a.nombre)
+    return FileResponse(a.ruta, media_type=a.mime or "application/octet-stream", filename=a.nombre,
+                        content_disposition_type="attachment" if descargar else "inline")  # visor interno / «Descargar»
 
 
 @router.post("/{codigo}/archivos/{archivo_id}/reanalizar")
@@ -1548,12 +1556,12 @@ async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) 
                 r = await flujo_operativo.confirmar_cita(db, p, "candidato")
                 extra = " Te acabamos de compartir el material de inducción para que lo revises antes." if r.get("induccion") else ""
                 return await decir(f"¡Listo, {nombre}! Tu asistencia quedó confirmada. Te esperamos.{extra}")
-            return await decir(f"{nombre}, ¿confirmas tu asistencia a la capacitación? Responde *Sí*. Si necesitas otra fecha, dinos y RH te reprograma.")
+            return await decir(f"{nombre}, ¿confirmas tu asistencia a la entrevista? Responde *Sí*. Si necesitas otra fecha, dinos y RH te reprograma.")
         if ev and ev.confirmada_en and not ev.asistencia:
             return await decir(f"Tu cita ya está confirmada, {nombre}. Si necesitas cambiarla, RH te contactará por aquí.")
         if ev and ev.asistencia:
-            return await decir(f"Gracias, {nombre}. RH revisa el resultado de tu capacitación y te avisa por este medio.")
-        return await decir(f"Gracias, {nombre}. En breve RH te comparte la fecha de tu capacitación.")
+            return await decir(f"Gracias, {nombre}. RH revisa el resultado de tu entrevista y te avisa por este medio.")
+        return await decir(f"Gracias, {nombre}. En breve RH te comparte la fecha de tu entrevista.")
     if p.etapa == flujo_operativo.ONBOARDING and p.expediente:
         if not flujo_operativo.faltantes_para_alta(p):
             return await decir(f"¡Gracias, {nombre}! Tu expediente está completo; RH te confirma tu fecha de ingreso por este medio.")

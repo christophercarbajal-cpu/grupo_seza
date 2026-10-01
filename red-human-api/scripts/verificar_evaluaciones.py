@@ -185,7 +185,7 @@ with TestClient(app) as client:
     como(rh)
     check(client.post(f"/evaluaciones/{MED['id']}/resultado", data={"resumen": "x"}).status_code == 403, "sin permiso no se carga el informe médico")
     como(admin)
-    r = client.post(f"/evaluaciones/{MED['id']}/resultado", data={"resumen": "Hipertensión controlada"}, files={"archivo": ("medico.pdf", PDF_MIN, "application/pdf")})
+    r = client.post(f"/evaluaciones/{MED['id']}/resultado", data={"resumen": "Hipertensión controlada", "apto": "apto_con_restricciones"}, files={"archivo": ("medico.pdf", PDF_MIN, "application/pdf")})
     check(r.status_code == 200 and r.json()["resultadoResumen"] == "Hipertensión controlada", "con permiso (Administrador) se carga y se ve completo")
     check(client.post(f"/evaluaciones/{MED['id']}/revisar", json={"dictamen": "favorable"}).status_code == 400, "el médico solo acepta Apto / Apto con restricciones / No apto")
     como(rh)

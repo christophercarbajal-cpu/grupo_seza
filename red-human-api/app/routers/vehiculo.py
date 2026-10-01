@@ -113,12 +113,13 @@ async def subir_documento(token: str, clave: str = Form(...), archivo: UploadFil
     return _publica_dict(r)
 
 
-def _archivo_de(db: Session, r: RevisionVehiculo, lado: str) -> FileResponse:
+def _archivo_de(db: Session, r: RevisionVehiculo, lado: str, descargar: bool = False) -> FileResponse:
     dato = (r.fotos or {}).get(lado)
     a = db.get(Archivo, dato["archivo_id"]) if dato else None
     if not a or not fs.existe(a.ruta):
         raise HTTPException(404, "Foto no encontrada.")
-    return FileResponse(a.ruta, media_type=a.mime or "image/jpeg", headers={"Cache-Control": "private, max-age=60"})
+    return FileResponse(a.ruta, media_type=a.mime or "image/jpeg", headers={"Cache-Control": "private, max-age=60"},
+                        filename=a.nombre or f"vehiculo-{lado}.jpg", content_disposition_type="attachment" if descargar else "inline")
 
 
 @router.get("/vehiculo/publica/{token}/foto/{lado}")
@@ -151,12 +152,12 @@ def ver_revision(codigo: str, db: Session = Depends(get_db), _: Usuario = Depend
 
 
 @router.get("/candidatos/{codigo}/vehiculo/foto/{lado}")
-def ver_foto(codigo: str, lado: str, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual),
+def ver_foto(codigo: str, lado: str, descargar: bool = False, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual),
              cuenta: Cuenta = Depends(cuenta_actual)):
     p = _por_codigo(db, codigo, cuenta.id)
     if not p.revision_vehiculo:
         raise HTTPException(404, "Sin fotos del vehículo.")
-    return _archivo_de(db, p.revision_vehiculo, lado)
+    return _archivo_de(db, p.revision_vehiculo, lado, descargar)
 
 
 @router.post("/candidatos/{codigo}/vehiculo/enviar-liga")

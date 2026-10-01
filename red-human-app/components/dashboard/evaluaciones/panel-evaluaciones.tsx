@@ -10,15 +10,19 @@
    2026-10-01 (SEZA): «Entrevista humana» como opción (cita + entrevistador + Apto / No apto y observaciones); el texto
    del evaluador se muestra aparte del archivo adjunto («Resultado / comentarios del evaluador» con nombre y fecha);
    «Ver informe» abre un visor interno (Cerrar / Descargar) sin salir de la ficha; la «Capacitación en tienda» de la
-   v1 queda como historial sin liga (antes su liga se confundía con la del médico). */
+   v1 queda como historial sin liga (antes su liga se confundía con la del médico).
+   Zeze (2026-10-01): la liga del médico existe desde que se guarda (consentimiento Pendiente / Aceptado; mientras esté
+   pendiente se bloquea la CAPTURA); el evaluador dictamina (médico: Apto / Apto con restricciones / No apto;
+   socioeconómico: Favorable / Favorable con observaciones / No favorable) aparte de la revisión de RH; «Corregir
+   resultado» (RH o evaluador) guarda historial y regresa a «Pendiente de revisión» sin mover al candidato. */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Ban, CalendarClock, CheckCircle2, ClipboardCheck, Download, Eye, FileText, FileUp, History, Loader2, Lock, MessageSquareText, PlayCircle, RefreshCw, Send, SkipForward, Stethoscope, UserCog, X, XCircle } from "lucide-react";
+import { Ban, CalendarClock, CheckCircle2, ClipboardCheck, Download, Eye, FileText, FileUp, History, Loader2, Lock, MessageSquareText, Pencil, PlayCircle, RefreshCw, Send, SkipForward, Stethoscope, UserCog, XCircle } from "lucide-react";
 import { Badge, Button, Card, Eyebrow } from "@/components/ui";
 import { MenuAcciones } from "@/components/dashboard/menu-acciones";
 import { CampoRH, ModalMarco, inputRH } from "@/components/dashboard/modulos-rh";
 import { LigaAcciones } from "@/components/dashboard/liga-acciones";
+import { VisorArchivo } from "@/components/dashboard/visor-archivo";
 import {
   TIPOS_EVALUACION, agregarEvaluacionCandidato, asignarEvaluadorEvaluacion, avanzarEvaluacionIntegrada, cancelarEvaluacion,
   cargarResultadoEvaluacion, enviarEnlaceEvaluacion, enviarEvaluacion, enviarLigaConsentimientoMedico, enviarLigaEvaluador,
@@ -62,7 +66,7 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
   const [error, setError] = useState("");
   const [aviso, setAviso] = useState("");
   const [ocupado, setOcupado] = useState("");
-  const [resultado, setResultado] = useState<EvaluacionCandidato | null>(null);
+  const [resultado, setResultado] = useState<{ e: EvaluacionCandidato; corregir: boolean } | null>(null);
   const [revisar, setRevisar] = useState<EvaluacionCandidato | null>(null);
   const [cancelar, setCancelar] = useState<EvaluacionCandidato | null>(null);
   const [evaluador, setEvaluador] = useState<EvaluacionCandidato | null>(null);
@@ -108,7 +112,7 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
         </div>
         {live && (
           <Button size="sm" variant="outline" onClick={() => setAgregar(true)}>
-            <ClipboardCheck className="h-4 w-4" /> {operativo ? "Agregar entrevista humana o evaluación" : "Agregar evaluación"}
+            <ClipboardCheck className="h-4 w-4" /> Agregar evaluación
           </Button>
         )}
       </div>
@@ -145,7 +149,12 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                         {e.estado === "fallida" && e.motivoFallida ? `Motivo: ${e.motivoFallida}` : ""}
                       </p>
                     </div>
-                    <Badge tone={tonoEstado(e)}>{e.estado === "revisada" && e.dictamenTexto ? `Revisada · ${e.dictamenTexto}` : e.estadoTexto}</Badge>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {e.requiereConsentimientoExpreso && (
+                        <Badge tone={e.consentimientoEstado === "Aceptado" ? "good" : "warn"}>Consentimiento: {e.consentimientoEstado ?? (e.consentimientoAceptadoEn ? "Aceptado" : "Pendiente")}</Badge>
+                      )}
+                      <Badge tone={tonoEstado(e)}>{e.estado === "revisada" && e.dictamenTexto ? `Revisada · ${e.dictamenTexto}` : e.estadoTexto}</Badge>
+                    </div>
                   </div>
 
                   {/* ---- Ligas (regla universal): consentimiento primero, luego evaluador; enlace del candidato ---- */}
@@ -167,13 +176,19 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                       {e.requiereConsentimientoExpreso && e.consentimientoAceptadoEn && (
                         <p className="text-[12px] text-good">Consentimiento expreso aceptado · {fechaTexto(e.consentimientoAceptadoEn)}</p>
                       )}
+                      {e.ligaEvaluador && e.capturaHabilitada === false && e.estado !== "revisada" && (
+                        <p className="rounded-xl bg-warn-soft/50 px-3 py-2 text-[12px] text-warn">
+                          <Lock className="mr-1 inline h-3 w-3" />
+                          Consentimiento pendiente: la liga ya se puede compartir, pero la captura de datos {e.tipo === "medico" ? "médicos" : "del resultado"} se habilita cuando el candidato lo acepte.
+                        </p>
+                      )}
                       {e.ligaEvaluador && e.estado !== "revisada" && (
                         e.ligaEvaluadorHabilitada ? (
                           <LigaAcciones
                             etiqueta={`${e.requiereConsentimientoExpreso ? "2 · " : ""}Liga del ${rolEvaluador(e)} · ${e.nombre} (${e.id})`}
                             liga={e.ligaEvaluador}
                             enviando={ocupado === `${e.id}-eval`}
-                            ultimoEnvio={ultimoEnvio(e, e.ligaEvaluador)}
+                            envios={e.envios.filter((x) => x.liga === e.ligaEvaluador)}
                             onEnviar={live && e.evaluador?.nombre ? () => enviarLiga(e, "eval", () => enviarLigaEvaluador(e.id)) : undefined}
                           />
                         ) : (
@@ -190,7 +205,7 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                           etiqueta="Enlace del candidato (proveedor)"
                           liga={e.url}
                           enviando={ocupado === `${e.id}-enl`}
-                          ultimoEnvio={ultimoEnvio(e, e.url)}
+                          envios={e.envios.filter((x) => x.liga === e.url)}
                           onEnviar={live ? () => enviarLiga(e, "enl", () => enviarEnlaceEvaluacion(e.id)) : undefined}
                         />
                       )}
@@ -210,8 +225,8 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                   {/* ---- Acciones: una principal visible + el resto en «…» ---- */}
                   {live && (
                     <div className="mt-3 flex flex-wrap items-center gap-2">
-                      {abierta && !capturaRestringida && (
-                        <Button size="sm" onClick={() => setResultado(e)}><FileUp className="h-4 w-4" /> Registrar resultado</Button>
+                      {abierta && !capturaRestringida && e.capturaHabilitada !== false && (
+                        <Button size="sm" onClick={() => setResultado({ e, corregir: false })}><FileUp className="h-4 w-4" /> Registrar resultado</Button>
                       )}
                       {e.estado === "resultado_recibido" && (
                         <Button size="sm" onClick={() => setRevisar(e)}><CheckCircle2 className="h-4 w-4" /> Marcar como revisada</Button>
@@ -249,6 +264,9 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                           ...(e.estado === "en_proceso" && e.modo === "integrada" && e.siguientePaso && !e.conectadaProveedor
                             ? [{ etiqueta: `Simular paso: ${PASOS[e.siguientePaso]}`, icono: <SkipForward className="h-4 w-4" />, onClick: () => accion(e.id, () => avanzarEvaluacionIntegrada(e.id)) }]
                             : []),
+                          ...((e.estado === "resultado_recibido" || e.estado === "revisada") && !capturaRestringida
+                            ? [{ etiqueta: "Corregir resultado…", icono: <Pencil className="h-4 w-4" />, onClick: () => setResultado({ e, corregir: true }) }]
+                            : []),
                           ...(e.estado !== "revisada" && e.estado !== "fallida"
                             ? [{ etiqueta: "Marcar fallida / cancelar…", icono: <Ban className="h-4 w-4" />, peligrosa: true, onClick: () => setCancelar(e) }]
                             : []),
@@ -268,8 +286,12 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                             <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
                               <MessageSquareText className="h-3.5 w-3.5" /> Resultado / comentarios del {e.tipo === "entrevista_humana" ? "entrevistador" : "evaluador"}
                             </p>
-                            {e.aptoEvaluadorTexto && (
-                              <p className="mt-1"><Badge tone={e.aptoEvaluador === "apto" ? "good" : "bad"} dot>{e.aptoEvaluadorTexto}</Badge></p>
+                            {e.dictamenEvaluadorTexto && (
+                              <p className="mt-1 text-[12px] text-ink-2">Dictamen del evaluador:{" "}
+                                <Badge tone={["apto", "favorable"].includes(e.dictamenEvaluador ?? "") ? "good" : ["no_apto", "no_favorable"].includes(e.dictamenEvaluador ?? "") ? "bad" : "warn"} dot>
+                                  {e.dictamenEvaluadorTexto}
+                                </Badge>
+                              </p>
                             )}
                             {e.resultadoResumen
                               ? <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-ink">{e.resultadoResumen}</p>
@@ -296,8 +318,23 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
                         {/* 3) Revisión de RH: estado aparte de «Resultado recibido» */}
                         {e.estado === "revisada" && (
                           <p className="text-[12px] text-ink-3">
-                            Revisada por {e.revisadaPor} · {fechaTexto(e.revisadaEn)}{e.comentarioRevision ? ` — Conclusión: ${e.comentarioRevision}` : ""}
+                            <b className="text-ink-2">Revisión de RH:</b> {e.dictamenTexto ? `${e.dictamenTexto} · ` : ""}{e.revisadaPor} · {fechaTexto(e.revisadaEn)}{e.comentarioRevision ? ` — Conclusión: ${e.comentarioRevision}` : ""}
                           </p>
+                        )}
+                        {(e.correcciones?.length ?? 0) > 0 && (
+                          <details className="rounded-xl border border-border-faint px-3 py-2 text-[12px] text-ink-3">
+                            <summary className="cursor-pointer font-semibold text-ink-2">Historial de correcciones ({e.correcciones!.length})</summary>
+                            <ul className="mt-1 flex flex-col gap-1">
+                              {e.correcciones!.map((k, i) => (
+                                <li key={i}>
+                                  {fechaTexto(k.fecha)} · {k.por} ({k.origen}){k.motivo ? ` — ${k.motivo}` : ""}
+                                  {k.antes && (k.antes.dictamenEvaluador || k.antes.resumen) && (
+                                    <span className="block pl-3 italic">Antes: {[k.antes.dictamenEvaluador, k.antes.resumen].filter(Boolean).join(" · ").slice(0, 160)}</span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
                         )}
                       </div>
                     )
@@ -310,8 +347,14 @@ export function PanelEvaluaciones({ codigo, puesto, live, version, operativo = f
       </div>
 
       {agregar && <ModalAgregarEvaluacion codigo={codigo} puesto={puesto} conEntrevistaHumana={operativo} onClose={() => setAgregar(false)} onAgregada={() => { setAgregar(false); void cargar(); }} />}
-      {resultado && <ModalResultado e={resultado} onClose={() => setResultado(null)}
-        onListo={(avisoArchivo) => { setResultado(null); setError(""); setAviso(avisoArchivo || "Resultado registrado: queda «Resultado recibido» hasta que lo marques como revisada."); void cargar(); }} />}
+      {resultado && <ModalResultado e={resultado.e} corregir={resultado.corregir} onClose={() => setResultado(null)}
+        onListo={(avisoArchivo) => {
+          const corr = resultado.corregir;
+          setResultado(null);
+          setError("");
+          setAviso(avisoArchivo || (corr ? "Resultado corregido: queda «Pendiente de revisión». El candidato no cambia de etapa." : "Resultado registrado: queda «Resultado recibido» hasta que lo marques como revisada."));
+          void cargar();
+        }} />}
       {visor && <VisorInforme e={visor} onClose={() => setVisor(null)} />}
       {revisar && <ModalRevisar e={revisar} onClose={() => setRevisar(null)} onListo={() => { setRevisar(null); void cargar(); }} />}
       {cancelar && <ModalCancelar e={cancelar} onClose={() => setCancelar(null)} onListo={() => { setCancelar(null); void cargar(); }} />}
@@ -507,24 +550,29 @@ export function ModalAgregarEvaluacion({
   );
 }
 
-function ModalResultado({ e, onClose, onListo }: { e: EvaluacionCandidato; onClose: () => void; onListo: (avisoArchivo: string) => void }) {
+function ModalResultado({ e, corregir = false, onClose, onListo }: { e: EvaluacionCandidato; corregir?: boolean; onClose: () => void; onListo: (avisoArchivo: string) => void }) {
   const esEntrevista = e.tipo === "entrevista_humana";
-  const [apto, setApto] = useState(e.aptoEvaluador ?? "");
+  const opciones = e.dictamenesEvaluador ?? [];
+  const [apto, setApto] = useState(e.dictamenEvaluador ?? e.aptoEvaluador ?? "");
+  const [motivo, setMotivo] = useState("");
   const [resumen, setResumen] = useState(e.resultadoResumen ?? "");
   const [archivo, setArchivo] = useState<File | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState("");
   const ref = useRef<HTMLInputElement>(null);
   return (
-    <ModalMarco titulo={`Registrar resultado · ${e.nombre}`} subtitulo="Captura interna de RH: alimenta la misma evaluación que la liga del evaluador. Queda quién y cuándo. No cambia la etapa." onClose={onClose}>
-      {esEntrevista && (
+    <ModalMarco titulo={`${corregir ? "Corregir resultado" : "Registrar resultado"} · ${e.nombre}`}
+      subtitulo={corregir
+        ? "Queda en el historial (antes / después, quién y cuándo) y la evaluación regresa a «Pendiente de revisión». El candidato no cambia de etapa."
+        : "Captura interna de RH: alimenta la misma evaluación que la liga del evaluador. Queda quién y cuándo. No cambia la etapa."} onClose={onClose}>
+      {opciones.length > 0 && (
         <div className="mb-3">
-          <CampoRH label="Resultado de la entrevista">
-            <div className="grid grid-cols-2 gap-2">
-              {([["apto", "Apto"], ["no_apto", "No apto"]] as const).map(([v, t]) => (
-                <button key={v} type="button" onClick={() => setApto(v)}
-                  className={cn("h-11 rounded-xl border text-sm font-semibold", apto === v ? (v === "apto" ? "border-good bg-good-soft text-good" : "border-bad bg-bad-soft text-bad") : "border-border-soft text-ink-2")}>
-                  {t}
+          <CampoRH label={esEntrevista ? "Resultado de la entrevista" : "Dictamen del evaluador"}>
+            <div className={cn("grid gap-2", opciones.length === 2 ? "grid-cols-2" : "grid-cols-1 sm:grid-cols-3")}>
+              {opciones.map((o) => (
+                <button key={o.valor} type="button" onClick={() => setApto(o.valor)}
+                  className={cn("min-h-11 rounded-xl border px-2 text-sm font-semibold", apto === o.valor ? "border-brand bg-brand-soft text-brand" : "border-border-soft text-ink-2")}>
+                  {o.texto}
                 </button>
               ))}
             </div>
@@ -535,13 +583,16 @@ function ModalResultado({ e, onClose, onListo }: { e: EvaluacionCandidato; onClo
         <textarea value={resumen} onChange={(x) => setResumen(x.target.value)} rows={4} className="rounded-xl border border-border-soft bg-surface px-3 py-2 text-sm outline-none focus:border-brand" />
       </CampoRH>
       <input ref={ref} type="file" accept="application/pdf,image/*" className="hidden" onChange={(x) => setArchivo(x.target.files?.[0] ?? null)} />
-      <Button variant="outline" size="sm" className="mt-3" onClick={() => ref.current?.click()}><FileUp className="h-4 w-4" /> {archivo ? archivo.name : "Adjuntar informe (PDF o imagen)"}</Button>
+      <Button variant="outline" size="sm" className="mt-3" onClick={() => ref.current?.click()}><FileUp className="h-4 w-4" /> {archivo ? archivo.name : corregir && e.tieneInforme ? "Reemplazar informe (opcional)" : "Adjuntar informe (PDF o imagen)"}</Button>
+      {corregir && (
+        <div className="mt-3"><CampoRH label="Motivo de la corrección"><input value={motivo} onChange={(x) => setMotivo(x.target.value)} className={inputRH} /></CampoRH></div>
+      )}
       {error && <p className="mt-3 text-sm font-semibold text-bad">{error}</p>}
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" size="sm" onClick={onClose} disabled={ocupado}>Cancelar</Button>
-        <Button size="sm" disabled={ocupado || (esEntrevista ? !apto : !resumen.trim() && !archivo)} onClick={async () => {
+        <Button size="sm" disabled={ocupado || (opciones.length ? !apto : !resumen.trim() && !archivo)} onClick={async () => {
           setOcupado(true);
-          const r = await cargarResultadoEvaluacion(e.id, resumen.trim(), archivo, esEntrevista ? apto : "");
+          const r = await cargarResultadoEvaluacion(e.id, resumen.trim(), archivo, opciones.length ? apto : "", corregir, motivo.trim());
           setOcupado(false);
           if (!r.ok) return setError(r.error);
           onListo(r.data.avisoArchivo ?? "");
@@ -554,7 +605,8 @@ function ModalResultado({ e, onClose, onListo }: { e: EvaluacionCandidato; onClo
 }
 
 function ModalRevisar({ e, onClose, onListo }: { e: EvaluacionCandidato; onClose: () => void; onListo: () => void }) {
-  const [dictamen, setDictamen] = useState<string>(e.aptoEvaluador ?? "");
+  // la revisión de RH es aparte; si el dictamen del evaluador existe entre las opciones de RH, se propone
+  const [dictamen, setDictamen] = useState<string>(e.dictamenesPosibles.some((d) => d.valor === e.dictamenEvaluador) ? e.dictamenEvaluador ?? "" : "");
   const [conclusion, setConclusion] = useState("");
   const [ocupado, setOcupado] = useState(false);
   const [error, setError] = useState("");
@@ -626,59 +678,12 @@ function EvaluacionHistorica({ e }: { e: EvaluacionCandidato }) {
   );
 }
 
-/** Visor interno del informe (PDF o imagen) con «Cerrar» y «Descargar» por separado. Se pinta en un portal sobre la
- *  ficha: al cerrarlo la ficha, la pestaña activa, los filtros y la posición del tablero siguen intactos (nada navega
- *  ni se recarga). Un archivo que no se puede mostrar (p. ej. una captura vacía de prueba) se informa sin marcar
- *  falla. */
+/** Visor interno del informe (PDF o imagen) con «Cerrar» y «Descargar» separados (visor compartido de la ficha). */
 export function VisorInforme({ e, onClose }: { e: EvaluacionCandidato; onClose: () => void }) {
-  const url = urlInformeEvaluacion(e.id);
-  const nombre = (e.nombreArchivo || "").toLowerCase();
-  const mime = e.mimeInforme || "";
-  const esImagen = mime.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/.test(nombre);
-  const [sinVista, setSinVista] = useState(false);
-  useEffect(() => {
-    const tecla = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") {
-        ev.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", tecla, true);
-    return () => window.removeEventListener("keydown", tecla, true);
-  }, [onClose]);
-  if (typeof document === "undefined") return null;
-  return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/70 p-0 backdrop-blur-sm sm:p-6"
-      role="dialog" aria-modal="true" aria-label={`Informe · ${e.nombre}`}
-      onClick={(x) => { x.stopPropagation(); onClose(); }}>
-      <div className="flex h-[100dvh] w-full max-w-4xl flex-col overflow-hidden bg-bg shadow-2xl sm:h-[90vh] sm:rounded-2xl" onClick={(x) => x.stopPropagation()}>
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-soft px-4 py-3">
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-ink">{e.nombre} · {e.tipoTexto}</p>
-            <p className="truncate text-[11px] text-ink-3">{e.nombreArchivo || "Informe"}{e.resultadoCargadoPor ? ` · ${e.resultadoCargadoPor}` : ""}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <a href={urlInformeEvaluacion(e.id, true)} download={e.nombreArchivo || undefined}
-              className="inline-flex h-9 items-center gap-1 rounded-xl border border-border-soft px-3 text-sm font-semibold text-brand hover:bg-brand-soft">
-              <Download className="h-4 w-4" /> Descargar
-            </a>
-            <Button size="sm" onClick={onClose}><X className="h-4 w-4" /> Cerrar</Button>
-          </div>
-        </div>
-        <div className="relative flex-1 overflow-auto bg-surface-2">
-          {sinVista ? (
-            <div className="grid h-full place-items-center p-6 text-center text-sm text-ink-3">
-              Este archivo no tiene una vista previa disponible (puede ser una captura vacía). Usa «Descargar» para revisarlo.
-            </div>
-          ) : esImagen ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={url} alt={e.nombreArchivo || "Informe"} className="mx-auto max-h-full max-w-full object-contain p-2" onError={() => setSinVista(true)} />
-          ) : (
-            <iframe src={url} title={`Informe · ${e.nombre}`} className="h-full w-full border-0 bg-white" />
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body,
+  return (
+    <VisorArchivo onClose={onClose} archivo={{
+      url: urlInformeEvaluacion(e.id), urlDescarga: urlInformeEvaluacion(e.id, true), nombre: e.nombreArchivo || `informe-${e.id}`,
+      titulo: `${e.nombre} · ${e.tipoTexto}`, subtitulo: [e.nombreArchivo, e.resultadoCargadoPor].filter(Boolean).join(" · "),
+    }} />
   );
 }

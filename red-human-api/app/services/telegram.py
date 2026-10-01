@@ -9,6 +9,10 @@ pide «Compartir mi número» (botón nativo `request_contact`: Telegram lo veri
 chat ↔ teléfono en `ChatTelegram`. El resto de la plataforma sigue usando el teléfono a 10 dígitos, por eso
 una persona que se postuló por la web queda ligada en cuanto comparte su número en el bot.
 
+Handoff web → Telegram (2026-10-01): al postularse en /aplicar la postulación recibe `telegram_onboarding_token` y
+el portal abre `tg://resolve?domain=<bot>&start=<token>`. `/start <token>` amarra el chat a ESA postulación (con su
+teléfono, sin pedirlo otra vez) y lanza su evaluación; `/start` vacío = menú general de vacantes.
+
 Webhook: `POST /api/webhooks/telegram`. Telegram manda el secreto que registramos con `setWebhook` en la
 cabecera `X-Telegram-Bot-Api-Secret-Token`; sin ese secreto la petición se rechaza.
 """
@@ -17,6 +21,7 @@ import hashlib
 import hmac
 import html
 import re
+import secrets
 from typing import Optional
 
 import httpx
@@ -41,6 +46,38 @@ def secreto_webhook() -> str:
 
 def secreto_valido(cabecera: str) -> bool:
     return activo() and hmac.compare_digest(secreto_webhook(), (cabecera or "").strip())
+
+
+# --------------------------------------------------------------------------- #
+# Handoff web → Telegram (deep link con /start <token>)
+# --------------------------------------------------------------------------- #
+
+RE_TOKEN_INICIO = re.compile(r"^[A-Za-z0-9_-]{8,64}$")  # el parámetro de /start admite solo esto (máx. 64)
+
+
+def usuario_bot() -> str:
+    return (settings.telegram_bot_username or "").strip().lstrip("@")
+
+
+def asegurar_token_onboarding(p) -> str:
+    """Token único de la postulación para el deep link. Se reutiliza si ya existe (reaplicar no rompe la liga que
+    el candidato ya tenga)."""
+    if not p.telegram_onboarding_token:
+        p.telegram_onboarding_token = secrets.token_urlsafe(24)  # 32 caracteres [A-Za-z0-9_-]
+    return p.telegram_onboarding_token
+
+
+def liga_inicio(token: str) -> str:
+    """Enlace nativo de Telegram (abre la app directo en el bot con /start <token>)."""
+    return f"tg://resolve?domain={usuario_bot()}&start={token}" if token else ""
+
+
+def postulacion_por_token(db, token: str):
+    from ..models import Postulacion
+
+    if not token or not RE_TOKEN_INICIO.match(token):
+        return None
+    return db.query(Postulacion).filter(Postulacion.telegram_onboarding_token == token).first()
 
 
 def _resultado(enviado: bool, detalle, **extra) -> dict:
@@ -286,11 +323,15 @@ def parsear_update(update: dict) -> Optional[dict]:
         d = m["document"]
         tipo, media = "document", {"id": d.get("file_id", ""), "mime_type": d.get("mime_type", ""), "filename": d.get("file_name", "")}
     texto = m.get("text") or m.get("caption") or ""
-    if texto.strip().lower() in ("/start", "/start@"):  # «Iniciar» del bot: se trata como un saludo
+    # /start [token]: vacío = «Iniciar» del bot (se trata como saludo → menú de vacantes); con token = handoff web
+    start_token = ""
+    partes = texto.strip().split(maxsplit=1)
+    if partes and partes[0].lower().split("@")[0] == "/start":
+        start_token = partes[1].strip() if len(partes) > 1 else ""
         texto = "Hola"
     return {"chat_id": str(chat.get("id", "")), "texto": texto, "nombre": _nombre(remitente), "update_id": update.get("update_id"),
             "tipo": tipo if (media or not contacto) else "contact", "media": media, "id_seleccionado": "", "callback_id": "",
-            "contacto": contacto}
+            "contacto": contacto, "start_token": start_token}
 
 
 def _nombre(u: dict) -> str:

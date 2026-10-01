@@ -623,9 +623,55 @@ async def telegram_entrante(request: Request, tareas: BackgroundTasks):
     return {"ok": True}
 
 
+async def _lanzar_evaluacion_telegram(db: Session, p: Postulacion, msg: dict, tel: str) -> dict:
+    """Handoff: arranca la evaluación de ESA postulación (prefiltro por chat, o el siguiente paso si la web ya lo
+    completó: liga del vehículo, cita…). Sin consentimiento registrado se va por el flujo normal (aviso de
+    privacidad primero), con el puntero de conversación ya en la postulación."""
+    if not p.consentimiento:
+        return await procesar_entrante(db, telegram.mensaje_para_agente({**msg, "texto": "Hola", "tipo": "text"}, tel))
+    r = await procesar_prefiltro(db, p, "Hola (inicio desde la web)", "whatsapp", wa_id=f"tg-{msg.get('update_id')}")  # canal lógico: sale por Telegram
+    db.commit()
+    return {"ok": True, "accion": "handoff_evaluacion", "postulacion": p.codigo, "respuesta": (r or {}).get("respuesta")}
+
+
+async def _handoff_telegram(db: Session, msg: dict, token: str) -> dict:
+    """`/start <token>` (deep link desde /aplicar): amarra el chat a la postulación del token y lanza su evaluación.
+    El token sirve en UN solo chat (otro chat con la misma liga se rechaza). Token desconocido/cerrado → igual que un
+    `/start` vacío (menú general de vacantes)."""
+    chat_id = msg["chat_id"]
+    p = telegram.postulacion_por_token(db, token)
+    if p is None or not p.activa:
+        await telegram._enviar_a_chat(chat_id, "Esta liga ya no está vigente. Te muestro las vacantes disponibles 👇")
+        tel = telegram.telefono_de_chat(db, chat_id)
+        if not tel:
+            await telegram.pedir_contacto(chat_id, msg.get("nombre", ""))
+            return {"ok": True, "accion": "token_invalido"}
+        return await procesar_entrante(db, telegram.mensaje_para_agente({**msg, "texto": "Hola"}, tel))
+    if p.telegram_chat_id and p.telegram_chat_id != chat_id:
+        await telegram._enviar_a_chat(chat_id, "Esta liga de evaluación ya se abrió en otra cuenta de Telegram. Si fuiste tú, "
+                                               "continúa desde esa cuenta o pide ayuda al equipo de RH.")
+        registrar(db, "sistema", "telegram_handoff_rechazado", "postulacion", p.codigo, {"motivo": "token usado en otro chat"})
+        db.commit()
+        return {"ok": True, "accion": "token_en_otro_chat"}
+    p.telegram_chat_id = chat_id
+    p.telegram_vinculado_en = p.telegram_vinculado_en or datetime.now(timezone.utc)
+    c = p.candidato
+    c.postulacion_conversacion_id = p.id  # acción explícita del candidato (abrió SU liga): el puntero va a esta postulación
+    registrar(db, "candidato", "telegram_handoff", "postulacion", p.codigo, {"chat": chat_id, "con_telefono": bool(c.telefono)})
+    tel = telegram.telefono_10(c.telefono or "")
+    if not tel:  # se postuló sin teléfono: se pide una vez; al compartirlo, la evaluación arranca sola
+        db.commit()
+        await telegram.pedir_contacto(chat_id, c.nombre or msg.get("nombre", ""))
+        return {"ok": True, "accion": "handoff_sin_telefono", "postulacion": p.codigo}
+    telegram.guardar_chat(db, chat_id, tel, msg.get("nombre", "") or c.nombre)
+    db.commit()
+    return await _lanzar_evaluacion_telegram(db, p, msg, tel)
+
+
 async def procesar_update_telegram(update: dict) -> dict:
     """Un Update de Telegram → turno del agente con la misma lógica que WhatsApp. Si el chat todavía no
-    compartió su número, el bot se lo pide (botón nativo) y no hace nada más."""
+    compartió su número, el bot se lo pide (botón nativo) y no hace nada más. `/start <token>` = handoff desde la web
+    (`_handoff_telegram`); `/start` vacío = saludo → menú general de vacantes."""
     from ..database import SessionLocal
 
     msg = telegram.parsear_update(update)
@@ -635,6 +681,8 @@ async def procesar_update_telegram(update: dict) -> dict:
         await telegram.responder_callback(msg["callback_id"])
     db = SessionLocal()
     try:
+        if msg.get("start_token"):
+            return await _handoff_telegram(db, msg, msg["start_token"])
         contacto = msg.get("contacto")
         if contacto:
             if not contacto.get("propio"):
@@ -643,6 +691,12 @@ async def procesar_update_telegram(update: dict) -> dict:
             tel = telegram.guardar_chat(db, msg["chat_id"], contacto["telefono"], msg.get("nombre", ""))
             db.commit()
             await telegram.confirmar_contacto(msg["chat_id"])
+            pendiente = (db.query(Postulacion).filter(Postulacion.telegram_chat_id == msg["chat_id"], Postulacion.activa.is_(True))
+                         .order_by(Postulacion.telegram_vinculado_en.desc()).first())
+            if pendiente is not None and not pendiente.candidato.telefono:  # handoff que esperaba el número
+                pendiente.candidato.telefono = tel
+                db.commit()
+                return await _lanzar_evaluacion_telegram(db, pendiente, msg, tel)
             msg = {**msg, "texto": "Hola", "tipo": "text"}  # arranca la conversación (menú de vacantes)
         else:
             tel = telegram.telefono_de_chat(db, msg["chat_id"])
@@ -698,6 +752,15 @@ async def whatsapp_entrante(request: Request, db: Session = Depends(get_db)):
     print(f"[webhook-post] Payload: {json.dumps(payload, ensure_ascii=False)}")
     print("=" * 60)
 
+    # 2026-10-01 (Zeze punto 4): acuses de Meta (sent / delivered / read / failed) → estado visible de cada envío
+    try:
+        from ..services import entregas
+
+        if entregas.registrar_estados_meta(db, payload):
+            db.commit()
+    except Exception as e:  # noqa: BLE001 — un acuse mal formado nunca tumba el webhook
+        db.rollback()
+        print(f"[webhook-post] no se pudieron registrar estados de entrega: {e}")
     msg = parsear_webhook(payload)
     if not msg:
         print("[webhook-post] Webhook procesado sin mensaje de candidato (estado de entrega o evento ignorado).")

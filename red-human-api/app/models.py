@@ -335,6 +335,13 @@ class Postulacion(Base):
     consentimiento: Mapped[bool] = mapped_column(Boolean, default=False)
     consentimiento_fecha: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- Handoff web → Telegram (2026-10-01): /aplicar devuelve este token y el botón «Iniciar Evaluación» abre
+    # tg://resolve?domain=<bot>&start=<token>. El bot lo canjea UNA vez (queda amarrado a ese chat) y lanza la
+    # evaluación de ESTA postulación sin pedir el número otra vez. Ver webhooks.procesar_update_telegram.
+    telegram_onboarding_token: Mapped[Optional[str]] = mapped_column(String(64), index=True, nullable=True)
+    telegram_chat_id: Mapped[str] = mapped_column(String(32), default="")
+    telegram_vinculado_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # --- Zero-Touch fase 1: videollamada agendada por el agente (herramienta agendar_videollamada) ---
     videollamada_agendada_en: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     videollamada_liga: Mapped[str] = mapped_column(String(300), default="")
@@ -1741,6 +1748,7 @@ TABLAS_MODULOS_RH = (
     "firmas_documentos",  # Dropbox Sign (2026-09-29)
     "sesiones_capacitacion",  # demo SEZA (2026-09-29): capacitación en tienda con cupo
     "chats_telegram",  # demo SEZA (2026-09-30): relación chat de Telegram ↔ teléfono
+    "estados_envio",  # 2026-10-01: estados de entrega reportados por Meta (Entregado / Fallido)
 )
 
 # --- Desempeño ---
@@ -2130,6 +2138,8 @@ ESTADO_POR_PASO = {"asignada": "pendiente", "enviada": "en_proceso", "iniciada":
 DICTAMENES_GENERALES = {"favorable": "Favorable", "con_observaciones": "Con observaciones", "desfavorable": "Desfavorable"}
 DICTAMENES_MEDICOS = {"apto": "Apto", "apto_con_restricciones": "Apto con restricciones", "no_apto": "No apto"}
 DICTAMENES_ENTREVISTA = {"apto": "Apto", "no_apto": "No apto"}  # tipo «entrevista_humana»
+# 2026-10-01 (Zeze punto 6): dictamen del EVALUADOR (aparte de la revisión de RH). Médico: DICTAMENES_MEDICOS.
+DICTAMENES_SOCIOECONOMICO = {"favorable": "Favorable", "favorable_observaciones": "Favorable con observaciones", "no_favorable": "No favorable"}
 # Texto del consentimiento EXPRESO y POR ESCRITO (medio electrónico) para el estudio médico — LFPDPPP: los datos de
 # salud son sensibles. Se guarda la copia EXACTA que la persona aceptó.
 TEXTO_CONSENTIMIENTO_MEDICO = (
@@ -2224,6 +2234,9 @@ class EvaluacionCandidato(Base):
     cita_lugar: Mapped[str] = mapped_column(String(300), default="")
     resultado_origen: Mapped[str] = mapped_column(String(20), default="")  # rh | evaluador | proveedor
     envios: Mapped[list] = mapped_column(JSON, default=list)  # [{liga, destinatario, canal, enviado, detalle, fecha}]
+    # 2026-10-01 (Zeze punto 6): «Corregir resultado» (evaluador o RH). Cada corrección guarda el antes/después, quién,
+    # cuándo, por dónde y el motivo; la evaluación regresa a «Pendiente de revisión» (nunca mueve al candidato).
+    correcciones: Mapped[list] = mapped_column(JSON, default=list)
 
     @property
     def es_medico(self) -> bool:
@@ -2291,6 +2304,18 @@ class SesionCapacitacion(Base):
     estado: Mapped[str] = mapped_column(String(20), default="programada")  # programada | cerrada | cancelada
     creada_por: Mapped[str] = mapped_column(String(150), default="")
     creada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
+
+
+class EstadoEnvio(Base):
+    """Estado de entrega de un mensaje saliente reportado por Meta (webhook `statuses`), por wamid (2026-10-01). Las
+    filas de envío de cada aviso guardan su `wa_id`; `services.entregas.resolver` cruza ambos al leer. Sin FKs."""
+
+    __tablename__ = "estados_envio"
+
+    wa_id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    estado: Mapped[str] = mapped_column(String(20), default="enviado")  # enviado | entregado | fallido
+    detalle: Mapped[str] = mapped_column(Text, default="")
+    actualizado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=ahora)
 
 
 class ChatTelegram(Base):

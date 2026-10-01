@@ -92,7 +92,7 @@ def publica(token: str, db: Session = Depends(get_db)):
     p = eh.postulacion
     if _es_capacitacion(eh):
         if eh.cancelada:
-            raise HTTPException(410, "Esta capacitación fue cancelada o reprogramada.")
+            raise HTTPException(410, "Esta entrevista fue cancelada o reprogramada.")
         return {
             "tipo": "capacitacion",
             "candidato": eh.candidato.nombre if eh.candidato else "",
@@ -195,9 +195,9 @@ def enviar_resultado_capacitacion(token: str, datos: ResultadoCapacitacionIn, db
 
     eh = _por_token(db, token, permitir_evaluada=True)
     if not _es_capacitacion(eh):
-        raise HTTPException(404, "Esta liga no es de una capacitación en tienda.")
+        raise HTTPException(404, "Esta liga no es de una entrevista en tienda.")
     if eh.cancelada:
-        raise HTTPException(410, "Esta capacitación fue cancelada o reprogramada.")
+        raise HTTPException(410, "Esta entrevista fue cancelada o reprogramada.")
     if eh.asistencia:
         raise HTTPException(409, "La asistencia ya quedó registrada.")
     quien = (datos.capacitador or eh.entrevistador).strip()
@@ -205,7 +205,7 @@ def enviar_resultado_capacitacion(token: str, datos: ResultadoCapacitacionIn, db
         raise HTTPException(400, "Escribe tu nombre (queda registrado quién capturó la asistencia).")
     try:
         flujo_operativo.registrar_resultado(db, eh.postulacion, eh, datos.asistio, datos.resultado, datos.comentario,
-                                            f"{quien} (capacitador)", "entrevistador", entrevistador=quien)
+                                            f"{quien} (entrevistador)", "entrevistador", entrevistador=quien)
     except ValueError as e:
         raise HTTPException(400, str(e))
     db.commit()

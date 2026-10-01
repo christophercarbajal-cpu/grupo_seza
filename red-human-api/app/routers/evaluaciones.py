@@ -308,13 +308,17 @@ def _no_legado(ev: EvaluacionCandidato) -> None:
 
 
 async def _guardar_resultado(ev: EvaluacionCandidato, resumen: str, apto: str, archivo: Optional[UploadFile]) -> str:
-    """Texto (resultado / comentarios del evaluador), informe adjunto y —entrevista humana— Apto / No apto, en la
-    MISMA evaluación. El texto y el archivo se guardan por separado. Regresa el aviso del adjunto ("" si no hubo)."""
+    """Texto (resultado / comentarios del evaluador), informe adjunto y el DICTAMEN DEL EVALUADOR (médico, socioeconómico
+    y entrevista humana; campo `apto` por compatibilidad), en la MISMA evaluación. Texto y archivo se guardan por
+    separado. Regresa el aviso del adjunto ("" si no hubo)."""
     from ..services import archivos as fs
 
     apto = (apto or "").strip()
-    if ev.tipo == "entrevista_humana" and apto not in ("apto", "no_apto"):
-        raise HTTPException(400, "Elige el resultado de la entrevista: Apto o No apto.")
+    opciones = sev.dictamenes_evaluador(ev.tipo)
+    if opciones and apto not in opciones:
+        raise HTTPException(400, f"Elige el dictamen: {' / '.join(opciones.values())}.")
+    if not opciones:
+        apto = ""
     contenido = await archivo.read() if archivo is not None and archivo.filename else b""
     hay_archivo = archivo is not None and bool(archivo.filename)
     if not hay_archivo and not resumen.strip() and not apto:
@@ -330,7 +334,8 @@ async def _guardar_resultado(ev: EvaluacionCandidato, resumen: str, apto: str, a
     if resumen.strip():
         ev.resultado_resumen = resumen.strip()[:5000]
     if apto:
-        ev.resultado_json = {**(ev.resultado_json or {}), "apto": apto}
+        datos = {k: v for k, v in (ev.resultado_json or {}).items() if k != "apto"}
+        ev.resultado_json = {**datos, "dictamen_evaluador": apto}
     return aviso
 
 
@@ -413,23 +418,35 @@ def sincronizar(codigo: str, db: Session = Depends(get_db), u: Usuario = Depends
 @router.post("/{codigo}/resultado")
 async def cargar_resultado(
     codigo: str, resumen: str = Form(""), apto: str = Form(""), archivo: Optional[UploadFile] = File(None),
+    corregir: bool = Form(False), motivo: str = Form(""),
     db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual),
 ):
-    """Adjuntar el informe/resultado manualmente (quién y cuándo). Exige los consentimientos. Entrevista humana:
-    `apto` = apto | no_apto (obligatorio). Nunca mueve la etapa del candidato."""
+    """Adjuntar el informe/resultado manualmente (quién y cuándo). Exige los consentimientos. Médico / socioeconómico /
+    entrevista humana: `apto` = dictamen del evaluador (obligatorio). `corregir=true` = «Corregir resultado» sobre un
+    resultado ya registrado (también revisado): guarda el historial y regresa a «Pendiente de revisión». Nunca mueve
+    la etapa del candidato."""
     ev = _evaluacion(db, codigo, cuenta.id)
     p = _post_de(db, ev)
-    _abierta(ev)
     _no_legado(ev)
+    correccion = corregir or ev.estado in ("resultado_recibido",) and bool(ev.resultado_cargado_por)
+    if corregir:
+        if ev.estado not in ("resultado_recibido", "revisada"):
+            raise HTTPException(409, "Solo se corrige un resultado ya registrado.")
+    else:
+        _abierta(ev)
     _exigir_consentimiento(ev, p)
     if ev.es_medico and not u.puede_ver_informe_medico():
         raise HTTPException(403, "Cargar el informe médico requiere el permiso de informes médicos.")
+    antes = sev.foto_resultado(ev)
     aviso = await _guardar_resultado(ev, resumen, apto, archivo)
     ev.resultado_cargado_por, ev.resultado_cargado_en = u.nombre, datetime.now(timezone.utc)
     ev.resultado_origen = "rh"
     if ev.modo == "integrada":
         ev.paso_integrada = "resultado_recibido"
-    sev.mover(ev, "resultado_recibido", u.nombre, "Resultado cargado manualmente por RH" + (" (con informe)" if ev.archivo else ""))
+    if correccion:
+        sev.registrar_correccion(ev, antes, u.nombre, "RH", motivo)
+    else:
+        sev.mover(ev, "resultado_recibido", u.nombre, "Resultado cargado manualmente por RH" + (" (con informe)" if ev.archivo else ""))
     registrar(db, u.nombre, "evaluacion_resultado_cargado", "postulacion", p.codigo if p else "",
               {"evaluacion": ev.codigo, "con_archivo": bool(ev.archivo), "apto": sev.apto_del_evaluador(ev), "correo_rh": u.correo})
     db.commit()
@@ -578,12 +595,12 @@ def marcar_en_curso(codigo: str, db: Session = Depends(get_db), u: Usuario = Dep
 async def _mandar(destino_tel: str, destino_correo: str, texto: str, titulo: str, liga: str, cta: str, empresa: str) -> list:
     from ..services import plantillas_correo
     from ..services.correo import enviar_correo
-    from ..services.whatsapp import enviar_mensaje
+    from ..services.whatsapp import enviar_notificacion
 
     salida = []
     if destino_tel:
         try:
-            r = await enviar_mensaje(destino_tel, texto)
+            r = await enviar_notificacion(destino_tel, texto)  # plantilla aprobada: no exige que el destinatario haya escrito
         except Exception as ex:  # noqa: BLE001 — un canal caído nunca rompe la acción
             r = {"enviado": False, "detalle": str(ex)[:200]}
         salida.append(("mensaje", r))
@@ -606,14 +623,13 @@ def liga_evaluador(ev: EvaluacionCandidato) -> str:
 @router.post("/{codigo}/evaluador/enviar")
 async def enviar_liga_evaluador(codigo: str, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)):
     """Manda al evaluador (médico, socioeconómico, proveedor…) su liga de captura. La liga siempre regresa, salga o no
-    el mensaje. Médico: solo cuando el candidato ya aceptó el consentimiento expreso."""
+    el mensaje. 2026-10-01 (Zeze punto 5): la liga existe y se puede mandar SIN esperar el consentimiento; mientras esté
+    pendiente, la liga muestra «Consentimiento: Pendiente» y bloquea la captura de datos médicos."""
     ev = _evaluacion(db, codigo, cuenta.id)
     p = _post_de(db, ev)
     _abierta(ev)
     _no_legado(ev)
     sev.asegurar_token(ev)
-    if not sev.evaluador_habilitado(ev, p):
-        raise HTTPException(409, f"En espera de consentimiento: {sev.falta_consentimiento(ev, p)}")
     ev_dato = sev.evaluador_de(ev, db)
     liga = liga_evaluador(ev)
     empresa = nombre_empresa_candidato(p.vacante) if p and p.vacante else cuenta.nombre_visible
@@ -678,7 +694,10 @@ def ver_evaluacion_evaluador(token: str, db: Session = Depends(get_db)):
         "tipo": ev.tipo,
         "tipoTexto": TIPOS_EVALUACION.get(ev.tipo, ev.tipo),
         "historica": sev.es_legado(ev),
-        "pideApto": ev.tipo == "entrevista_humana",
+        "pideApto": bool(sev.dictamenes_evaluador(ev.tipo)),
+        "dictamenesEvaluador": [{"valor": k, "texto": t} for k, t in sev.dictamenes_evaluador(ev.tipo).items()],
+        # Zeze punto 5: estado del consentimiento visible en la liga (Pendiente / Aceptado)
+        "consentimiento": "Aceptado" if sev.consentimiento_ok(ev, p) else "Pendiente",
         "evaluador": ev.evaluador_nombre or "",
         "cita": ev.cita_en.isoformat() if ev.cita_en else None,
         "citaLugar": ev.cita_lugar or "",
@@ -686,13 +705,20 @@ def ver_evaluacion_evaluador(token: str, db: Session = Depends(get_db)):
         "motivo": sev.falta_consentimiento(ev, p) if ev.estado not in ("revisada", "fallida") else "",
         "yaRegistrado": ev.estado in ("resultado_recibido", "revisada"),
         "cancelada": ev.estado == "fallida",
+        # lo registrado (el evaluador puede «Corregir resultado» desde su misma liga)
+        "resultado": {
+            "resumen": ev.resultado_resumen or "", "dictamenEvaluador": sev.dictamen_del_evaluador(ev),
+            "nombreArchivo": ev.nombre_archivo or "", "cargadoPor": ev.resultado_cargado_por or "",
+            "cargadoEn": ev.resultado_cargado_en.isoformat() if ev.resultado_cargado_en else None,
+            "correcciones": len(ev.correcciones or []),
+        } if ev.estado in ("resultado_recibido", "revisada") and ev.resultado_origen == "evaluador" else None,
     }
 
 
 @router.post("/publica/evaluador/{token}/resultado")
 async def registrar_resultado_evaluador(
     token: str, resumen: str = Form(""), evaluador: str = Form(""), apto: str = Form(""), archivo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db),
+    corregir: bool = Form(False), motivo: str = Form(""), db: Session = Depends(get_db),
 ):
     """El evaluador registra el resultado (resumen y/o informe). Alimenta la MISMA evaluación que la captura de RH;
     la revisión y el dictamen siguen siendo de RH. Nunca mueve la etapa del candidato."""
@@ -701,19 +727,26 @@ async def registrar_resultado_evaluador(
     _no_legado(ev)
     if ev.estado == "fallida":
         raise HTTPException(409, "Esta evaluación fue cancelada.")
-    if ev.estado in ("resultado_recibido", "revisada"):
-        raise HTTPException(409, "El resultado ya quedó registrado. Si hay que corregirlo, avisa a RH.")
-    if not sev.evaluador_habilitado(ev, p):
+    ya = ev.estado in ("resultado_recibido", "revisada")
+    if ya and not corregir:
+        raise HTTPException(409, "El resultado ya quedó registrado. Usa «Corregir resultado» si hay que cambiarlo.")
+    if corregir and not ya:
+        raise HTTPException(409, "Todavía no hay un resultado que corregir.")
+    if not sev.consentimiento_ok(ev, p):  # Zeze punto 5: la liga abre, pero la captura espera el consentimiento
         raise HTTPException(409, f"Aún no se puede registrar: {sev.falta_consentimiento(ev, p)}")
     quien = " ".join((evaluador or ev.evaluador_nombre).split())
     if len(quien) < 3:
         raise HTTPException(400, "Escribe tu nombre (queda registrado quién capturó el resultado).")
+    antes = sev.foto_resultado(ev)
     aviso = await _guardar_resultado(ev, resumen, apto, archivo)
     ev.resultado_cargado_por, ev.resultado_cargado_en = f"{quien[:120]} (evaluador)", datetime.now(timezone.utc)
     ev.resultado_origen = "evaluador"
     if ev.modo == "integrada":
         ev.paso_integrada = "resultado_recibido"
-    sev.mover(ev, "resultado_recibido", f"{quien[:120]} (evaluador)", "Resultado registrado en la liga del evaluador" + (" (con informe)" if ev.archivo else ""))
+    if corregir:
+        sev.registrar_correccion(ev, antes, f"{quien[:120]} (evaluador)", "evaluador", motivo)
+    else:
+        sev.mover(ev, "resultado_recibido", f"{quien[:120]} (evaluador)", "Resultado registrado en la liga del evaluador" + (" (con informe)" if ev.archivo else ""))
     registrar(db, f"{quien[:120]} (evaluador)", "evaluacion_resultado_evaluador", "postulacion", p.codigo if p else "",
               {"evaluacion": ev.codigo, "con_archivo": bool(ev.archivo), "apto": sev.apto_del_evaluador(ev)})
     db.commit()

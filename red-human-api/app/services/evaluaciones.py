@@ -21,6 +21,7 @@ from ..models import (
     DICTAMENES_ENTREVISTA,
     DICTAMENES_GENERALES,
     DICTAMENES_MEDICOS,
+    DICTAMENES_SOCIOECONOMICO,
     NOMBRE_CAPACITACION_TIENDA,
     ESTADO_POR_PASO,
     ESTADOS_EVALUACION,
@@ -34,7 +35,7 @@ from ..models import (
 ESTADOS_ABIERTOS = ("en_espera_consentimiento", "pendiente", "en_proceso", "resultado_recibido")
 
 
-DICTAMENES_DESFAVORABLES = ("desfavorable", "no_apto")
+DICTAMENES_DESFAVORABLES = ("desfavorable", "no_apto", "no_favorable")
 
 
 def dictamenes_de(tipo: str) -> dict:
@@ -50,9 +51,38 @@ def es_legado(ev: EvaluacionCandidato) -> bool:
     return bool(ev.sesion_id) and ev.tipo == "otra" and ev.nombre == NOMBRE_CAPACITACION_TIENDA
 
 
-def apto_del_evaluador(ev: EvaluacionCandidato) -> str:
-    """Entrevista humana: Apto / No apto que registró el entrevistador con el resultado ("" si no hay)."""
-    return str((ev.resultado_json or {}).get("apto") or "") if ev.tipo == "entrevista_humana" else ""
+def dictamenes_evaluador(tipo: str) -> dict:
+    """Opciones del dictamen que da el EVALUADOR (2026-10-01): médico Apto / Apto con restricciones / No apto;
+    socioeconómico Favorable / Favorable con observaciones / No favorable; entrevista humana Apto / No apto. Los demás
+    tipos no dictaminan en su liga ({}). Es distinto de la revisión de RH (`dictamenes_de`)."""
+    return {"medico": DICTAMENES_MEDICOS, "socioeconomico": DICTAMENES_SOCIOECONOMICO, "entrevista_humana": DICTAMENES_ENTREVISTA}.get(tipo, {})
+
+
+def dictamen_del_evaluador(ev: EvaluacionCandidato) -> str:
+    """Dictamen que registró el evaluador ("" si no hay). `apto` es la clave legada de la entrevista humana."""
+    r = ev.resultado_json or {}
+    return str(r.get("dictamen_evaluador") or r.get("apto") or "") if dictamenes_evaluador(ev.tipo) else ""
+
+
+apto_del_evaluador = dictamen_del_evaluador  # compatibilidad (2026-10-01)
+
+
+def foto_resultado(ev: EvaluacionCandidato) -> dict:
+    """Lo vigente antes de una corrección (para el historial de correcciones)."""
+    return {"resumen": ev.resultado_resumen or "", "dictamenEvaluador": dictamen_del_evaluador(ev), "archivo": ev.nombre_archivo or "",
+            "cargadoPor": ev.resultado_cargado_por or "", "estado": ev.estado, "dictamenRH": ev.dictamen or ""}
+
+
+def registrar_correccion(ev: EvaluacionCandidato, antes: dict, por: str, origen: str, motivo: str) -> None:
+    """Guarda la corrección y regresa la evaluación a «Pendiente de revisión» (`resultado_recibido`): si RH ya la
+    había revisado, su revisión queda en el historial y debe revisar de nuevo. Nunca toca la etapa del candidato."""
+    ev.correcciones = [*(ev.correcciones or []), {
+        "fecha": datetime.now(timezone.utc).isoformat(), "por": por, "origen": origen, "motivo": (motivo or "").strip()[:500],
+        "antes": antes, "despues": foto_resultado(ev),
+    }]
+    if ev.estado == "revisada":
+        ev.dictamen, ev.comentario_revision, ev.revisada_por, ev.revisada_en = "", "", "", None
+    mover(ev, "resultado_recibido", por, f"Resultado corregido ({origen})" + (f": {motivo.strip()[:200]}" if (motivo or "").strip() else "") + " — pendiente de revisión")
 
 
 def archivo_opcional(contenido: bytes, nombre: str, etiqueta: str):
@@ -182,6 +212,8 @@ def estado_visible(ev: EvaluacionCandidato) -> str:
     """«En proceso» se muestra como Enviada (todavía no empieza) o En curso (ya empezó: paso iniciada/completada)."""
     if ev.estado == "en_proceso":
         return "En curso" if ev.paso_integrada in ("iniciada", "completada") else "Enviada"
+    if ev.estado == "resultado_recibido" and ev.correcciones:
+        return "Pendiente de revisión"  # hubo correcciones: RH vuelve a revisar
     return ESTADOS_EVALUACION.get(ev.estado, ev.estado)
 
 
@@ -210,8 +242,10 @@ def evaluador_de(ev: EvaluacionCandidato, db=None) -> dict:
 
 
 def registrar_envio(ev: EvaluacionCandidato, liga: str, destinatario: str, canal: str, envio: dict) -> dict:
-    fila = {"liga": liga, "destinatario": destinatario, "canal": canal, "enviado": bool(envio.get("enviado")),
-            "detalle": str(envio.get("detalle") or "")[:300], "fecha": datetime.now(timezone.utc).isoformat()}
+    """Fila por canal con estado visible (Pendiente / Enviado / Entregado / Fallido; services/entregas.py)."""
+    from . import entregas
+
+    fila = entregas.fila(destinatario, canal, envio, liga)
     ev.envios = [*(ev.envios or []), fila][-40:]
     return fila
 

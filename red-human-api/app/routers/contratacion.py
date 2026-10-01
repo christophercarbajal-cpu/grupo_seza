@@ -432,14 +432,16 @@ async def subir_documento(
 
 @router.get("/expedientes/{exp_id}/documentos/{tipo}/archivo")
 def descargar_documento(
-    exp_id: int, tipo: str, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual),
+    exp_id: int, tipo: str, descargar: bool = False, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual),
     cuenta: Cuenta = Depends(cuenta_actual),
 ):
+    """Visor interno de la ficha (inline) o «Descargar» (`?descargar=true`, attachment)."""
     e = _expediente(db, exp_id, cuenta.id)
     doc = _documento(e, tipo)
     if not fs.existe(doc.archivo):
         raise HTTPException(404, "Todavía no se ha subido este documento.")
-    return FileResponse(doc.archivo, media_type=doc.mime or "application/octet-stream", filename=doc.nombre_archivo or doc.tipo)
+    return FileResponse(doc.archivo, media_type=doc.mime or "application/octet-stream", filename=doc.nombre_archivo or doc.tipo,
+                        content_disposition_type="attachment" if descargar else "inline")
 
 
 # Onboarding v2 (2026-09-28): también se acepta el vocabulario nuevo; se guarda con los valores de siempre.
@@ -854,7 +856,7 @@ def _html_carta_intencion(e: Expediente) -> str:
 
 @router.get("/expedientes/{exp_id}/carta-intencion")
 def carta_intencion(
-    exp_id: int, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)
+    exp_id: int, descargar: bool = False, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)
 ):
     """Genera la carta de intención en PDF a partir de las condiciones ya capturadas en el
     expediente. GET (no POST) a propósito: mismo patrón que urlArchivoCandidato/urlDocumento —
@@ -881,7 +883,7 @@ def carta_intencion(
         content=pdf,
         media_type="application/pdf",
         # 2026-09-18: inline — la vista /carta/[id] del frontend la embebe con título y favicon de Red Human
-        headers={"Content-Disposition": f'inline; filename="{nombre_archivo}"'},
+        headers={"Content-Disposition": f'{"attachment" if descargar else "inline"}; filename="{nombre_archivo}"'},
     )
 
 
@@ -891,7 +893,7 @@ def _documentos_listos(e: Expediente) -> bool:
 
 @router.get("/expedientes/{exp_id}/contrato")
 def contrato(
-    exp_id: int, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)
+    exp_id: int, descargar: bool = False, db: Session = Depends(get_db), u: Usuario = Depends(usuario_decisor), cuenta: Cuenta = Depends(cuenta_actual)
 ):
     """Contrato individual de trabajo (PDF) con las condiciones FINALES guardadas (2026-09-19). Solo cuando
     los documentos requeridos ya están (expediente al 100 %), salvo Modo Prueba."""
@@ -911,7 +913,7 @@ def contrato(
         raise HTTPException(503, f"No se pudo generar el contrato: {ex}")
     registrar(db, u.nombre, "contrato_generado", "expediente", str(e.id), {"candidato": e.candidato.codigo if e.candidato else "", "correo_rh": u.correo})
     db.commit()
-    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'inline; filename="contrato-{e.candidato.codigo if e.candidato else exp_id}.pdf"'})
+    return Response(content=pdf, media_type="application/pdf", headers={"Content-Disposition": f'{"attachment" if descargar else "inline"}; filename="contrato-{e.candidato.codigo if e.candidato else exp_id}.pdf"'})
 
 
 class EnviarCartaIn(BaseModel):

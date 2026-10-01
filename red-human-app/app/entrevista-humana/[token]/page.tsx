@@ -325,7 +325,7 @@ function SalaCapacitador({ token, inicial }: { token: string; inicial: Capacitac
   return (
     <>
       <div className="text-center">
-        <Badge tone="brand" dot>{info.empresa || "Red Human"} · Capacitación en tienda</Badge>
+        <Badge tone="brand" dot>{info.empresa || "Red Human"} · Entrevista</Badge>
         <h1 className="font-display mt-3 text-2xl font-bold sm:text-3xl">{info.candidato}</h1>
         <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-2">
           {info.puesto && `${info.puesto}. `}
@@ -346,7 +346,7 @@ function SalaCapacitador({ token, inicial }: { token: string; inicial: Capacitac
       ) : (
         <Card className="mt-6 flex flex-col gap-4 p-5">
           <div>
-            <p className="text-sm font-semibold text-ink">¿Asistió a la capacitación?</p>
+            <p className="text-sm font-semibold text-ink">¿Asistió a la entrevista?</p>
             <div className="mt-2 grid grid-cols-2 gap-2">
               {[true, false].map((v) => (
                 <button key={String(v)} type="button" onClick={() => { setAsistio(v); if (!v) setResultado(""); }}

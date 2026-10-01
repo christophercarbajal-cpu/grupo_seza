@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # 6 variables posicionales: {{1}} entrevistador, {{2}} candidato, {{3}} vacante, {{4}} fecha, {{5}} hora,
     # {{6}} liga al expediente. Si Meta la rechaza (no aprobada, nombre distinto) sale texto libre.
     meta_plantilla_entrevista: str = "alerta_entrevista_asignada"
+    # 2026-10-01 (Zeze punto 4): cita de entrevista al candidato SIN exigir que haya escrito antes. Plantilla aprobada
+    # con 4 variables en este orden: nombre, fecha y hora, lugar, entrevistador. Vacía → META_PLANTILLA_AVISO ([texto]).
+    meta_plantilla_cita: str = ""
 
     # --- Telegram (demo Grupo SEZA, 2026-09-30) ---
     # Con TELEGRAM_BOT_TOKEN la mensajería del candidato sale y entra por el bot de Telegram (manda sobre
@@ -81,6 +84,8 @@ class Settings(BaseSettings):
     # Secreto que Telegram manda en X-Telegram-Bot-Api-Secret-Token. Vacío = se deriva del token del bot
     # (mismo cálculo en el servidor y en el script de registro), así no hace falta otra variable.
     telegram_webhook_secret: str = ""
+    # Usuario PÚBLICO del bot (sin @): arma el deep link del handoff web → Telegram (no es secreto).
+    telegram_bot_username: str = "GrupoSeza_bot"
 
     # --- Gateway propio (alternativa sin costo por mensaje) ---
     waha_url: str = "http://localhost:3001"

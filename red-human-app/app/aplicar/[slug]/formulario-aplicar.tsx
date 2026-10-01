@@ -22,7 +22,7 @@ import {
 import { Logo, Button, Card, Badge } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Dropzone, pesoLegible } from "@/components/dashboard/subida";
-import { fetchVacantePorSlug, postular } from "@/lib/api";
+import { BOT_TELEGRAM_DEFAULT, fetchVacantePorSlug, ligaTelegramInicio, ligaTelegramWeb, postular } from "@/lib/api";
 import { PREGUNTAS_VEHICULARES, type Vacante } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +52,8 @@ export default function FormularioAplicar() {
   // Demo SEZA: prefiltro por reglas (12 preguntas por id) y liga de fotos que regresa el servidor si cumple
   const [respReglas, setRespReglas] = useState<Record<string, string>>({});
   const [ligaVehiculo, setLigaVehiculo] = useState("");
+  // Handoff web → Telegram (2026-10-01): sin redirigir; modal «Tu evaluación está lista» con el deep link nativo.
+  const [telegram, setTelegram] = useState<{ token: string; bot: string } | null>(null);
 
   useEffect(() => {
     fetchVacantePorSlug(slug).then((v) => {
@@ -139,6 +141,7 @@ export default function FormularioAplicar() {
         return;
       }
       setLigaVehiculo(r.data.vehiculo?.liga ?? "");
+      if (r.data.telegram_onboarding_token) setTelegram({ token: r.data.telegram_onboarding_token, bot: r.data.telegramBot || BOT_TELEGRAM_DEFAULT });
       setDone(true);
     } catch (err) {
       setEnviando(false);
@@ -202,6 +205,7 @@ export default function FormularioAplicar() {
           </Card>
         )}
 
+        {done && telegram && <ModalEvaluacionTelegram token={telegram.token} bot={telegram.bot} onCerrar={() => setTelegram(null)} />}
         {done ? (
           <Exito titulo={titulo} conCv={Boolean(cv)} ligaVehiculo={ligaVehiculo} />
         ) : (
@@ -539,5 +543,32 @@ function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean
         </div>
       </Card>
     </motion.div>
+  );
+}
+
+/** Handoff web → Telegram: la evaluación sigue en el bot. El botón usa el enlace NATIVO (`tg://resolve`), así la app
+ *  se abre directo en el bot con `/start <token>` y el candidato no vuelve a dar su número. */
+function ModalEvaluacionTelegram({ token, bot, onCerrar }: { token: string; bot: string; onCerrar: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true"
+      aria-labelledby="titulo-evaluacion-lista">
+      <Card className="w-full max-w-md rounded-b-none p-6 text-center sm:rounded-2xl">
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-brand-soft text-brand">
+          <MessageCircle className="h-7 w-7" />
+        </span>
+        <h2 id="titulo-evaluacion-lista" className="font-display mt-4 text-2xl font-bold">Tu evaluación está lista</h2>
+        <p className="mt-2 text-sm text-ink-2">
+          La continuamos en Telegram con nuestro asistente: toma unos minutos y te guía paso a paso.
+        </p>
+        <a href={ligaTelegramInicio(token, bot)}
+          className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-base font-semibold text-brand-ink transition hover:brightness-105">
+          Iniciar Evaluación <ArrowRight className="h-4 w-4" />
+        </a>
+        <p className="mt-3 text-[12px] text-ink-3">
+          ¿No se abrió Telegram? <a href={ligaTelegramWeb(token, bot)} target="_blank" rel="noreferrer" className="font-semibold text-brand hover:underline">Ábrelo aquí</a>
+        </p>
+        <button type="button" onClick={onCerrar} className="mt-4 text-sm font-medium text-ink-3 hover:text-ink">Ahora no</button>
+      </Card>
+    </div>
   );
 }
