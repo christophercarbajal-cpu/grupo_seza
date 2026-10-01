@@ -738,6 +738,8 @@ async def _disparar_plantilla_inicio(db: Session, p: Postulacion) -> dict:
     única que espera respuesta, el webhook la elige; si hay varias, le pregunta (B1)."""
     if not p.telefono:
         return {"enviado": False, "detalle": "El candidato no dejó WhatsApp."}
+    if flujo_operativo.es_operativo(p):  # 2026-10-01: el flujo operativo arranca con el handoff (/start), sin Zero-Touch
+        return {"enviado": False, "detalle": "Flujo operativo: la evaluación arranca desde «Iniciar Evaluación» (Telegram)."}
     primer_nombre = (p.nombre or "").split(" ")[0] or "candidato(a)"
     envio = await enviar_plantilla(
         p.telefono, PLANTILLA_INICIO_ENTREVISTA, [primer_nombre],
@@ -1533,13 +1535,89 @@ async def _turno_prefiltro_reglas(db: Session, p: Postulacion, texto: str, canal
     }
 
 
+async def _turno_preguntas_agente(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
+    """Paso 2 (Telegram / WhatsApp): preguntas SECUNDARIAS del agente (`flujo_operativo.preguntas_agente`, nunca las del
+    prefiltro web). Una por mensaje: guarda cada respuesta en el expediente de la postulación (`analisis.preguntas_agente`)
+    y manda la siguiente; SOLO al contestar la última manda el agradecimiento (y, si toca, la liga del vehículo). Si el
+    prefiltro no se contestó en la web (vacante sin reglas), al terminar queda «Requiere revisión»: RH decide."""
+    preguntas = flujo_operativo.preguntas_agente(p.vacante)
+    estado = dict((p.analisis or {}).get("preguntas_agente") or {})
+    respuestas = list(estado.get("respuestas") or [])
+    pendiente = estado.get("pendiente")
+
+    async def decir(msg: str) -> dict:
+        envio = await _enviar_whatsapp(p, msg, canal)
+        guardar_mensaje(db, p, "assistant", msg, canal, envio)
+        _actualizar_ultima_actividad(p)
+        db.commit()
+        return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": envio}
+
+    intro = ""
+    if not isinstance(pendiente, int):  # primer turno: todavía no se ha hecho ninguna pregunta del agente
+        n = len(preguntas)
+        intro = f"Te haré {n} pregunta{'s' if n != 1 else ''} rápida{'s' if n != 1 else ''}. Contesta una por una.\n\n"
+    elif texto.strip():
+        respuestas.append({"pregunta": preguntas[pendiente] if pendiente < len(preguntas) else "", "respuesta": texto.strip()[:500],
+                           "fecha": datetime.now(timezone.utc).isoformat(), "canal": canal})
+    else:  # mensaje vacío (p. ej. un adjunto sin texto) o re-inicio: se repite la pregunta pendiente
+        return await decir(f"*{pendiente + 1}/{len(preguntas)}* {preguntas[pendiente]}")
+
+    siguiente = len(respuestas)
+    if siguiente < len(preguntas):
+        p.analisis = {**(p.analisis or {}), "preguntas_agente": {**estado, "respuestas": respuestas, "pendiente": siguiente, "canal": canal}}
+        flujo_operativo.al_iniciar_prefiltro(db, p)
+        return await decir(intro + f"*{siguiente + 1}/{len(preguntas)}* {preguntas[siguiente]}")
+
+    p.analisis = {**(p.analisis or {}), "preguntas_agente": {**estado, "respuestas": respuestas, "pendiente": None, "canal": canal,
+                                                             "completado_en": datetime.now(timezone.utc).isoformat()}}
+    if not p.prefiltro_completo:  # vacante sin prefiltro web por reglas: el agente cierra el prefiltro, RH decide
+        p.prefiltro_completo = True
+        p.estado = "revision"
+        p.evidencia = f"Preguntas del agente completas ({len(respuestas)} respuestas): RH las revisa."
+        flujo_operativo.al_cerrar_prefiltro(db, p, requiere_fotos=False)
+    flujo_operativo.nota(p, "preguntas_agente_completas", f"Preguntas del agente contestadas por {canal} ({len(respuestas)})", "agente-ia")
+    registrar(db, "agente-ia", "preguntas_agente_completas", "postulacion", p.codigo, {"respuestas": len(respuestas), "canal": canal})
+    cierre = (f"¡Gracias por tus respuestas, {nombre_ficha(p)}! Tu información quedó registrada y el equipo de RH la revisará. "
+              "Te avisamos por este medio.")
+    r = p.revision_vehiculo
+    if r and r.estado in ("pendiente", "correccion"):
+        cierre += "\n\nMientras tanto, el siguiente paso:\n" + vehiculo_srv.texto_liga(p, r)
+    return await decir(cierre)
+
+
+async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp") -> dict:
+    """`/start <token>` (paso 2 del flujo de dos pasos): saludo personalizado con el nombre del candidato y el título de
+    la vacante e, inmediatamente, la primera pregunta del agente (o la pendiente, si retoma). NUNCA el cierre al inicio.
+    Fuera del flujo operativo, tras el saludo sigue el agente de siempre."""
+    vac = p.vacante
+    saludo = f"Hola {nombre_ficha(p)}. Vi que estás interesado en la vacante {vac.titulo if vac else 'que elegiste'}."
+    envio = await _enviar_whatsapp(p, saludo, canal)
+    guardar_mensaje(db, p, "assistant", saludo, canal, envio)
+    db.commit()
+    if not flujo_operativo.es_operativo(p):
+        return await procesar_prefiltro(db, p, "Hola", canal)
+    estado = (p.analisis or {}).get("preguntas_agente")
+    if estado and estado.get("completado_en"):  # ya las contestó: se le recuerda en qué va (eso sí es el estado final)
+        return await _turno_operativo(db, p, "", canal)
+    if not estado:
+        p.analisis = {**(p.analisis or {}), "preguntas_agente": {"respuestas": [], "pendiente": None, "origen": "telegram_handoff",
+                                                                 "iniciado_en": datetime.now(timezone.utc).isoformat()}}
+    return await _turno_preguntas_agente(db, p, "", canal)
+
+
 async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
     """Demo SEZA: chat (Telegram/WhatsApp) en el Kanban operativo. Prefiltro por reglas mientras no termine; con
     una cita de capacitación sin confirmar, un «Sí» la confirma (y sale el PDF de inducción); en lo demás el
     candidato recibe en qué va su proceso. Nunca pasa por el agente conversacional ni por el Zero-Touch."""
     v = p.vacante
+    # Paso 2 (handoff): mientras el agente tenga preguntas pendientes, cada mensaje es la respuesta a la pregunta en curso
+    if flujo_operativo.agente_en_curso(p) and p.etapa in (flujo_operativo.PREFILTRO, flujo_operativo.VEHICULO):
+        return await _turno_preguntas_agente(db, p, texto, canal)
     if v and prefiltro_reglas.activo(v.prefiltro_reglas) and p.etapa in (flujo_operativo.PREFILTRO, flujo_operativo.VEHICULO):
         return await _turno_prefiltro_reglas(db, p, texto, canal)
+    # vacante sin prefiltro por reglas (sin prefiltro web completo): igual se pregunta, una por mensaje — nunca el cierre
+    if v and p.etapa == flujo_operativo.PREFILTRO and not p.prefiltro_completo:
+        return await _turno_preguntas_agente(db, p, texto, canal)
 
     async def decir(msg: str) -> dict:
         envio = await _enviar_whatsapp(p, msg, canal)

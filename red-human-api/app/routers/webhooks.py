@@ -629,7 +629,10 @@ async def _lanzar_evaluacion_telegram(db: Session, p: Postulacion, msg: dict, te
     privacidad primero), con el puntero de conversación ya en la postulación."""
     if not p.consentimiento:
         return await procesar_entrante(db, telegram.mensaje_para_agente({**msg, "texto": "Hola", "tipo": "text"}, tel))
-    r = await procesar_prefiltro(db, p, "Hola (inicio desde la web)", "whatsapp", wa_id=f"tg-{msg.get('update_id')}")  # canal lógico: sale por Telegram
+    from .candidatos import iniciar_handoff
+
+    # saludo personalizado + primera pregunta del agente (paso 2); canal lógico «whatsapp»: sale por Telegram
+    r = await iniciar_handoff(db, p, "whatsapp")
     db.commit()
     return {"ok": True, "accion": "handoff_evaluacion", "postulacion": p.codigo, "respuesta": (r or {}).get("respuesta")}
 

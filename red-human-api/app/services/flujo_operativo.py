@@ -135,7 +135,66 @@ def estado_prefiltro(p: Postulacion) -> str:
     if p.prefiltro_completo:
         return PREFILTRO_COMPLETADO
     respuestas = ((p.analisis or {}).get("prefiltro_reglas") or {}).get("respuestas") or {}
-    return PREFILTRO_EN_CURSO if respuestas else PREFILTRO_SIN_INICIAR
+    agente = ((p.analisis or {}).get("preguntas_agente") or {}).get("respuestas") or []
+    return PREFILTRO_EN_CURSO if (respuestas or agente) else PREFILTRO_SIN_INICIAR
+
+
+# ------------------------------------------------------------ paso 2: preguntas secundarias del agente (Telegram)
+# Arquitectura de dos pasos (2026-10-01): (1) el portal web EXIGE el prefiltro de la vacante; (2) en Telegram, tras
+# `/start <token>`, el agente saluda («Hola X. Vi que estás interesado en la vacante Y.») y hace SUS preguntas — nunca
+# repite las del prefiltro web. Respaldo si la vacante no configuró preguntas de WhatsApp (RH las cambia en la vacante,
+# «Configuración avanzada → Prefiltro WhatsApp»):
+PREGUNTAS_AGENTE_VEHICULO = [
+    "¿Qué marca y modelo es tu vehículo?",
+    "¿Cuáles son las placas de tu vehículo?",
+    "¿A partir de qué fecha podrías empezar?",
+]
+PREGUNTAS_AGENTE_BASE = [
+    "¿A partir de qué fecha podrías empezar?",
+    "¿Hay algo más que quieras contarnos sobre tu experiencia para este puesto?",
+]
+
+
+def _norm(t: str) -> str:
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", (t or "").lower())
+    return "".join(ch for ch in t if ch.isalnum())
+
+
+def _texto_pregunta(x) -> str:
+    if isinstance(x, str):
+        return x.strip()
+    if isinstance(x, dict):
+        return str(x.get("pregunta") or x.get("texto") or "").strip()
+    return ""
+
+
+def preguntas_web(v) -> List[str]:
+    """Lo que el candidato YA contestó en el portal: el prefiltro por reglas o las preguntas web de la vacante."""
+    from . import prefiltro_reglas
+
+    if v and prefiltro_reglas.activo(v.prefiltro_reglas):
+        return [q["texto"] for q in prefiltro_reglas.preguntas(v.prefiltro_reglas)]
+    return [t for t in (_texto_pregunta(x) for x in ((v.preguntas_filtro if v else None) or [])) if t]
+
+
+def preguntas_agente(v) -> List[str]:
+    """Preguntas secundarias del agente para esta vacante: sus «preguntas de prefiltro por WhatsApp» SIN las que repitan
+    el prefiltro web; si no queda ninguna, el respaldo (del vehículo si la vacante revisa vehículo). Una por mensaje."""
+    from . import prefiltro_reglas
+
+    web = {_norm(t) for t in preguntas_web(v)}
+    propias = [t for t in (_texto_pregunta(x) for x in ((v.preguntas_filtro_whatsapp if v else None) or [])) if t and _norm(t) not in web]
+    if propias:
+        return propias
+    con_vehiculo = bool(v and prefiltro_reglas.activo(v.prefiltro_reglas) and (v.prefiltro_reglas or {}).get("fotos_vehiculo", True))
+    return list(PREGUNTAS_AGENTE_VEHICULO if con_vehiculo else PREGUNTAS_AGENTE_BASE)
+
+
+def agente_en_curso(p: Postulacion) -> bool:
+    estado = (p.analisis or {}).get("preguntas_agente")
+    return bool(estado) and not estado.get("completado_en")
 
 
 def al_iniciar_prefiltro(db: Session, p: Postulacion) -> None:
@@ -713,8 +772,15 @@ def resumen_ficha(db: Session, p: Postulacion) -> dict:
     integral = ({"texto": "No apto", "tono": "bad", "detalle": "Hay un resultado desfavorable; RH decide si descarta."} if negativo
                 else {"texto": "Apto", "tono": "good", "detalle": "Validaciones completas y favorables."} if positivo
                 else {"texto": "En proceso", "tono": "warn", "detalle": "Faltan validaciones por concluir."})
+    agente = (p.analisis or {}).get("preguntas_agente") or {}
+    if agente_en_curso(p):
+        validaciones.insert(1, {"nombre": "Preguntas del agente (Telegram)", "estado": f"En curso · {len(agente.get('respuestas') or [])} respondida(s)", "tono": "warn"})
+    elif agente.get("completado_en"):
+        validaciones.insert(1, {"nombre": "Preguntas del agente (Telegram)", "estado": "Completadas", "tono": "good"})
     return {"etapa": p.etapa, "resultadoIntegral": integral, "validaciones": validaciones, "observaciones": observaciones[:8],
-            "pendientes": pendientes_de_etapa(db, p)}
+            "pendientes": pendientes_de_etapa(db, p),
+            "respuestasAgente": [{"pregunta": x.get("pregunta", ""), "respuesta": x.get("respuesta", ""), "fecha": x.get("fecha")}
+                                 for x in (agente.get("respuestas") or [])]}
 
 
 def evaluacion_resumen(p: Postulacion) -> dict:

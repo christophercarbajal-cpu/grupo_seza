@@ -3730,6 +3730,8 @@ export interface PanelOperativo {
     validaciones: { nombre: string; estado: string; tono: string; evaluacion?: string }[];
     observaciones: string[];
     pendientes: string[];
+    /** Paso 2 (Telegram): respuestas a las preguntas secundarias del agente, guardadas en la postulación. */
+    respuestasAgente?: { pregunta: string; respuesta: string; fecha?: string | null }[];
   };
   contratacion: {
     condiciones: {

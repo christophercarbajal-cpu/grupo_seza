@@ -944,6 +944,19 @@ export function ResumenOperativo({ codigo, onVerEvaluaciones }: { codigo: string
           </ul>
         </>
       )}
+      {(r.respuestasAgente?.length ?? 0) > 0 && (
+        <>
+          <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Respuestas al agente (Telegram)</p>
+          <ul className="mt-1.5 flex flex-col gap-1.5 text-[13px]">
+            {r.respuestasAgente!.map((x, i) => (
+              <li key={i} className="rounded-xl bg-surface-2 px-3 py-2">
+                <span className="block text-[12px] text-ink-3">{x.pregunta}</span>
+                <span className="text-ink">{x.respuesta}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <p className="mt-4 text-[11px] font-semibold uppercase tracking-wide text-ink-3">Requisitos pendientes</p>
       {r.pendientes.length ? (
         <ul className="mt-1.5 list-disc pl-5 text-[13px] text-warn">{r.pendientes.map((p) => <li key={p}>{p}</li>)}</ul>

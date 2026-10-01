@@ -113,7 +113,8 @@ def main():
                 ultimo = db.query(Mensaje).filter(Mensaje.postulacion_id == p.id, Mensaje.rol == "assistant").order_by(Mensaje.id.desc()).first()
                 check(p.telegram_chat_id == "111" and p.telegram_vinculado_en and chat and chat.telefono == "2225550001"
                       and p.candidato.postulacion_conversacion_id == p.id, "el chat queda amarrado a la postulación y al teléfono de la ficha")
-                check(ultimo is not None and "/vehiculo/" in ultimo.texto, "la evaluación arranca en el paso que sigue (liga de fotos y documentos del vehículo)")
+                check(ultimo is not None and "*1/" in ultimo.texto and "Gracias" not in ultimo.texto,
+                      "tras el saludo arranca la primera pregunta del agente (no el cierre)")
             r = asyncio.run(webhooks.procesar_update_telegram(update_start(222, f"/start {tok}", 11)))
             check(r.get("accion") == "token_en_otro_chat" and any("otra cuenta de Telegram" in t for ch, t in enviados if ch == "222"),
                   "el mismo token en otro chat se rechaza")
@@ -273,7 +274,106 @@ def main():
               "8 · con todo revisado pasa a Contratación (y el resumen ya pide las condiciones)")
 
 
+def flujo_por_chat():
+    """Arquitectura de dos pasos (2026-10-01): (1) el portal EXIGE el prefiltro web; (2) tras /start <token> el bot saluda
+    («Hola X. Vi que estás interesado en la vacante Y.») y hace las preguntas SECUNDARIAS del agente —nunca las del
+    prefiltro web—, una por una, guardando cada respuesta; el «Gracias» solo sale al contestar la última."""
+    from app.config import settings
+    from app.database import SessionLocal
+    from app.models import Mensaje, Postulacion, Vacante
+    from app.routers import webhooks
+    from app.services import flujo_operativo, prefiltro_reglas, telegram
+
+    def asistente(db, p):
+        return [m.texto for m in db.query(Mensaje).filter(Mensaje.postulacion_id == p.id, Mensaje.rol == "assistant").order_by(Mensaje.id)]
+
+    uid = [1000]
+
+    def mandar(chat_id, t):
+        uid[0] += 1
+        upd = {"update_id": uid[0], "message": {"message_id": uid[0], "chat": {"id": chat_id, "type": "private"},
+                                                "from": {"id": chat_id, "is_bot": False, "first_name": "P"}, "text": t}}
+        return asyncio.run(webhooks.procesar_update_telegram(upd))
+
+    with TestClient(app) as c, mock.patch.object(settings, "telegram_bot_token", "123:prueba"), \
+         mock.patch.object(telegram, "_enviar_a_chat", new=mock.AsyncMock(return_value={"enviado": True})), \
+         mock.patch.object(telegram, "pedir_contacto", new=mock.AsyncMock(return_value={"enviado": True})):
+        # ---- Paso 1: el portal exige el prefiltro (también con Telegram activo) ----
+        r = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Sin Prefiltro", "telefono": "2226660009", "consentimiento": "true"})
+        check(r.status_code == 400 and "prefiltro" in r.json()["detail"].lower(), "paso 1: sin contestar el prefiltro web no se guarda la postulación (ni hay token)")
+        d = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Chat Reglas", "telefono": "2226660001", "consentimiento": "true",
+                                                 "respuestas_reglas": json.dumps(R_OK)}).json()
+        P, tok = d["postulacion"], d["telegram_onboarding_token"]
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
+            antes = len(asistente(db, p))
+            titulo = p.vacante.titulo
+            web = [q["texto"] for q in prefiltro_reglas.preguntas(p.vacante.prefiltro_reglas)]
+            check(tok and p.prefiltro_completo and p.etapa == "Revisión de vehículo", "paso 1: con el prefiltro web guardado se genera el token del handoff")
+
+        # ---- Paso 2: saludo + preguntas del agente ----
+        mandar(5001, f"/start {tok}")
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
+            nuevos = asistente(db, p)[antes:]
+            preguntas = flujo_operativo.preguntas_agente(p.vacante)
+            check(len(nuevos) == 2 and nuevos[0] == f"Hola Chat. Vi que estás interesado en la vacante {titulo}.",
+                  "paso 2: saludo personalizado con el nombre del candidato y el título de la vacante")
+            check(f"*1/{len(preguntas)}* {preguntas[0]}" in nuevos[1] and not any(w in nuevos[1] for w in web) and "Gracias" not in "".join(nuevos),
+                  "inmediatamente la primera pregunta del agente (no repite el prefiltro web, no manda el cierre)")
+        for i, respuesta in enumerate(["Nissan Versa 2020", "ABC-123-D", "El lunes"]):
+            mandar(5001, respuesta)
+            with SessionLocal() as db:
+                p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
+                ultimo = asistente(db, p)[-1]
+                if i < len(preguntas) - 1:
+                    check(f"*{i + 2}/{len(preguntas)}* {preguntas[i + 1]}" in ultimo and "Gracias" not in ultimo,
+                          f"respuesta {i + 1} guardada → pregunta {i + 2} (sin cierre)")
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
+            agente = (p.analisis or {}).get("preguntas_agente") or {}
+            check([x["respuesta"] for x in agente.get("respuestas", [])] == ["Nissan Versa 2020", "ABC-123-D", "El lunes"] and agente.get("completado_en"),
+                  "cada respuesta queda en el expediente de la postulación")
+            ultimo = asistente(db, p)[-1]
+            check("Gracias por tus respuestas" in ultimo and "/vehiculo/" in ultimo, "el «Gracias» solo al contestar la última (con el siguiente paso: liga del vehículo)")
+        c.post("/auth/login", json={"correo": "admin@redhuman.mx", "password": "Verificar123!"})
+        res = c.get(f"/candidatos/{P}/operativo", headers={"X-Cuenta-Id": str(p.cuenta_id)}).json()["resumen"]
+        check(len(res["respuestasAgente"]) == 3 and any(v["nombre"].startswith("Preguntas del agente") and v["estado"] == "Completadas" for v in res["validaciones"]),
+              "RH ve las respuestas del agente en el Resumen de la ficha")
+        mandar(5001, f"/start {tok}")
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P).first()
+            msgs = asistente(db, p)
+            check(msgs[-2].startswith("Hola Chat. Vi que") and "*1/" not in msgs[-1], "volver a abrir la liga: saluda y recuerda en qué va (no repite las preguntas)")
+
+        # ---- vacante sin reglas: el agente no repite las preguntas web ----
+        with SessionLocal() as db:
+            v = db.query(Vacante).filter(Vacante.slug == SLUG + "cdmx").first()
+            v.prefiltro_reglas = {**(v.prefiltro_reglas or {}), "activo": False}
+            v.preguntas_filtro = [{"pregunta": "¿Tienes licencia vigente?"}]
+            v.preguntas_filtro_whatsapp = [{"pregunta": "¿Tienes licencia vigente?"}, {"pregunta": "¿En qué colonia vives?"}]
+            db.commit()
+        d = c.post("/candidatos/postular", data={"vacante": SLUG + "cdmx", "nombre": "Chat Libre", "telefono": "2226660002", "consentimiento": "true",
+                                                 "respuestas": json.dumps([{"pregunta": "¿Tienes licencia vigente?", "respuesta": "Sí"}])}).json()
+        P2 = d["postulacion"]
+        mandar(5002, f"/start {d['telegram_onboarding_token']}")
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P2).first()
+            msgs = asistente(db, p)
+            check("*1/1* ¿En qué colonia vives?" in msgs[-1] and "licencia" not in msgs[-1].lower(),
+                  "vacante sin reglas: el agente solo hace sus preguntas que NO estaban en la web")
+        mandar(5002, "Narvarte")
+        with SessionLocal() as db:
+            p = db.query(Postulacion).filter(Postulacion.codigo == P2).first()
+            check(p.prefiltro_completo and p.estado == "revision" and "Gracias por tus respuestas" in asistente(db, p)[-1],
+                  "al terminar: «Requiere revisión» (RH decide) y el «Gracias»")
+            v = db.query(Vacante).filter(Vacante.slug == SLUG + "cdmx").first()
+            v.prefiltro_reglas = {**(v.prefiltro_reglas or {}), "activo": True}
+            db.commit()
+
 if __name__ == "__main__":
     main()
+    if not FALLAS:
+        flujo_por_chat()
     print("\n" + ("❌ FALLAS: " + ", ".join(FALLAS) if FALLAS else "✅ Todo en orden"))
     sys.exit(1 if FALLAS else 0)
