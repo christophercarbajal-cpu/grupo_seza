@@ -113,8 +113,9 @@ def main():
                 ultimo = db.query(Mensaje).filter(Mensaje.postulacion_id == p.id, Mensaje.rol == "assistant").order_by(Mensaje.id.desc()).first()
                 check(p.telegram_chat_id == "111" and p.telegram_vinculado_en and chat and chat.telefono == "2225550001"
                       and p.candidato.postulacion_conversacion_id == p.id, "el chat queda amarrado a la postulación y al teléfono de la ficha")
-                check(ultimo is not None and "/vehiculo/" in ultimo.texto and "*1/" not in ultimo.texto,
-                      "filtro completo en la web: Telegram solo da seguimiento (la liga que toca), sin repetir preguntas")
+                check(ultimo is not None and ultimo.texto.startswith("Gracias, Hand. Tu postulación a ") and ultimo.texto.endswith("quedó registrada. Por aquí te avisaremos los siguientes pasos.")
+                      and "*1/" not in ultimo.texto and "/vehiculo/" not in ultimo.texto,
+                      "postulación web completa: al conectar Telegram el bot SOLO confirma (rutas paralelas 2026-10-01)")
             r = asyncio.run(webhooks.procesar_update_telegram(update_start(222, f"/start {tok}", 11)))
             check(r.get("accion") == "token_en_otro_chat" and any("otra cuenta de Telegram" in t for ch, t in enviados if ch == "222"),
                   "el mismo token en otro chat se rechaza")
@@ -283,6 +284,7 @@ def flujo_por_chat():
     from app.models import AsignacionCurso, Colaborador, Curso, Mensaje, Postulacion
     from app.routers import webhooks
     from app.services import flujo_operativo, prefiltro_reglas, telegram
+    from app.serial import nombre_empresa_candidato
 
     def asistente(db, p):
         return [m.texto for m in db.query(Mensaje).filter(Mensaje.postulacion_id == p.id, Mensaje.rol == "assistant").order_by(Mensaje.id)]
@@ -325,10 +327,10 @@ def flujo_por_chat():
             msgs = asistente(db, p)
             titulo = p.vacante.titulo
             web = [q["texto"] for q in prefiltro_reglas.preguntas(p.vacante.prefiltro_reglas)]
-            check(msgs[-2] == f"Hola Dual, soy Red Human. Vi que estás interesado en la vacante {titulo}.",
-                  "2 · saludo: el agente se presenta como «Red Human» (la vacante es solo contexto)")
-            check("/vehiculo/" in msgs[-1] and not any(w in m for m in msgs[-2:] for w in web) and not (p.analisis or {}).get("preguntas_agente"),
-                  "1 · llegó por la web con el filtro completo: Telegram solo da seguimiento y la liga (no repite preguntas)")
+            empresa = nombre_empresa_candidato(p.vacante)
+            check(msgs[-1] == f"Gracias, Dual. Tu postulación a {titulo} en {empresa} quedó registrada. Por aquí te avisaremos los siguientes pasos."
+                  and not any(w in msgs[-1] for w in web) and not (p.analisis or {}).get("preguntas_agente"),
+                  "1 · llegó por la web con el filtro completo: Telegram solo confirma (no repite preguntas ni pide archivos)")
 
         # ---- 1. entrada directa a Telegram: el filtro se completa en el chat sin repetir lo contestado ----
         d2 = c.post("/candidatos/postular", data={"vacante": SLUG + "puebla", "nombre": "Dual Chat", "telefono": "2227770002", "consentimiento": "true",

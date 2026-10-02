@@ -42,7 +42,8 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
   const [ocupado, setOcupado] = useState("");
   const [modal, setModal] = useState<Modal>(null);
   const [texto, setTexto] = useState("");
-  const [lados, setLados] = useState<string[]>([]);
+  // «Pedir corrección» (2026-10-01): archivos marcados → motivo OBLIGATORIO de cada uno ({clave: motivo})
+  const [motivos, setMotivos] = useState<Record<string, string>>({});
   const [visor, setVisor] = useState<ArchivoVisor | null>(null);  // fotos y documentos se ven SOBRE la ficha
   const [enviosLiga, setEnviosLiga] = useState<NonNullable<FlujoVehiculo["envio"]>["envios"]>(undefined);  // estado por canal
 
@@ -64,7 +65,7 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
     if (r.data.envio?.envios) setEnviosLiga(r.data.envio.envios);
     setModal(null);
     setTexto("");
-    setLados([]);
+    setMotivos({});
     const whatsapp = r.data.envio?.whatsapp;
     setAviso(
       whatsapp && !whatsapp.enviado
@@ -198,7 +199,17 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
               {vh.motivoBloqueo}
             </p>
           )}
-          {vh.comentario && (vh.estado === "correccion" || vh.estado === "excepcion") && (
+          {vh.estado === "correccion" && Object.keys(vh.motivosCorreccion ?? {}).length > 0 ? (
+            <ul className="mt-3 flex flex-col gap-1 text-[13px] text-ink-2">
+              <li className="font-semibold text-ink">Corrección pedida{vh.canal === "chat" ? " (el candidato corrige por el chat)" : " (el candidato corrige en la liga web)"}:</li>
+              {Object.entries(vh.motivosCorreccion!).map(([clave, motivo]) => (
+                <li key={clave}>
+                  · <b>{vh.fotos.find((f) => f.lado === clave)?.nombre ?? vh.documentos.find((d) => d.clave === clave)?.tipo ?? clave}</b>: {motivo}
+                  {vh.ladosCorregir?.includes(clave) ? "" : " — reemplazado"}
+                </li>
+              ))}
+            </ul>
+          ) : vh.comentario && (vh.estado === "correccion" || vh.estado === "excepcion") && (
             <p className="mt-3 text-[13px] text-ink-2">
               <b>{vh.estado === "correccion" ? "Corrección pedida:" : "Motivo de la excepción:"}</b> {vh.comentario}
             </p>
@@ -324,43 +335,69 @@ export function PanelPrefiltroVehiculo({ codigo, puedeDecidir, onCambio }: { cod
               {modal === "aprobar_prefiltro"
                 ? "El prefiltro quedará como «Cumple perfil» y se enviará la liga del vehículo (fotos y documentos)."
                 : modal === "correccion"
-                  ? "Se le reenvía la misma liga con tu comentario; solo podrá volver a subir lo que marques."
+                  ? `Marca cada archivo a reemplazar y escribe su motivo. El candidato recibe un mensaje con qué, por qué y cómo corregir${vh?.canal === "chat" ? " y lo reemplaza en el chat" : ", con la liga directa a los archivos pendientes"}; lo demás se conserva.`
                   : "El vehículo queda aprobado por excepción y se podrá citar al candidato."}
             </p>
             {modal === "correccion" && vh && (
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                {[...vh.fotos.map((f) => ({ clave: f.lado, nombre: `Foto: ${f.nombre}` })), ...vh.documentos.map((d) => ({ clave: d.clave, nombre: d.tipo }))].map((o) => (
-                  <label key={o.clave} className="flex min-h-11 items-center gap-2 rounded-xl border border-border-soft px-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={lados.includes(o.clave)}
-                      onChange={(e) => setLados((l) => (e.target.checked ? [...l, o.clave] : l.filter((x) => x !== o.clave)))}
-                      className="h-4 w-4 accent-[var(--brand)]"
-                    />
-                    {o.nombre}
-                  </label>
-                ))}
+              <div className="mt-3 flex max-h-[55vh] flex-col gap-2 overflow-y-auto">
+                {[...vh.fotos.map((f) => ({ clave: f.lado, nombre: `Foto: ${f.nombre}`, cargado: f.cargada })),
+                  ...vh.documentos.map((d) => ({ clave: d.clave, nombre: d.tipo, cargado: d.cargado }))].map((o) => {
+                  const marcado = o.clave in motivos;
+                  return (
+                    <div key={o.clave} className={cn("rounded-xl border px-3 py-2", marcado ? "border-warn bg-warn-soft/30" : "border-border-soft")}>
+                      <label className="flex min-h-9 items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={marcado}
+                          onChange={(e) => setMotivos((m) => {
+                            const n = { ...m };
+                            if (e.target.checked) n[o.clave] = "";
+                            else delete n[o.clave];
+                            return n;
+                          })}
+                          className="h-4 w-4 accent-[var(--brand)]"
+                        />
+                        <span className="flex-1">{o.nombre}</span>
+                        {!o.cargado && <span className="text-[11px] text-ink-3">sin archivo</span>}
+                      </label>
+                      {marcado && (
+                        <input
+                          autoFocus
+                          value={motivos[o.clave]}
+                          onChange={(e) => setMotivos((m) => ({ ...m, [o.clave]: e.target.value }))}
+                          placeholder="Motivo (obligatorio). Ej. no se distingue"
+                          aria-label={`Motivo para ${o.nombre}`}
+                          className={cn("mt-1.5 h-10 w-full rounded-lg border bg-surface px-3 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20",
+                            motivos[o.clave].trim() ? "border-border-soft" : "border-warn")}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
-            <textarea
+            {modal !== "correccion" && <textarea
               value={texto}
               onChange={(e) => setTexto(e.target.value)}
               rows={3}
-              placeholder={modal === "correccion" ? "¿Qué debe corregir? Ej. la foto de atrás salió borrosa" : "Motivo (obligatorio)"}
+              placeholder="Motivo (obligatorio)"
               className="mt-3 w-full rounded-xl border border-border-soft bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-            />
+            />}
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setModal(null)}>
                 Cancelar
               </Button>
               <Button
                 size="sm"
-                disabled={!texto.trim() || Boolean(ocupado) || (modal === "correccion" && lados.length === 0)}
+                disabled={Boolean(ocupado) || (modal === "correccion"
+                  ? !Object.keys(motivos).length || Object.values(motivos).some((m) => !m.trim())
+                  : !texto.trim())}
                 onClick={() =>
                   modal === "aprobar_prefiltro"
                     ? ejecutar("prefiltro", () => aprobarPrefiltroReglas(codigo, texto.trim()), "Prefiltro aprobado; se envió la liga del vehículo.")
                     : modal === "correccion"
-                      ? ejecutar("correccion", () => decidirVehiculo(codigo, "correccion", texto.trim(), lados), "Corrección solicitada; se reenvió la liga.")
+                      ? ejecutar("correccion", () => decidirVehiculo(codigo, "correccion", "", Object.keys(motivos), motivos),
+                        `Corrección solicitada (${Object.keys(motivos).length} archivo${Object.keys(motivos).length === 1 ? "" : "s"}); se avisó al candidato.`)
                       : ejecutar("excepcion", () => decidirVehiculo(codigo, "excepcion", texto.trim()), "Vehículo aprobado por excepción.")
                 }
               >

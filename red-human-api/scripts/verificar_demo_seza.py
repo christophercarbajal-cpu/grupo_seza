@@ -420,7 +420,8 @@ async def _whatsapp_completo():
     en_orden = all(textos[i] in salidas[i] and f"*{i + 1}/{len(ids)}*" in salidas[i] for i in range(len(ids)))
     check(en_orden and len(ids) >= 11, f"chat: las {len(ids)} preguntas del documento salen en orden, una por mensaje")
     check(p.estado == "cumple" and p.etapa == "Revisión de vehículo" and p.revision_vehiculo is not None
-          and "/vehiculo/" in salidas[-1] and "licencia" in salidas[-1], "chat: «Cumple perfil» → «Revisión de vehículo» + liga de fotos y documentos")
+          and "/vehiculo/" not in salidas[-1] and "licencia" in salidas[-1] and "Envíame por aquí la foto del frente" in salidas[-1],
+          "chat: «Cumple perfil» → «Revisión de vehículo» y las fotos/documentos se piden EN el chat (rutas paralelas 2026-10-01)")
     cumple = p.codigo
     db.close()
 

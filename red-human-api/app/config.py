@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = ""
     # Usuario PÚBLICO del bot (sin @): arma el deep link del handoff web → Telegram (no es secreto).
     telegram_bot_username: str = "GrupoSeza_bot"
+    # Número PÚBLICO de WhatsApp (10 dígitos) para «Copiar liga WhatsApp» de cada vacante (wa.me). Si una Cuenta tiene
+    # su `whatsapp_comunicacion`, manda esa. Solo se ofrece con WhatsApp habilitado (no aplica con Telegram activo).
+    whatsapp_numero_publico: str = ""
 
     # --- Gateway propio (alternativa sin costo por mensaje) ---
     waha_url: str = "http://localhost:3001"

@@ -582,8 +582,11 @@ def _homonimas_otras_cuentas(db: Session, v: Vacante) -> List[dict]:
 def detalle(
     codigo: str, db: Session = Depends(get_db), _: Usuario = Depends(usuario_actual), cuenta: Cuenta = Depends(cuenta_actual)
 ):
+    from ..services.canales import ligas_entrada
+
     v = _por_codigo(db, codigo, cuenta.id)
-    return {**_salida(db, v), "homonimasOtrasCuentas": _homonimas_otras_cuentas(db, v)}
+    return {**_salida(db, v), "homonimasOtrasCuentas": _homonimas_otras_cuentas(db, v),
+            "ligasEntrada": ligas_entrada(v, cuenta)}  # 2026-10-01: Copiar liga web / Telegram / WhatsApp
 
 
 @router.get("/{codigo}/vista-previa")

@@ -366,6 +366,8 @@ export interface Vacante {
   cuentaId?: number | null;
   cuentaSlug?: string;
   homonimasOtrasCuentas?: { codigo: string; cuenta: string; cuentaId: number }[];
+  /** 2026-10-01: ligas de ENTRADA por canal (cada una es una ruta completa: web, Telegram, WhatsApp si está habilitado). */
+  ligasEntrada?: { web: string; telegram: string; whatsapp: string; whatsappHabilitado: boolean };
   /** CRUD: baja lógica */
   eliminadaEn?: string | null;
   eliminadaPor?: string;

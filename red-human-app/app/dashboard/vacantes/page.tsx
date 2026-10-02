@@ -1720,14 +1720,26 @@ function DetalleVacante({
           {Object.values(embudo).reduce((a, b) => a + b, 0)} candidatos activos en total · misma cuenta que el tablero de Candidatos.
         </p>
 
-        {liga && (
-          <div className="flex items-center gap-2 rounded-xl border border-border-soft bg-surface-2 px-3.5 py-2.5">
-            <Link2 className="h-4 w-4 shrink-0 text-ink-3" />
-            <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2">{liga}</span>
-            <BotonCopiar texto={liga} etiqueta="Copiar liga" />
-            <a href={`/aplicar/${v.slug}`} target="_blank" rel="noreferrer" className="text-ink-3 transition hover:text-brand" aria-label="Abrir página de postulación">
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
+        {/* Ligas de ENTRADA (2026-10-01): cada canal es una ruta completa (web o chat) que alimenta el mismo tablero */}
+        {(liga || v.ligasEntrada?.telegram) && (
+          <div className="flex flex-col divide-y divide-border-faint rounded-xl border border-border-soft bg-surface-2">
+            {[
+              { canal: "Web", url: liga, copiar: "Copiar liga web", ayuda: "Datos, prefiltro, fotos y documentos en la página" },
+              { canal: "Telegram", url: v.ligasEntrada?.telegram ?? "", copiar: "Copiar liga Telegram", ayuda: "Todo en el chat del bot" },
+              ...(v.ligasEntrada?.whatsappHabilitado
+                ? [{ canal: "WhatsApp", url: v.ligasEntrada.whatsapp, copiar: "Copiar liga WhatsApp", ayuda: "Todo en el chat de WhatsApp" }]
+                : []),
+            ].filter((x) => x.url).map((x) => (
+              <div key={x.canal} className="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
+                <Link2 className="h-4 w-4 shrink-0 text-ink-3" />
+                <span className="w-20 shrink-0 text-[12px] font-semibold text-ink">{x.canal}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2" title={x.ayuda}>{x.url}</span>
+                <BotonCopiar texto={x.url} etiqueta={x.copiar} />
+                <a href={x.url} target="_blank" rel="noreferrer" className="text-ink-3 transition hover:text-brand" aria-label={`Abrir liga ${x.canal}`}>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </div>
+            ))}
           </div>
         )}
 

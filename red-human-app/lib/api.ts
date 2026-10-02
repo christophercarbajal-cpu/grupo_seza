@@ -1389,10 +1389,21 @@ export function postular(datos: {
     cv: { procesado: boolean; avisos: string[] };
     clasificacion: { estado: string; score: number; evidencia: string } | null;
     vehiculo: { liga: string } | null;
-    /** Handoff web → Telegram (2026-10-01): token del deep link `tg://resolve?domain=<bot>&start=<token>`. */
+    /** Rutas paralelas (2026-10-01): el siguiente paso REAL de la web (vehículo, entrevista con avatar o revisión de RH). */
+    siguientePaso?: SiguientePaso;
+    empresa?: string;
+    /** Handoff OPCIONAL web → Telegram (solo avisos): token del deep link `tg://resolve?domain=<bot>&start=<token>`. */
     telegram_onboarding_token?: string;
     telegramBot?: string;
   }>("/candidatos/postular", form);
+}
+
+export interface SiguientePaso {
+  tipo: "vehiculo" | "entrevista" | "revision";
+  titulo: string;
+  texto: string;
+  boton: string;
+  liga: string;
 }
 
 /** Bot de la demo (respaldo si la API no lo manda). */
@@ -3573,6 +3584,10 @@ export interface RevisionVehiculo {
   decididoPor?: string;
   decididoEn?: string | null;
   ladosCorregir?: string[];
+  /** 2026-10-01: motivo de RH POR ARCHIVO en la corrección vigente ({clave: motivo}). */
+  motivosCorreccion?: Record<string, string>;
+  /** Canal de la postulación: «chat» (correcciones por el chat) o «web» (por la liga). */
+  canal?: "chat" | "web";
   fotos: { lado: string; nombre: string; cargada: boolean; subidaEn: string; url: string; pendienteRevision?: boolean }[];
   /** v2: licencia, tarjeta de circulación y póliza — viven en el expediente de la postulación. */
   documentos: DocumentoVehiculo[];
@@ -3606,8 +3621,9 @@ export function enviarLigaVehiculo(codigo: string) {
   return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/enviar-liga`);
 }
 
-export function decidirVehiculo(codigo: string, accion: "aprobar" | "correccion" | "excepcion", comentario = "", lados: string[] = []) {
-  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/decision`, { accion, comentario, lados });
+export function decidirVehiculo(codigo: string, accion: "aprobar" | "correccion" | "excepcion", comentario = "", lados: string[] = [],
+  motivos: Record<string, string> = {}) {
+  return post<FlujoVehiculo>(`/candidatos/${codigo}/vehiculo/decision`, { accion, comentario, lados, motivos });
 }
 
 export function aprobarPrefiltroReglas(codigo: string, motivo: string) {
@@ -3621,8 +3637,15 @@ export interface VehiculoPublico {
   estado: EstadoVehiculo;
   abierta: boolean;
   comentario: string;
-  lados: { clave: string; nombre: string; cargada: boolean; pendiente: boolean }[];
-  documentos: { clave: string; nombre: string; cargado: boolean; estado: string; motivo: string; pendiente: boolean }[];
+  lados: { clave: string; nombre: string; cargada: boolean; pendiente: boolean; motivo?: string; instruccion?: string }[];
+  documentos: { clave: string; nombre: string; cargado: boolean; estado: string; motivo: string; pendiente: boolean; instruccion?: string }[];
+  /** 2026-10-01: archivos de la corrección vigente con el motivo de RH y cómo corregir. */
+  correccion?: { clave: string; nombre: string; motivo: string; instruccion: string; esFoto: boolean; pendiente: boolean }[];
+  /** Éxito del último reemplazo («Recibimos tu nueva foto. Está pendiente de revisión.») y de qué archivo. */
+  mensaje?: string;
+  claveMensaje?: string;
+  /** Handoff opcional: conectar Telegram solo para recibir avisos (ruta web). */
+  telegram?: { liga: string; ligaWeb: string; conectado: boolean };
 }
 
 export function fetchVehiculoPublico(token: string) {

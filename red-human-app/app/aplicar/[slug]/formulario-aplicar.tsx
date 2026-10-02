@@ -10,7 +10,6 @@ import {
   ArrowLeft,
   FileCheck2,
   Check,
-  MessageCircle,
   ShieldCheck,
   Sparkles,
   User,
@@ -18,11 +17,15 @@ import {
   Phone,
   AlertTriangle,
   Camera,
+  Clock,
+  Send,
+  Video,
 } from "lucide-react";
 import { Logo, Button, Card, Badge } from "@/components/ui";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Dropzone, pesoLegible } from "@/components/dashboard/subida";
-import { BOT_TELEGRAM_DEFAULT, fetchVacantePorSlug, ligaTelegramInicio, ligaTelegramWeb, postular } from "@/lib/api";
+import { BOT_TELEGRAM_DEFAULT, fetchVacantePorSlug, postular, type SiguientePaso } from "@/lib/api";
+import { ConectarTelegram } from "@/components/conectar-telegram";
 import { PREGUNTAS_VEHICULARES, type Vacante } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
@@ -51,8 +54,9 @@ export default function FormularioAplicar() {
   const [enviando, setEnviando] = useState(false);
   // Demo SEZA: prefiltro por reglas (12 preguntas por id) y liga de fotos que regresa el servidor si cumple
   const [respReglas, setRespReglas] = useState<Record<string, string>>({});
-  const [ligaVehiculo, setLigaVehiculo] = useState("");
-  // Handoff web → Telegram (2026-10-01): sin redirigir; modal «Tu evaluación está lista» con el deep link nativo.
+  // Rutas paralelas (2026-10-01): la postulación web se hace COMPLETA en la web; el siguiente paso real lo dice la API.
+  const [pasoSiguiente, setPasoSiguiente] = useState<SiguientePaso | null>(null);
+  // Telegram es OPCIONAL y solo para recibir avisos («Conectar Telegram» al terminar la ruta web).
   const [telegram, setTelegram] = useState<{ token: string; bot: string } | null>(null);
 
   useEffect(() => {
@@ -140,7 +144,12 @@ export default function FormularioAplicar() {
         setError(r.error);
         return;
       }
-      setLigaVehiculo(r.data.vehiculo?.liga ?? "");
+      setPasoSiguiente(
+        r.data.siguientePaso ??
+          (r.data.vehiculo?.liga
+            ? { tipo: "vehiculo", titulo: "Siguiente paso: fotos y documentos de tu vehículo", texto: "", boton: "Subir fotos y documentos", liga: r.data.vehiculo.liga }
+            : null),
+      );
       if (r.data.telegram_onboarding_token) setTelegram({ token: r.data.telegram_onboarding_token, bot: r.data.telegramBot || BOT_TELEGRAM_DEFAULT });
       setDone(true);
     } catch (err) {
@@ -205,9 +214,8 @@ export default function FormularioAplicar() {
           </Card>
         )}
 
-        {done && telegram && <ModalEvaluacionTelegram token={telegram.token} bot={telegram.bot} onCerrar={() => setTelegram(null)} />}
         {done ? (
-          <Exito titulo={titulo} conCv={Boolean(cv)} ligaVehiculo={ligaVehiculo} />
+          <Exito titulo={titulo} conCv={Boolean(cv)} siguiente={pasoSiguiente} telegram={telegram} />
         ) : (
           <Card className="mt-6 overflow-hidden">
             {/* Progreso */}
@@ -371,8 +379,8 @@ export default function FormularioAplicar() {
                 <ArrowLeft className="h-4 w-4" /> Atrás
               </Button>
               <Button onClick={siguiente} disabled={!puedeAvanzar || enviando}>
-                {enviando ? "Enviando…" : step === pasos.length - 1 ? "Enviar aplicación" : "Continuar"}
-                <ArrowRight className="h-4 w-4" />
+                {enviando ? "Enviando…" : step === pasos.length - 1 ? "Enviar postulación" : `Continuar: ${pasos[step + 1].toLowerCase()}`}
+                {step === pasos.length - 1 ? <Send className="h-4 w-4" /> : <ArrowRight className="h-4 w-4" />}
               </Button>
             </div>
           </Card>
@@ -486,7 +494,13 @@ function PreguntasReglas({
   );
 }
 
-function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean; ligaVehiculo?: string }) {
+function Exito({ titulo, conCv, siguiente, telegram }: {
+  titulo: string;
+  conCv: boolean;
+  siguiente: SiguientePaso | null;
+  telegram: { token: string; bot: string } | null;
+}) {
+  const accion = siguiente && siguiente.liga && siguiente.tipo !== "revision" ? siguiente : null;
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4 }}>
       <Card className="mt-8 overflow-hidden text-center">
@@ -502,7 +516,7 @@ function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean
             >
               <Check className="h-9 w-9" />
             </motion.div>
-            <h2 className="font-display mt-5 text-2xl font-bold">¡Postulación enviada con éxito!</h2>
+            <h2 className="font-display mt-5 text-2xl font-bold">{accion ? "Tus respuestas quedaron registradas" : "¡Postulación enviada con éxito!"}</h2>
             <p className="mx-auto mt-2 max-w-md text-white/70">
               Registramos tu postulación para <b className="text-white">{titulo}</b>.
               {conCv && " Tu CV ha sido procesado correctamente."}
@@ -510,27 +524,30 @@ function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean
           </div>
         </div>
 
-        {/* Zero-Touch: el siguiente contacto lo dispara el sistema por WhatsApp, no un clic del candidato */}
-        <div className="p-6 sm:p-8 flex flex-col items-center gap-5">
-          {ligaVehiculo && (
+        <div className="flex flex-col items-center gap-5 p-6 sm:p-8">
+          {/* El siguiente paso REAL se hace aquí mismo, en la web (nada de saltar al chat a mitad del proceso) */}
+          {accion ? (
             <div className="flex w-full max-w-md flex-col items-center gap-3 rounded-2xl border border-brand/30 bg-brand-soft/40 p-5 text-center">
-              <Camera className="h-7 w-7 text-brand" />
-              <p className="text-sm leading-relaxed text-ink">
-                Siguiente paso: sube 4 fotos de tu vehículo (frente, atrás y ambos costados). También te mandamos la liga por el chat.
-              </p>
-              <Button href={ligaVehiculo} className="w-full">
-                <Camera className="h-4 w-4" /> Subir fotos de mi vehículo
+              {accion.tipo === "entrevista" ? <Video className="h-7 w-7 text-brand" /> : <Camera className="h-7 w-7 text-brand" />}
+              <p className="font-display text-lg font-bold text-ink">{accion.titulo}</p>
+              {accion.texto && <p className="text-sm leading-relaxed text-ink-2">{accion.texto}</p>}
+              <Button href={accion.liga} className="w-full">
+                {accion.tipo === "entrevista" ? <Video className="h-4 w-4" /> : <Camera className="h-4 w-4" />} {accion.boton}
+                <ArrowRight className="h-4 w-4" />
               </Button>
             </div>
+          ) : (
+            <>
+              <div className="flex w-full max-w-md items-start gap-3 rounded-2xl border border-border-soft bg-surface-2 p-5 text-left">
+                <Clock className="mt-0.5 h-5 w-5 shrink-0 text-ink-3" />
+                <p className="text-sm leading-relaxed text-ink">
+                  <b>{siguiente?.titulo ?? "RH revisa tu postulación"}.</b>{" "}
+                  {siguiente?.texto ?? "No tienes que hacer nada más por ahora. Te avisaremos los siguientes pasos."}
+                </p>
+              </div>
+              {telegram && <ConectarTelegram token={telegram.token} bot={telegram.bot} />}
+            </>
           )}
-          <div className="flex w-full max-w-md items-start gap-3 rounded-2xl border border-[#25D366]/30 bg-[#25D366]/10 p-5 text-left">
-            <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#25D366]/15 text-[#25D366]">
-              <MessageCircle className="h-5 w-5" />
-            </span>
-            <p className="text-sm leading-relaxed text-ink">
-              Nuestro asistente virtual de RH te contactará por el chat en breve para continuar tu proceso.
-            </p>
-          </div>
 
           <div className="flex items-center justify-center gap-6 text-xs text-ink-3">
             <span className="flex items-center gap-1.5">
@@ -543,32 +560,5 @@ function Exito({ titulo, conCv, ligaVehiculo }: { titulo: string; conCv: boolean
         </div>
       </Card>
     </motion.div>
-  );
-}
-
-/** Handoff web → Telegram: la evaluación sigue en el bot. El botón usa el enlace NATIVO (`tg://resolve`), así la app
- *  se abre directo en el bot con `/start <token>` y el candidato no vuelve a dar su número. */
-function ModalEvaluacionTelegram({ token, bot, onCerrar }: { token: string; bot: string; onCerrar: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true"
-      aria-labelledby="titulo-evaluacion-lista">
-      <Card className="w-full max-w-md rounded-b-none p-6 text-center sm:rounded-2xl">
-        <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-brand-soft text-brand">
-          <MessageCircle className="h-7 w-7" />
-        </span>
-        <h2 id="titulo-evaluacion-lista" className="font-display mt-4 text-2xl font-bold">Tu evaluación está lista</h2>
-        <p className="mt-2 text-sm text-ink-2">
-          La continuamos en Telegram con nuestro asistente: toma unos minutos y te guía paso a paso.
-        </p>
-        <a href={ligaTelegramInicio(token, bot)}
-          className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-base font-semibold text-brand-ink transition hover:brightness-105">
-          Iniciar Evaluación <ArrowRight className="h-4 w-4" />
-        </a>
-        <p className="mt-3 text-[12px] text-ink-3">
-          ¿No se abrió Telegram? <a href={ligaTelegramWeb(token, bot)} target="_blank" rel="noreferrer" className="font-semibold text-brand hover:underline">Ábrelo aquí</a>
-        </p>
-        <button type="button" onClick={onCerrar} className="mt-4 text-sm font-medium text-ink-3 hover:text-ink">Ahora no</button>
-      </Card>
-    </div>
   );
 }

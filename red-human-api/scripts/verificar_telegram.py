@@ -136,7 +136,8 @@ def main():
             i = len(LLAMADAS)
             c.post(url, json=update_mensaje(t), headers=sec)
         env = enviados_desde(i)
-        check(any("/vehiculo/" in x["json"].get("text", "") for x in env), "prefiltro completo «Cumple perfil» → liga de fotos del vehículo por Telegram")
+        check(any("Envíame por aquí la foto del frente" in x["json"].get("text", "") for x in env) and not any("/vehiculo/" in x["json"].get("text", "") for x in env),
+              "prefiltro completo «Cumple perfil» → las fotos del vehículo se piden en el chat de Telegram (rutas paralelas 2026-10-01)")
 
         db = SessionLocal()
         p = db.query(Postulacion).join(Postulacion.candidato).filter_by(telefono="5599990001").order_by(Postulacion.id.desc()).first()

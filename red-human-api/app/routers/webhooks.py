@@ -483,6 +483,100 @@ async def _recibir_documento_whatsapp(db: Session, p: Postulacion, msg: dict, te
     return {"documento": doc.tipo, "estado": estado, "pendientes": pendientes, "whatsapp": envio}
 
 
+def _recibe_archivos_vehiculo(p: Postulacion) -> bool:
+    r = p.revision_vehiculo
+    return bool(p.activa and r and r.estado in ("pendiente", "correccion"))
+
+
+async def _pedir_archivo_vehiculo(db: Session, p: Postulacion, telefono: str, seleccion: str) -> dict:
+    """Botón «Corregir foto del frente» / «Corregir archivos» del mensaje de corrección (ruta de chat): el bot pide ese
+    archivo ahí mismo (con el motivo de RH y cómo tomarlo) y recuerda cuál espera."""
+    from ..services import vehiculo as vsrv
+
+    r = p.revision_vehiculo
+    faltan = vsrv.pendientes(r) if r else []
+    clave = seleccion.split("-", 1)[1] if "-" in seleccion else ""
+    clave = clave if clave in faltan else (faltan[0] if faltan else "")
+    if not clave:
+        texto = f"Ya no hay archivos pendientes por corregir, {p.nombre.split(' ')[0] if p.nombre else ''}. RH los revisa y te avisa por aquí.".replace(" ,", ",")
+    else:
+        texto = vsrv.texto_pedir_archivo(p, clave)
+        p.analisis = {**(p.analisis or {}), "archivo_esperado": clave}
+    envio = await enviar_mensaje(telefono, texto)
+    guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+    db.commit()
+    return {"archivo": clave, "respuesta": texto}
+
+
+async def _recibir_archivo_vehiculo(db: Session, p: Postulacion, msg: dict, telefono: str) -> dict:
+    """Ruta 100 % chat (2026-10-01): una foto o documento del vehículo que llega por el chat. Se identifica qué archivo es
+    (pie de foto → el que pidió el bot → el siguiente pendiente), pasa por la MISMA validación que la liga web y se guarda
+    en la misma revisión. Luego el bot pide el siguiente; nunca vuelve a pedir lo ya entregado."""
+    from ..services import archivos as fs
+    from ..services import vehiculo as vsrv
+    from ..services.validacion_archivos import ArchivoNoValido
+    from ..models import DOCUMENTOS_VEHICULO
+
+    r = p.revision_vehiculo
+    media = msg.get("media") or {}
+    etiqueta = media.get("filename") or f"{msg.get('tipo')} recibido por chat"
+    guardar_mensaje(db, p, "user", f"[📎 {etiqueta}]" + (f" {msg.get('texto')}" if msg.get("texto") else ""), "whatsapp", wa_id=msg.get("wa_id", ""))
+    db.flush()
+
+    async def decir(texto: str, **extra) -> dict:
+        envio = await enviar_mensaje(telefono, texto)
+        guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+        _actualizar_ultima_actividad(p)
+        db.commit()
+        return {"respuesta": texto, "whatsapp": envio, **extra}
+
+    faltan = vsrv.pendientes(r)
+    if not faltan:
+        return await decir(f"Gracias, {p.nombre.split(' ')[0] if p.nombre else ''}. Ya tengo todo lo de tu vehículo; RH lo revisa y te avisa por aquí.".replace(" ,", ","))
+    pista = vsrv.clave_por_texto(f"{msg.get('texto', '')} {media.get('filename', '')}")
+    esperado = (p.analisis or {}).get("archivo_esperado")
+    if pista and pista not in faltan:
+        return await decir(f"Esa ya la tengo ✅. {vsrv.texto_pedir_archivo(p, faltan[0])}")
+    clave = pista or (esperado if esperado in faltan else faltan[0])
+
+    descarga = await descargar_media(media.get("id", ""))
+    if not descarga.get("ok"):
+        registrar(db, "sistema", "vehiculo_chat_error", "postulacion", p.codigo, {"media": media, "error": descarga.get("detalle", "")})
+        return await decir("Recibí tu archivo pero no pude descargarlo 😕 ¿Me lo puedes reenviar?", error=descarga.get("detalle", ""))
+    era_correccion = r.estado == "correccion"
+    p.analisis = {**(p.analisis or {}), "archivo_esperado": clave}  # si se rechaza, el reintento cae en el mismo archivo
+    try:
+        if vsrv.es_foto(clave):
+            val = fs.validar_bytes(descarga["contenido"], descarga.get("filename") or f"{clave}.jpg", "foto")
+            if not val.es_imagen:
+                return await decir(f"Para {vsrv.ARCHIVOS[clave][0]} necesito una foto (JPG o PNG), no un PDF. {vsrv.instruccion(clave)}", error="no_imagen")
+            vsrv.guardar_foto(db, p, r, clave, val, "candidato", "candidato (chat)")
+        else:
+            vsrv.obtener_o_crear(db, p)
+            doc = next(d for d in p.expediente.documentos if d.tipo == DOCUMENTOS_VEHICULO[clave])
+            await adjuntar_documento_bytes(db, p.expediente, doc, descarga["contenido"], descarga.get("filename") or etiqueta,
+                                           descarga.get("mime", ""), subido_por=f"chat:{p.candidato.codigo if p.candidato else ''}")
+            vsrv.registrar_documento_subido(db, r, clave)
+    except ArchivoNoValido as ex:  # validación básica: no corresponde / ilegible → no se guarda, se pide de nuevo
+        return await decir(str(ex.detail), archivo=clave, error=str(ex.detail))
+    except HTTPException as ex:
+        return await decir(f"No pude registrar tu archivo: {ex.detail} Envíalo en foto (JPG/PNG) o PDF, por favor. 🙏", archivo=clave, error=str(ex.detail))
+    p.analisis = {k: v for k, v in (p.analisis or {}).items() if k != "archivo_esperado"}
+    registrar(db, "candidato", "vehiculo_archivo_chat", "postulacion", p.codigo, {"archivo": clave, "correccion": era_correccion})
+    db.flush()
+    siguientes = vsrv.pendientes(r)
+    if era_correccion:
+        texto = vsrv.mensaje_reemplazo(clave)
+        if siguientes:
+            texto += "\n\n" + vsrv.texto_pedir_archivo(p, siguientes[0], "Falta uno más. " if len(siguientes) == 1 else f"Faltan {len(siguientes)}. ")
+    elif siguientes:
+        texto = vsrv.texto_pedir_archivo(p, siguientes[0], f"Recibí {vsrv.ARCHIVOS[clave][0]} ✅\n\n")
+    else:
+        texto = (f"¡Listo, {p.nombre.split(' ')[0] if p.nombre else ''}! Recibí las 4 fotos de tu vehículo y tus 3 documentos ✅ "
+                 "RH los revisa y te avisa por aquí los siguientes pasos.").replace(" !", "!")
+    return await decir(texto, archivo=clave, pendientes=siguientes)
+
+
 def _alcance_whatsapp(db: Session, numero_receptor: str) -> Tuple[List[Cuenta], str]:
     """(Cuentas activas que atiende este mensaje, modo) — ver docstring del módulo (multi-tenant).
 
@@ -640,12 +734,70 @@ async def _lanzar_evaluacion_telegram(db: Session, p: Postulacion, msg: dict, te
     return {"ok": True, "accion": "handoff_evaluacion", "postulacion": p.codigo, "respuesta": (r or {}).get("respuesta")}
 
 
+# chat → vacante de la liga mientras el candidato comparte su número (en memoria: si el servidor se reinicia en ese
+# minuto, el candidato ve el menú de vacantes y elige la suya).
+_VACANTE_PENDIENTE: dict = {}
+
+
+async def _inicio_por_vacante(db: Session, msg: dict, codigo: str) -> dict:
+    """`/start vac_<VAC-####>` (ruta 100 % chat, 2026-10-01): identifica la vacante y abre SU postulación en el chat.
+    * Ya tiene una postulación ACTIVA a esa vacante → se retoma donde iba (nunca repite preguntas ni pide archivos ya
+      entregados).
+    * Si no → postulación NUEVA amarrada a la vacante y a su empresa (Cuenta), sin mezclar procesos anteriores; arranca con
+      el aviso de privacidad y, al aceptar, el prefiltro de esa vacante, todo en el chat."""
+    from .candidatos import retomar_chat
+
+    chat_id = msg["chat_id"]
+    vac = (db.query(Vacante).join(Cuenta, Cuenta.id == Vacante.cuenta_id)
+           .filter(func.upper(Vacante.codigo) == codigo.strip().upper(), Vacante.estado == "Publicada", Cuenta.estado == "Activa").first())
+    tel = telegram.telefono_de_chat(db, chat_id)
+    if vac is None:
+        await telegram._enviar_a_chat(chat_id, "Esta vacante ya no está disponible. Te muestro las vacantes abiertas 👇")
+        if not tel:
+            await telegram.pedir_contacto(chat_id, msg.get("nombre", ""))
+            return {"ok": True, "accion": "vacante_no_disponible"}
+        return await procesar_entrante(db, telegram.mensaje_para_agente({**msg, "texto": "Hola"}, tel))
+    if not tel:  # un bot no puede escribirle a un número: primero el contacto; al compartirlo sigue esta vacante
+        _VACANTE_PENDIENTE[str(chat_id)] = vac.codigo
+        await telegram.pedir_contacto(chat_id, msg.get("nombre", ""))
+        return {"ok": True, "accion": "vacante_espera_contacto", "vacante": vac.codigo}
+
+    wa_id = "52" + tel
+    prueba = modo_prueba_activo(db)
+    alcance_ids = [x.id for x in db.query(Cuenta).filter(Cuenta.estado == "Activa").all()]
+    personas = _personas_en_alcance(db, wa_id, alcance_ids)
+    p = next((x for per in personas for x in per.postulaciones_activas if x.vacante_id == vac.id), None)
+    nueva = p is None
+    if nueva:
+        base = personas[0] if personas else _buscar_o_crear_candidato(db, wa_id, msg.get("nombre", ""), vac.cuenta_id, prueba, "Telegram")
+        persona = _persona_para_cuenta(db, base, personas or [base], vac.cuenta_id, prueba)
+        p, _ = postulacion_para_vacante(db, persona, vac, vac.cuenta_id, "whatsapp", es_prueba=prueba)
+        registrar(db, "candidato", "postulacion_por_liga_chat", "postulacion", p.codigo, {"vacante": vac.codigo, "canal": "telegram"})
+    fijar_conversacion(p)  # acción explícita del candidato (abrió la liga de ESA vacante)
+    if not p.telegram_chat_id:
+        p.telegram_chat_id = chat_id
+        p.telegram_vinculado_en = datetime.now(timezone.utc)
+    db.commit()
+    c = p.candidato
+    if not p.consentimiento:
+        nombre = c.nombre if c and not c.nombre.startswith("Candidato") else msg.get("nombre", "")
+        aviso = _texto_aviso_privacidad((nombre or "").split(" ")[0], vac)
+        envio = await enviar_mensaje(wa_id, aviso)
+        guardar_mensaje(db, p, "assistant", aviso, "whatsapp", envio)
+        db.commit()
+        return {"ok": True, "accion": "aviso_privacidad_enviado", "postulacion": p.codigo, "nueva": nueva}
+    r = await retomar_chat(db, p, "whatsapp")
+    return {"ok": True, "accion": "postulacion_retomada", "postulacion": p.codigo, "nueva": False, "respuesta": (r or {}).get("respuesta")}
+
+
 async def _handoff_telegram(db: Session, msg: dict, token: str) -> dict:
     """`/start <token>` (deep link desde /aplicar): amarra el chat a la postulación del token y lanza su evaluación.
     El token sirve en UN solo chat (otro chat con la misma liga se rechaza). Token desconocido/cerrado → igual que un
     `/start` vacío (menú general de vacantes)."""
     chat_id = msg["chat_id"]
     accion, token = telegram.separar_inicio(token)  # `/start cita_<token>` → abre directo la cita
+    if accion == telegram.PREFIJO_VACANTE:  # liga de ENTRADA de la vacante: postulación 100 % por chat
+        return await _inicio_por_vacante(db, msg, token)
     p = telegram.postulacion_por_token(db, token)
     if p is None or not p.activa:
         await telegram._enviar_a_chat(chat_id, "Esta liga ya no está vigente. Te muestro las vacantes disponibles 👇")
@@ -698,6 +850,9 @@ async def procesar_update_telegram(update: dict) -> dict:
             tel = telegram.guardar_chat(db, msg["chat_id"], contacto["telefono"], msg.get("nombre", ""))
             db.commit()
             await telegram.confirmar_contacto(msg["chat_id"])
+            vac_pendiente = _VACANTE_PENDIENTE.pop(str(msg["chat_id"]), None)
+            if vac_pendiente:  # llegó por la liga de una vacante: sigue ESA postulación
+                return await _inicio_por_vacante(db, msg, vac_pendiente)
             pendiente = (db.query(Postulacion).filter(Postulacion.telegram_chat_id == msg["chat_id"], Postulacion.activa.is_(True))
                          .order_by(Postulacion.telegram_vinculado_en.desc()).first())
             if pendiente is not None and not pendiente.candidato.telefono:  # handoff que esperaba el número
@@ -813,6 +968,14 @@ async def procesar_entrante(db: Session, msg: dict) -> dict:
     # ── 1.1 Documento o imagen adjunta (2026-09-15): si la postulación ya está en Contratación u
     # Onboarding, el archivo ES el documento del expediente — se descarga de Meta y se adjunta.
     # En cualquier otra etapa se sigue tratando el pie de foto como texto (comportamiento previo).
+    # 2026-10-01 (ruta 100 % chat): con la revisión del vehículo abierta, el adjunto es una foto/documento del vehículo
+    if msg.get("tipo") in ("image", "document") and msg.get("media") and _recibe_archivos_vehiculo(p) and p.etapa not in ETAPAS_DOCUMENTOS:
+        resultado = await _recibir_archivo_vehiculo(db, p, msg, telefono)
+        return {"ok": True, "accion": "archivo_vehiculo_chat", "candidato": c.codigo, "postulacion": p.codigo, **resultado}
+    if id_seleccionado.startswith("CORR-") and _recibe_archivos_vehiculo(p):  # botón «Corregir …» del mensaje de corrección
+        guardar_mensaje(db, p, "user", texto or id_seleccionado, "whatsapp", wa_id=msg.get("wa_id", ""))
+        resultado = await _pedir_archivo_vehiculo(db, p, telefono, id_seleccionado)
+        return {"ok": True, "accion": "correccion_chat", "candidato": c.codigo, "postulacion": p.codigo, **resultado}
     if msg.get("tipo") in ("image", "document") and msg.get("media") and p.etapa in ETAPAS_DOCUMENTOS and p.expediente:
         resultado = await _recibir_documento_whatsapp(db, p, msg, telefono)
         return {"ok": True, "accion": "documento_whatsapp", "candidato": c.codigo, "postulacion": p.codigo, **resultado}

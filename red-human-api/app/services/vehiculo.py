@@ -108,17 +108,157 @@ def lados_faltantes_corr(r: RevisionVehiculo) -> list:
     return [l for l in (r.lados_corregir or []) if l in LADOS_VEHICULO] if r.estado == "correccion" else []
 
 
+# --------------------------------------------------------------------------- #
+# Cada archivo del vehículo: cómo se nombra ante el candidato y cómo corregirlo (2026-10-01, rutas paralelas)
+# --------------------------------------------------------------------------- #
+
+# clave → (frase completa, nombre corto para botones, «foto» | «documento», instrucción de cómo tomarlo)
+_INSTR_DOC = "Tómale una foto completa, enfocada y con buena luz (o súbelo en PDF), que se lean todos los datos."
+ARCHIVOS = {
+    "frente": ("la foto del frente de tu vehículo", "foto del frente", "foto",
+               "Tómala de frente, con buena luz, mostrando el vehículo completo y las placas."),
+    "atras": ("la foto de la parte de atrás de tu vehículo", "foto de atrás", "foto",
+              "Tómala por detrás, con buena luz, mostrando el vehículo completo y las placas."),
+    "izquierdo": ("la foto del costado del conductor de tu vehículo", "foto del costado del conductor", "foto",
+                  "Tómala del lado del conductor, con buena luz, de extremo a extremo del vehículo."),
+    "derecho": ("la foto del costado del copiloto de tu vehículo", "foto del costado del copiloto", "foto",
+                "Tómala del lado del copiloto, con buena luz, de extremo a extremo del vehículo."),
+    "licencia": ("tu licencia de conducir vigente", "licencia", "documento", _INSTR_DOC),
+    "tarjeta": ("tu tarjeta de circulación", "tarjeta de circulación", "documento", _INSTR_DOC),
+    "poliza": ("tu póliza de seguro vigente", "póliza de seguro", "documento", _INSTR_DOC),
+}
+ORDEN_ARCHIVOS = [*LADOS_VEHICULO, *DOCUMENTOS_VEHICULO]
+
+
+def es_foto(clave: str) -> bool:
+    return clave in LADOS_VEHICULO
+
+
+def instruccion(clave: str) -> str:
+    return ARCHIVOS[clave][3] if clave in ARCHIVOS else ""
+
+
+def boton_corregir(claves: list) -> str:
+    """Un archivo → «Corregir foto del frente»; varios → «Corregir archivos»."""
+    return f"Corregir {ARCHIVOS[claves[0]][1]}" if len(claves) == 1 and claves[0] in ARCHIVOS else "Corregir archivos"
+
+
+def mensaje_reemplazo(clave: str) -> str:
+    """Lo que ve/recibe el candidato al reemplazar con éxito un archivo pedido en la corrección."""
+    return "Recibimos tu nueva foto. Está pendiente de revisión." if es_foto(clave) else "Recibimos tu nuevo documento. Está pendiente de revisión."
+
+
+def canal_chat(p: Postulacion) -> bool:
+    """La postulación nació en el chat (Telegram/WhatsApp): fotos, documentos y correcciones se piden y se reciben
+    AHÍ. Si nació en la web, todo se pide por la liga web (Telegram, si lo conectó, solo avisa)."""
+    return (p.origen or "") == "whatsapp"
+
+
+def pendientes(r: RevisionVehiculo) -> list:
+    """Claves (fotos y documentos) que el candidato debe mandar todavía, en orden."""
+    if r.estado not in ("pendiente", "correccion"):
+        return []
+    faltan = set(lados_faltantes(r)) | set(documentos_faltantes(r))
+    return [c for c in ORDEN_ARCHIVOS if c in faltan]
+
+
+def motivos_correccion(r: RevisionVehiculo) -> dict:
+    """{clave: motivo} de TODO lo pedido en la ÚLTIMA corrección de RH (queda en el historial; nunca se reescribe). Lo que
+    sigue pendiente lo dice `pendientes(r)`; lo ya reemplazado se queda aquí para mostrarlo como recibido."""
+    if r.estado != "correccion":
+        return {}
+    ultima = next((h for h in reversed(r.historial or []) if h.get("evento") == "correccion"), None) or {}
+    motivos = dict(ultima.get("motivos") or {})
+    if motivos:
+        return {c: motivos[c] for c in ORDEN_ARCHIVOS if c in motivos}
+    return {c: r.comentario or "" for c in (r.lados_corregir or [])}  # correcciones previas a 2026-10-01
+
+
+def _motivo_frase(motivo: str) -> str:
+    """«No se distingue.» → «no se distingue» (para «…porque no se distingue»)."""
+    m = (motivo or "").strip().rstrip(".").strip()
+    if m.lower().startswith("porque "):
+        m = m[7:]
+    if m[:1].isupper() and not m[:2].isupper():
+        m = m[:1].lower() + m[1:]
+    return m
+
+
+def texto_correccion(p: Postulacion, r: RevisionVehiculo) -> str:
+    """Mensaje claro de la corrección: QUÉ reemplazar, POR QUÉ (motivo de RH por archivo) y CÓMO hacerlo."""
+    from ..routers.candidatos import nombre_ficha  # import local: evita ciclo
+
+    nombre = nombre_ficha(p)
+    motivos = motivos_correccion(r)
+    faltan = pendientes(r)
+    claves = [c for c in ORDEN_ARCHIVOS if c in motivos and c in faltan] or [c for c in ORDEN_ARCHIVOS if c in motivos]
+    recibidos_resto = all(c in claves or c in (r.fotos or {}) if es_foto(c) else c in claves or _doc_cargado(documento(p, c))
+                          for c in ORDEN_ARCHIVOS)
+    if len(claves) == 1:
+        c = claves[0]
+        frase, _corto, tipo, instr = ARCHIVOS[c]
+        motivo = _motivo_frase(motivos[c])
+        texto = (f"Hola, {nombre}. Necesitamos que reemplaces {frase}" + (f" porque {motivo}" if motivo else "") + f". {instr}")
+        if recibidos_resto:
+            texto += f" Las demás fotos y documentos están recibidos; solo necesitamos que reemplaces {'esta foto' if tipo == 'foto' else 'este documento'}."
+    else:
+        lineas = []
+        for c in claves:
+            frase, _corto, _tipo, instr = ARCHIVOS[c]
+            motivo = _motivo_frase(motivos[c])
+            lineas.append(f"• {frase[:1].upper() + frase[1:]}" + (f": {motivo}." if motivo else ".") + f" {instr}")
+        texto = f"Hola, {nombre}. Necesitamos que reemplaces estos archivos:\n\n" + "\n".join(lineas)
+        if recibidos_resto:
+            texto += "\n\nLas demás fotos y documentos están recibidos; solo necesitamos que reemplaces estos archivos."
+    if canal_chat(p):
+        texto += "\n\nEnvíamel" + ("a" if len(claves) == 1 and es_foto(claves[0]) else "o" if len(claves) == 1 else "os") + " por aquí, uno por mensaje."
+    return texto
+
+
+def texto_pedir_archivo(p: Postulacion, clave: str, prefijo: str = "") -> str:
+    """Ruta de chat: pide UN archivo (el siguiente pendiente) con su instrucción."""
+    frase, _c, tipo, instr = ARCHIVOS[clave]
+    motivo = motivos_correccion(p.revision_vehiculo).get(clave) if p.revision_vehiculo else ""
+    texto = f"{prefijo}Envíame por aquí {frase}" + (f" ({_motivo_frase(motivo)})" if motivo else "") + f". {instr}"
+    if tipo == "documento":
+        texto += " Puede ser foto o PDF."
+    return texto
+
+
+def clave_por_texto(texto: str) -> str:
+    """Qué archivo menciona el pie de foto («la de atrás», «mi licencia»…). "" si no menciona ninguno."""
+    import re
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
+    pistas = [("frente", ("frente", "frontal", "delantera")), ("atras", ("atras", "trasera", "detras")),
+              ("izquierdo", ("izquierd", "conductor", "piloto")), ("derecho", ("derech", "copiloto")),
+              ("licencia", ("licencia",)), ("tarjeta", ("tarjeta", "circulacion")), ("poliza", ("poliza", "seguro"))]
+    for clave, palabras in pistas:
+        if any(re.search(rf"\b{p}", t) for p in palabras) and not (clave == "izquierdo" and "copiloto" in t):
+            return clave
+    return ""
+
+
 def texto_liga(p: Postulacion, r: RevisionVehiculo) -> str:
+    """Lo que se le manda al candidato para pedir lo del vehículo. Ruta de CHAT: se pide por el chat, un archivo por
+    mensaje (nunca la liga web). Ruta WEB: la liga `/vehiculo/{token}` (si conectó Telegram, solo le avisa)."""
     nombre = (p.nombre or "").split(" ")[0] or "hola"
     vac = p.vacante
     empresa = nombre_empresa_candidato(vac) if vac else ""
     if r.estado == "correccion":
-        lados = ", ".join([LADOS_VEHICULO[l].lower() for l in lados_faltantes(r)] + [DOCUMENTOS_VEHICULO[c].lower() for c in documentos_faltantes(r)])
-        return (
-            f"Hola {nombre}, revisamos la información de tu vehículo y necesitamos que vuelvas a subir: {lados}."
-            + (f"\nComentario: {r.comentario}" if r.comentario else "")
-            + f"\n\nUsa la misma liga: {liga(r)}"
-        )
+        texto = texto_correccion(p, r)
+        return texto if canal_chat(p) else texto + f"\n\nCorrígelo aquí: {liga(r)}?corregir=1"
+    if canal_chat(p):
+        faltan = pendientes(r)
+        if not faltan:
+            return f"Gracias, {nombre}. Ya tengo las fotos y los documentos de tu vehículo; RH los revisa y te avisa por aquí."
+        enviados = len(ORDEN_ARCHIVOS) - len(faltan)
+        intro = (f"¡Gracias, {nombre}! Para continuar con tu postulación a *{vac.titulo if vac else 'la vacante'}*"
+                 + (f" de {empresa}" if empresa else "")
+                 + ", necesito 4 fotos de tu vehículo (frente, atrás y ambos costados) y una foto o PDF de tu licencia vigente, "
+                 "tarjeta de circulación y póliza de seguro. Mándamelos por aquí, uno por mensaje.\n\n") if not enviados else ""
+        return texto_pedir_archivo(p, faltan[0], intro)
     return (
         f"¡Gracias, {nombre}! Para continuar con tu postulación a *{vac.titulo if vac else 'la vacante'}*"
         + (f" de {empresa}" if empresa else "")
@@ -128,6 +268,67 @@ def texto_liga(p: Postulacion, r: RevisionVehiculo) -> str:
     )
 
 
+async def enviar_correccion(db: Session, p: Postulacion, actor: str) -> dict:
+    """Corrección pedida por RH → mensaje claro (qué, por qué, cómo) con UN botón: «Corregir foto del frente» si es un solo
+    archivo, «Corregir archivos» si son varios. Ruta de chat: el botón pide el archivo ahí mismo; ruta web: abre la liga
+    directo en los archivos pendientes. El correo sale aparte con el mismo texto."""
+    from ..routers.candidatos import guardar_mensaje  # import local: evita ciclo
+    from . import entregas
+    from .whatsapp import enviar_con_boton
+
+    r = obtener_o_crear(db, p)
+    claves = [c for c in ORDEN_ARCHIVOS if c in motivos_correccion(r) and c in pendientes(r)] or [c for c in ORDEN_ARCHIVOS if c in motivos_correccion(r)]
+    texto = texto_correccion(p, r)
+    boton = boton_corregir(claves)
+    url = f"{liga(r)}?corregir=1"
+    envio = {"enviado": False, "proveedor": "demo"}
+    if p.telefono:
+        try:
+            if canal_chat(p):
+                envio = await enviar_con_boton(p.telefono, texto, boton, callback=f"CORR-{claves[0] if len(claves) == 1 else 'todos'}")
+            else:
+                envio = await enviar_con_boton(p.telefono, texto, boton, url=url)
+        except Exception as e:  # noqa: BLE001 — la mensajería nunca bloquea la decisión de RH
+            envio = {"enviado": False, "proveedor": "error", "detalle": str(e)}
+    guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
+    correo = await entregas.correo_candidato(p, "Corrección de fotos o documentos de tu vehículo", texto, cta=(boton, url))
+    r.liga_enviada_en = datetime.now(timezone.utc)
+    r.envios = (r.envios or 0) + 1
+    _nota(r, "correccion_enviada", f"Corrección enviada al candidato ({boton})" + ("" if envio.get("enviado") else " — el mensaje no salió"), actor)
+    registrar(db, actor, "vehiculo_correccion_enviada", "postulacion", p.codigo,
+              {"archivos": claves, "enviado": envio.get("enviado", False), "correo": correo.get("enviado", False), "canal": "chat" if canal_chat(p) else "web"})
+    return {"liga": url, "whatsapp": envio, "correo": correo, "texto": texto, "boton": boton,
+            "envios": [entregas.fila("candidato", "mensaje", envio if p.telefono else {**envio, "pendiente": True}, url),
+                       entregas.fila("candidato", "correo", correo, url)]}
+
+
+def guardar_foto(db: Session, p: Postulacion, r: RevisionVehiculo, lado: str, val, quien: str, subido_por: str) -> str:
+    """Valida (¿es la foto de un automóvil?) y guarda una foto del vehículo — misma lógica para la liga web, la captura de
+    RH y la foto que llega por el chat. No es un automóvil / ilegible → `ArchivoNoValido` (no se guarda); el servicio
+    falla → se guarda «Pendiente de revisión». Modo Prueba omite la IA. Regresa el resultado de la validación."""
+    from ..models import Archivo
+    from . import archivos as fs
+    from . import validacion_archivos as va
+    from .configuracion import modo_prueba_activo
+
+    if modo_prueba_activo(db):
+        resultado = va.COINCIDE
+    else:
+        resultado, _obs, detectado = va.clasificar(val.b64, val.extension, va.FOTO_VEHICULO)
+        if resultado in (va.NO_COINCIDE, va.ILEGIBLE):
+            registrar(db, quien, "vehiculo_foto_no_valida", "postulacion", p.codigo, {"lado": lado, "resultado": resultado, "tipo_detectado": detectado})
+            db.commit()
+            va.exigir(resultado, f"la foto del vehículo ({LADOS_VEHICULO[lado].lower()})")
+    marca = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    ruta = fs.guardar(val, f"vehiculo/{p.codigo}", f"{lado}-{marca}")
+    a = Archivo(candidato_id=p.candidato_id, tipo=f"vehiculo_{lado}", nombre=val.nombre, ruta=ruta, mime=val.mime,
+                tamano=val.tamano, subido_por=subido_por)
+    db.add(a)
+    db.flush()
+    registrar_foto(db, r, lado, a.id, resultado)
+    return resultado
+
+
 async def enviar_liga(db: Session, p: Postulacion, actor: str) -> dict:
     """Crea (o reutiliza) la revisión y manda la liga por WhatsApp. Regresa {liga, whatsapp}."""
     from ..routers.candidatos import _enviar_whatsapp, guardar_mensaje  # import local: evita ciclo
@@ -135,6 +336,8 @@ async def enviar_liga(db: Session, p: Postulacion, actor: str) -> dict:
     from . import entregas
 
     r = obtener_o_crear(db, p)
+    if r.estado == "correccion" and motivos_correccion(r):  # reenviar una corrección = el mismo mensaje con su botón
+        return await enviar_correccion(db, p, actor)
     texto = texto_liga(p, r)
     envio = await _enviar_whatsapp(p, texto)
     guardar_mensaje(db, p, "assistant", texto, "whatsapp", envio)
@@ -174,10 +377,17 @@ def revisar_completo(db: Session, r: RevisionVehiculo) -> None:
         registrar(db, "candidato", "vehiculo_fotos_completas", "postulacion", r.postulacion.codigo, {})
 
 
-def decidir(db: Session, p: Postulacion, accion: str, usuario: str, comentario: str = "", lados: Optional[list] = None) -> RevisionVehiculo:
-    """accion ∈ aprobar | correccion | excepcion. Valida en el router; aquí solo aplica."""
+def decidir(db: Session, p: Postulacion, accion: str, usuario: str, comentario: str = "", lados: Optional[list] = None,
+            motivos: Optional[dict] = None) -> RevisionVehiculo:
+    """accion ∈ aprobar | correccion | excepcion. Valida en el router; aquí solo aplica. En la corrección, `motivos`
+    ({clave: motivo}, 2026-10-01) es el motivo de RH POR ARCHIVO; si no viene, cada archivo lleva el comentario."""
     r = obtener_o_crear(db, p)
     ahora = datetime.now(timezone.utc)
+    motivos = {k: (v or "").strip()[:500] for k, v in (motivos or {}).items() if (v or "").strip()}
+    if accion == "correccion" and motivos:
+        lados = [c for c in ORDEN_ARCHIVOS if c in motivos]
+        if not comentario.strip():
+            comentario = "; ".join(f"{ARCHIVOS[c][1][:1].upper() + ARCHIVOS[c][1][1:]}: {motivos[c]}" for c in lados)
     if accion == "aprobar":
         r.estado, texto = "aprobado", "Vehículo aprobado (fotos, licencia, tarjeta y póliza revisadas)"
         r.fotos = {k: {**v, "validacion": "revisada_rh"} for k, v in (r.fotos or {}).items()}  # RH revisó también las pendientes
@@ -189,16 +399,19 @@ def decidir(db: Session, p: Postulacion, accion: str, usuario: str, comentario: 
         r.estado = "correccion"
         validos = {**LADOS_VEHICULO, **DOCUMENTOS_VEHICULO}
         r.lados_corregir = [l for l in (lados or []) if l in validos] or list(LADOS_VEHICULO)
+        motivos = {c: motivos.get(c) or comentario.strip()[:500] for c in r.lados_corregir}
         for c in r.lados_corregir:
             d = documento(p, c) if c in DOCUMENTOS_VEHICULO else None
-            if d:  # el candidato lo ve como «Requiere corrección» con el comentario
-                d.estado, d.revisado_por, d.notas_ia = "rechazado", usuario, comentario.strip()[:1000]
+            if d:  # el candidato lo ve como «Requiere corrección» con SU motivo
+                d.estado, d.revisado_por, d.notas_ia = "rechazado", usuario, motivos[c][:1000]
         texto = "Corrección solicitada: " + ", ".join(validos[l] for l in r.lados_corregir)
     else:
         r.estado, texto = "excepcion", "Aprobado por excepción"
     r.comentario = comentario.strip()
     r.decidido_por, r.decidido_en = usuario, ahora
     _nota(r, accion, texto + (f" — {r.comentario}" if r.comentario else ""), usuario)
+    if accion == "correccion":  # el motivo por archivo vive en la entrada del historial (solo se agrega)
+        r.historial = [*r.historial[:-1], {**r.historial[-1], "motivos": motivos}]
     registrar(db, usuario, f"vehiculo_{accion}", "postulacion", p.codigo, {"comentario": r.comentario, "lados": r.lados_corregir})
     return r
 
@@ -224,6 +437,7 @@ def revision_dict(p: Postulacion, url_foto) -> Optional[dict]:
     base = {"requerida": True, "puedeCitar": citable, "motivoBloqueo": motivo}
     if r is None:
         return {**base, "estado": "sin_liga", "etiqueta": "Liga del vehículo sin enviar", "liga": "", "fotos": [], "documentos": documentos_dict(p, None),
+                "motivosCorreccion": {}, "canal": "chat" if canal_chat(p) else "web",
                 "expedienteId": p.expediente.id if p.expediente else None, "historial": []}
     return {
         **base,
@@ -236,6 +450,8 @@ def revision_dict(p: Postulacion, url_foto) -> Optional[dict]:
         "decididoPor": r.decidido_por or "",
         "decididoEn": iso(r.decidido_en),
         "ladosCorregir": r.lados_corregir or [],
+        "motivosCorreccion": motivos_correccion(r),
+        "canal": "chat" if canal_chat(p) else "web",
         "fotos": [
             {"lado": l, "nombre": n, "cargada": l in (r.fotos or {}), "subidaEn": (r.fotos or {}).get(l, {}).get("subida_en", ""),
              "url": url_foto(l) if l in (r.fotos or {}) else "",

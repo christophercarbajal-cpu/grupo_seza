@@ -316,6 +316,17 @@ async def enviar_texto_sin_plantilla(telefono: str, texto: str) -> dict:
     return resultado
 
 
+async def enviar_con_boton(telefono: str, texto: str, boton: str, url: str = "", callback: str = "") -> dict:
+    """Texto + UN botón (2026-10-01, correcciones): en Telegram es un botón en línea — con `url` abre la liga, con
+    `callback` (p. ej. «CORR-frente») el bot lo recibe como una selección y pide el archivo ahí mismo. En WhatsApp
+    (Meta/WAHA/Evolution) sale como texto: la liga va al final con el nombre del botón."""
+    if proveedor() == "telegram":
+        from . import telegram
+
+        return await telegram.enviar_boton(telefono, texto, boton, url=url, callback=callback)
+    return await enviar_mensaje(telefono, texto + (f"\n\n👉 {boton}: {url}" if url else ""))
+
+
 async def enviar_mensaje(telefono: str, texto: str) -> dict:
     """Envía un mensaje de texto. Regresa {enviado, proveedor, detalle}."""
     if proveedor() == "telegram":

@@ -8,7 +8,7 @@ en «Requiere revisión» o «No cumple». Toda decisión queda con el nombre de
 """
 
 from datetime import datetime, timezone
-from typing import List
+from typing import Dict, List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -40,11 +40,30 @@ def _por_token(db: Session, token: str) -> RevisionVehiculo:
     return r
 
 
-def _publica_dict(r: RevisionVehiculo) -> dict:
+def _telegram_avisos(p: Postulacion) -> dict:
+    """Handoff OPCIONAL (2026-10-01): al terminar la ruta web se ofrece «Conectar Telegram» solo para recibir avisos."""
+    from ..services import telegram
+
+    tok = p.telegram_onboarding_token or ""
+    if not tok or not telegram.usuario_bot() or vehiculo_srv.canal_chat(p):
+        return {"liga": "", "ligaWeb": "", "conectado": bool(p.telegram_chat_id)}
+    return {"liga": telegram.liga_inicio(tok), "ligaWeb": telegram.liga_inicio_web(tok), "conectado": bool(p.telegram_chat_id)}
+
+
+def _publica_dict(r: RevisionVehiculo, mensaje: str = "", clave: str = "") -> dict:
     p = r.postulacion
     faltan = vehiculo_srv.lados_faltantes(r)
     abierta = r.estado in ("pendiente", "correccion")
+    motivos = vehiculo_srv.motivos_correccion(r)
     return {
+        # 2026-10-01: éxito del último reemplazo («Recibimos tu nueva foto. Está pendiente de revisión.») y de qué archivo
+        "mensaje": mensaje,
+        "claveMensaje": clave,
+        "telegram": _telegram_avisos(p),
+        "correccion": [{"clave": c, "nombre": vehiculo_srv.ARCHIVOS[c][1][:1].upper() + vehiculo_srv.ARCHIVOS[c][1][1:],
+                        "motivo": motivos[c], "instruccion": vehiculo_srv.instruccion(c), "esFoto": vehiculo_srv.es_foto(c),
+                        "pendiente": c in vehiculo_srv.pendientes(r)}
+                       for c in vehiculo_srv.ORDEN_ARCHIVOS if c in motivos],
         "nombre": (p.nombre or "").split(" ")[0],
         "vacante": p.vacante.titulo if p.vacante else "",
         "empresa": nombre_empresa_candidato(p.vacante) if p.vacante else "",
@@ -52,31 +71,17 @@ def _publica_dict(r: RevisionVehiculo) -> dict:
         "abierta": abierta,
         "comentario": r.comentario if r.estado == "correccion" else "",
         "lados": [
-            {"clave": l, "nombre": n, "cargada": l in (r.fotos or {}), "pendiente": abierta and l in faltan}
+            {"clave": l, "nombre": n, "cargada": l in (r.fotos or {}), "pendiente": abierta and l in faltan,
+             "motivo": motivos.get(l, "") if abierta and l in faltan else "", "instruccion": vehiculo_srv.instruccion(l)}
             for l, n in LADOS_VEHICULO.items()
         ],
         "documentos": [
             {"clave": d["clave"], "nombre": d["tipo"], "cargado": d["cargado"], "estado": d["estadoSimple"],
-             "motivo": d["notas"] if d["estadoSimple"] == "Requiere corrección" else "", "pendiente": abierta and d["pendiente"]}
+             "motivo": d["notas"] if d["estadoSimple"] == "Requiere corrección" else "", "pendiente": abierta and d["pendiente"],
+             "instruccion": vehiculo_srv.instruccion(d["clave"])}
             for d in vehiculo_srv.documentos_dict(p, r)
         ],
     }
-
-
-def _validar_foto(db: Session, p, val, lado: str, quien: str) -> str:
-    """Validación básica (2026-10-01): la foto debe ser de un automóvil. No es → 422 y NO se guarda; ilegible → 422
-    pidiendo una más clara; el servicio falla → se guarda como «Pendiente de revisión». Modo Prueba omite la IA."""
-    from ..services import validacion_archivos as va
-    from ..services.configuracion import modo_prueba_activo
-
-    if modo_prueba_activo(db):
-        return va.COINCIDE
-    resultado, _obs, detectado = va.clasificar(val.b64, val.extension, va.FOTO_VEHICULO)
-    if resultado in (va.NO_COINCIDE, va.ILEGIBLE):
-        registrar(db, quien, "vehiculo_foto_no_valida", "postulacion", p.codigo, {"lado": lado, "resultado": resultado, "tipo_detectado": detectado})
-        db.commit()
-        va.exigir(resultado, f"la foto del vehículo ({LADOS_VEHICULO[lado].lower()})")
-    return resultado
 
 
 @router.get("/vehiculo/publica/{token}")
@@ -97,16 +102,10 @@ async def subir_foto(token: str, lado: str = Form(...), archivo: UploadFile = Fi
     if not val.es_imagen:
         raise HTTPException(415, "Sube una foto (JPG, PNG o WEBP), no un PDF.")
     p = r.postulacion
-    validacion = _validar_foto(db, p, val, lado, "candidato")  # 2026-10-01: ¿es la foto de un automóvil?
-    marca = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    ruta = fs.guardar(val, f"vehiculo/{p.codigo}", f"{lado}-{marca}")
-    a = Archivo(candidato_id=p.candidato_id, tipo=f"vehiculo_{lado}", nombre=val.nombre, ruta=ruta, mime=val.mime,
-                tamano=val.tamano, subido_por="candidato (liga de vehículo)")
-    db.add(a)
-    db.flush()
-    vehiculo_srv.registrar_foto(db, r, lado, a.id, validacion)
+    era_correccion = r.estado == "correccion"
+    vehiculo_srv.guardar_foto(db, p, r, lado, val, "candidato", "candidato (liga de vehículo)")  # valida que sea un automóvil
     db.commit()
-    return _publica_dict(r)
+    return _publica_dict(r, vehiculo_srv.mensaje_reemplazo(lado) if era_correccion else "", lado)
 
 
 @router.post("/vehiculo/publica/{token}/documento")
@@ -123,11 +122,12 @@ async def subir_documento(token: str, clave: str = Form(...), archivo: UploadFil
     if r.estado == "correccion" and clave not in vehiculo_srv.documentos_faltantes(r):
         raise HTTPException(409, "Ese documento no necesita corrección.")
     p = r.postulacion
+    era_correccion = r.estado == "correccion"
     vehiculo_srv.obtener_o_crear(db, p)  # asegura el expediente con los 3 documentos
     await subir_documento_interno(db, p.expediente, DOCUMENTOS_VEHICULO[clave], archivo, "candidato")
     vehiculo_srv.registrar_documento_subido(db, r, clave)
     db.commit()
-    return _publica_dict(r)
+    return _publica_dict(r, vehiculo_srv.mensaje_reemplazo(clave) if era_correccion else "", clave)
 
 
 def _archivo_de(db: Session, r: RevisionVehiculo, lado: str, descargar: bool = False) -> FileResponse:
@@ -212,14 +212,7 @@ async def subir_foto_rh(codigo: str, lado: str = Form(...), archivo: UploadFile 
     val = await fs.validar(archivo, "foto")
     if not val.es_imagen:
         raise HTTPException(415, "Sube una foto (JPG, PNG o WEBP), no un PDF.")
-    validacion = _validar_foto(db, p, val, lado, u.nombre)
-    marca = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    ruta = fs.guardar(val, f"vehiculo/{p.codigo}", f"{lado}-{marca}")
-    a = Archivo(candidato_id=p.candidato_id, tipo=f"vehiculo_{lado}", nombre=val.nombre, ruta=ruta, mime=val.mime,
-                tamano=val.tamano, subido_por=f"{u.nombre} (RH, ficha)")
-    db.add(a)
-    db.flush()
-    vehiculo_srv.registrar_foto(db, r, lado, a.id, validacion)
+    vehiculo_srv.guardar_foto(db, p, r, lado, val, u.nombre, f"{u.nombre} (RH, ficha)")
     registrar(db, u.nombre, "vehiculo_foto_rh", "postulacion", p.codigo, {"lado": lado})
     db.commit()
     return _salida(p)
@@ -246,6 +239,8 @@ class DecisionIn(BaseModel):
     accion: str  # aprobar | correccion | excepcion
     comentario: str = ""
     lados: List[str] = []
+    # 2026-10-01: corrección con motivo POR ARCHIVO ({clave: motivo}); cada archivo marcado debe traer el suyo
+    motivos: Dict[str, str] = {}
 
 
 @router.post("/candidatos/{codigo}/vehiculo/decision")
@@ -264,15 +259,23 @@ async def decidir(codigo: str, datos: DecisionIn, db: Session = Depends(get_db),
         hay_docs = any(vehiculo_srv.documento(p, c) and vehiculo_srv.documento(p, c).archivo for c in DOCUMENTOS_VEHICULO)
         if not r or not (r.fotos or hay_docs):
             raise HTTPException(409, "Todavía no hay nada que corregir; reenvía la liga.")
-        if not datos.comentario.strip():
+        validos = {**LADOS_VEHICULO, **DOCUMENTOS_VEHICULO}
+        if datos.motivos:
+            marcados = [c for c in datos.motivos if c in validos]
+            sin_motivo = [validos[c] for c in marcados if not (datos.motivos.get(c) or "").strip()]
+            if not marcados:
+                raise HTTPException(400, "Selecciona al menos un archivo para corregir.")
+            if sin_motivo:
+                raise HTTPException(400, f"Escribe el motivo de cada archivo rechazado. Falta: {', '.join(sin_motivo)}.")
+        elif not datos.comentario.strip():
             raise HTTPException(400, "Escribe qué debe corregir el candidato.")
     if datos.accion == "excepcion" and not datos.comentario.strip():
         raise HTTPException(400, "La excepción requiere un motivo.")
-    vehiculo_srv.decidir(db, p, datos.accion, u.nombre, datos.comentario, datos.lados)
+    vehiculo_srv.decidir(db, p, datos.accion, u.nombre, datos.comentario, datos.lados, datos.motivos)
     flujo_operativo.al_decidir_vehiculo(db, p, datos.accion, u.nombre)
     envio = None
-    if datos.accion == "correccion":  # se le reenvía la MISMA liga con lo que hay que corregir
-        envio = await vehiculo_srv.enviar_liga(db, p, u.nombre)
+    if datos.accion == "correccion":  # mensaje claro (qué, por qué, cómo) + botón «Corregir …» por el canal del candidato
+        envio = await vehiculo_srv.enviar_correccion(db, p, u.nombre)
     db.commit()
     return {**_salida(p), "envio": envio}
 

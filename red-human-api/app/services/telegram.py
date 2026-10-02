@@ -86,11 +86,21 @@ def liga_inicio_web(token: str, accion: str = "") -> str:
     return f"https://t.me/{usuario_bot()}?start={f'{accion}_{token}' if accion in ACCIONES_INICIO else token}"
 
 
+# Liga de ENTRADA por vacante (2026-10-01, rutas paralelas): `/start vac_<VAC-####>` abre una postulación NUEVA a esa
+# vacante y hace todo en el chat (aviso de privacidad, prefiltro, fotos y documentos). No lleva token de postulación.
+PREFIJO_VACANTE = "vac"
+
+
+def liga_vacante(codigo: str) -> str:
+    """https://t.me/<bot>?start=vac_<VAC-####> — la que RH copia desde la vacante («Copiar liga Telegram»)."""
+    return f"https://t.me/{usuario_bot()}?start={PREFIJO_VACANTE}_{codigo}" if codigo and usuario_bot() else ""
+
+
 def separar_inicio(payload: str):
-    """`cita_<token>` → ("cita", token); `<token>` → ("", token)."""
+    """`cita_<token>` → ("cita", token); `vac_VAC-0001` → ("vac", "VAC-0001"); `<token>` → ("", token)."""
     payload = (payload or "").strip()
     pref, _, resto = payload.partition("_")
-    if pref in ACCIONES_INICIO and resto:
+    if (pref in ACCIONES_INICIO or pref == PREFIJO_VACANTE) and resto:
         return pref, resto
     return "", payload
 
@@ -219,6 +229,19 @@ async def enviar_texto(telefono: str, texto: str) -> dict:
     if not chat:
         return _sin_chat(telefono)
     return await _enviar_a_chat(chat, texto)
+
+
+async def enviar_boton(telefono: str, texto: str, boton: str, url: str = "", callback: str = "") -> dict:
+    """Texto con UN botón en línea: `url` (abre la liga) o `callback` (llega al webhook como selección). Si Telegram
+    rechaza el botón (p. ej. una liga local que no acepta), se manda el texto con la liga escrita: nunca se pierde."""
+    chat = chat_de_telefono(telefono)
+    if not chat:
+        return _sin_chat(telefono)
+    tecla = {"text": boton[:60], **({"url": url} if url else {"callback_data": (callback or boton)[:64]})}
+    r = await _enviar_a_chat(chat, texto, {"inline_keyboard": [[tecla]]})
+    if not r.get("enviado") and url:
+        r = await _enviar_a_chat(chat, f"{texto}\n\n👉 {boton}: {url}")
+    return r
 
 
 async def enviar_lista(telefono: str, encabezado: str, cuerpo: str, opciones: list, secciones: Optional[list] = None) -> dict:

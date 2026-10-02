@@ -879,6 +879,21 @@ async def postular(
         await _disparar_plantilla_inicio(db, p)
         db.commit()
 
+    # Rutas paralelas (2026-10-01): la web sigue en la web. El siguiente paso REAL (fotos del vehículo, entrevista con
+    # avatar o revisión de RH) define el texto y la pantalla; Telegram es OPCIONAL y solo para recibir avisos.
+    liga_vehiculo = cierre_reglas["vehiculo"]["liga"] if cierre_reglas and cierre_reglas.get("vehiculo") else ""
+    entrevista_ia = next((e for e in (p.entrevistas or []) if e.token and e.estado in ("programada", "en_curso", "interrumpida")), None)
+    if liga_vehiculo:
+        siguiente = {"tipo": "vehiculo", "titulo": "Siguiente paso: fotos y documentos de tu vehículo",
+                     "texto": "Sube 4 fotos de tu vehículo (frente, atrás y ambos costados) y tu licencia, tarjeta de circulación y póliza de seguro.",
+                     "boton": "Subir fotos y documentos", "liga": liga_vehiculo}
+    elif entrevista_ia:
+        siguiente = {"tipo": "entrevista", "titulo": "Siguiente paso: tu entrevista con Red Human",
+                     "texto": "Es una entrevista por video y voz; tarda unos minutos.", "boton": "Iniciar entrevista con Red Human",
+                     "liga": f"{settings.app_url}/entrevista/{entrevista_ia.token}"}
+    else:
+        siguiente = {"tipo": "revision", "titulo": "RH revisa tu postulación",
+                     "texto": "No tienes que hacer nada más por ahora. Te avisaremos los siguientes pasos.", "boton": "", "liga": ""}
     return {
         "ok": True,
         "candidato": c.codigo,
@@ -886,6 +901,8 @@ async def postular(
         "nombre": c.nombre,
         "nuevo": nuevo_candidato,
         "postulacionNueva": nueva_postulacion,
+        "siguientePaso": siguiente,
+        "empresa": nombre_empresa_candidato(vac),
         "cv": {"procesado": resultado_cv.get("ok", False), "avisos": resultado_cv.get("avisos", [])},
         # Demo SEZA: el candidato NO ve el resultado (lo decide RH); solo la liga de fotos si ya le toca.
         "vehiculo": {"liga": cierre_reglas["vehiculo"]["liga"]} if cierre_reglas and cierre_reglas.get("vehiculo") else None,
@@ -1601,12 +1618,6 @@ async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp", 
       no, el filtro sigue aquí desde la primera pregunta sin contestar (nunca repite lo ya contestado)."""
     vac = p.vacante
     nombre = nombre_ficha(p)
-    saludo = f"Hola {nombre}, soy Red Human. Vi que estás interesado en la vacante {vac.titulo if vac else 'que elegiste'}."
-    envio = await _enviar_whatsapp(p, saludo, canal)
-    guardar_mensaje(db, p, "assistant", saludo, canal, envio)
-    db.commit()
-    if not flujo_operativo.es_operativo(p):
-        return await procesar_prefiltro(db, p, "Hola", canal)
 
     async def decir(msg: str) -> dict:
         e2 = await _enviar_whatsapp(p, msg, canal)
@@ -1614,6 +1625,20 @@ async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp", 
         _actualizar_ultima_actividad(p)
         db.commit()
         return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": e2}
+
+    # Rutas paralelas (2026-10-01): quien terminó su postulación en la WEB y conecta Telegram solo recibe la confirmación;
+    # por aquí le llegarán los avisos. Nada de preguntas ni archivos por el chat (eso ya lo hizo en la web).
+    if not accion and p.prefiltro_completo:
+        empresa = nombre_empresa_candidato(vac) if vac else ""
+        registrar(db, "candidato", "telegram_avisos_conectado", "postulacion", p.codigo, {"canal": "telegram"})
+        return await decir(f"Gracias, {nombre}. Tu postulación a {vac.titulo if vac else 'la vacante'}"
+                           + (f" en {empresa}" if empresa else "") + " quedó registrada. Por aquí te avisaremos los siguientes pasos.")
+    saludo = f"Hola {nombre}, soy Red Human. Vi que estás interesado en la vacante {vac.titulo if vac else 'que elegiste'}."
+    envio = await _enviar_whatsapp(p, saludo, canal)
+    guardar_mensaje(db, p, "assistant", saludo, canal, envio)
+    db.commit()
+    if not flujo_operativo.es_operativo(p):
+        return await procesar_prefiltro(db, p, "Hola", canal)
 
     if accion == "cita":
         eh = flujo_operativo.entrevista_actual(p)
@@ -1624,6 +1649,27 @@ async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp", 
     elif accion == "vehiculo" and p.revision_vehiculo:
         return await decir(vehiculo_srv.texto_liga(p, p.revision_vehiculo))
     return await _turno_operativo(db, p, "", canal)
+
+
+async def retomar_chat(db: Session, p: Postulacion, canal: str = "whatsapp") -> dict:
+    """El candidato vuelve a abrir la liga de la vacante en el chat con una postulación ya en curso (2026-10-01): se repite
+    la pregunta pendiente SIN tomarla como respuesta, o se le dice en qué va y qué archivo sigue. Nunca repite lo ya
+    contestado ni pide lo ya entregado."""
+    v = p.vacante
+    cfg = v.prefiltro_reglas if v else None
+    if v and prefiltro_reglas.activo(cfg) and not p.prefiltro_completo:
+        pendiente = _estado_reglas(p).get("pendiente")
+        por_id = {q["id"]: i for i, q in enumerate(prefiltro_reglas.preguntas(cfg))}
+        if pendiente in por_id:
+            msg = "Seguimos donde nos quedamos.\n\n" + prefiltro_reglas.texto_pregunta_whatsapp(cfg, por_id[pendiente])
+            envio = await _enviar_whatsapp(p, msg, canal)
+            guardar_mensaje(db, p, "assistant", msg, canal, envio)
+            db.commit()
+            return {"respuesta": msg, "clasificacion": None, "ia": False, "whatsapp": envio}
+        return await _turno_prefiltro_reglas(db, p, "", canal)
+    if flujo_operativo.es_operativo(p):
+        return await _turno_operativo(db, p, "", canal)
+    return await procesar_prefiltro(db, p, "Hola", canal)
 
 
 async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) -> dict:
