@@ -108,7 +108,7 @@ RESP_OK = {
     "CDMX": {"municipio": "Iztapalapa", "tipo_vehiculo": pr.KANGOO, "anio_vehiculo": "2012"},
 }
 BASE = {"jornada": "si", "experiencia": "si", "vehiculo_propio": "si", "taxi": "no", "circulacion": "Sí",
-        "licencia": "si", "poliza": "si", "android": "si"}
+        "licencia": "Automovilista", "poliza": "si", "android": "si"}
 
 # (nombre, plaza, etapa objetivo, variante, fuente)
 FICTICIOS = [
@@ -212,7 +212,7 @@ async def _llevar(db, p, plaza, etapa, variante, admin, curso):
     if variante == "revision_anio":
         resp["anio_vehiculo"] = "2015"
     elif variante == "revision_licencia":
-        resp["licencia"] = "no"
+        resp["licencia"] = "No tengo licencia vigente"
     elif variante == "no_cumple":
         resp["jornada"] = "no"
     textos = {k: ({"si": "Sí", "no": "No"}.get(v, v)) for k, v in resp.items()}

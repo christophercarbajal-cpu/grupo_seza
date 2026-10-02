@@ -8,6 +8,7 @@ para que la plataforma siga funcionando de punta a punta.
 
 import json
 import re
+import unicodedata
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Literal, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -959,6 +960,58 @@ def agenda_turno(
 # /recordatorio-documentos (ver candidatos.py). El checklist real y la validación de cada
 # documento siguen viviendo en el módulo 2 (contratacion.py + ia.validar_documento) — este
 # turno es solo la conversación de acompañamiento por WhatsApp.
+
+
+class RespuestaCita(BaseModel):
+    respuesta: str = Field(description="Respuesta breve y natural a lo que preguntó el candidato sobre su cita, español mexicano.")
+
+
+def _respuesta_cita_demo(texto: str, cita: dict) -> str:
+    """Sin IA: respuesta con los datos de la cita según lo que se pregunte; nunca inventa lo que no está capturado."""
+    t = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
+    partes = []
+    if any(w in t for w in ("donde", "direccion", "ubicacion", "lugar", "como llego", "llegar")):
+        partes.append(f"La entrevista es en {cita['lugar']}.")
+    if any(w in t for w in ("hora", "cuando", "fecha", "dia")):
+        partes.append(f"Es el {cita['fecha']} a las {cita['hora']}.")
+    if any(w in t for w in ("quien", "con quien", "entrevistador", "preguntar por")) and cita.get("entrevistador"):
+        partes.append(f"Te recibirá {cita['entrevistador']}.")
+    if any(w in t for w in ("llevar", "necesito", "documento", "vestir", "ropa", "indicacion")):
+        partes.append(f"Indicaciones de RH: {cita['indicaciones']}." if cita.get("indicaciones")
+                      else "RH no dejó indicaciones adicionales; si necesitas algo más, te lo confirmamos por aquí.")
+    return " ".join(partes) or "Con gusto. Ese detalle te lo confirma el equipo de RH por este medio."
+
+
+def respuesta_cita(texto: str, cita: dict, historial: List[dict]) -> Tuple[str, bool]:
+    """Contesta con naturalidad una pregunta del candidato sobre su cita pendiente de confirmar (2026-10-02). `cita` trae
+    vacante, empresa, fecha, hora, lugar, entrevistador e indicaciones. La pregunta de confirmación la agrega quien llama."""
+    client = _client()
+    if client is None:
+        return _respuesta_cita_demo(texto, cita), False
+    try:
+        mensajes = [{"role": ("user" if m["rol"] == "user" else "assistant"), "content": m["texto"]} for m in historial[-8:]]
+        if not mensajes or mensajes[-1]["content"] != texto:
+            mensajes.append({"role": "user", "content": texto})
+        resp = client.responses.parse(
+            model=MODEL,
+            instructions=(
+                "Eres Red Human, el agente de reclutamiento (México). El candidato tiene una entrevista presencial pendiente de "
+                "confirmar y te hizo una pregunta o comentario. Datos de la cita (la ÚNICA información que conoces): "
+                f"vacante «{cita.get('vacante', '')}» en {cita.get('empresa', '')}; fecha {cita.get('fecha')} a las {cita.get('hora')}; "
+                f"lugar {cita.get('lugar')}; te recibe {cita.get('entrevistador') or 'el equipo de RH'}; "
+                f"indicaciones: {cita.get('indicaciones') or 'ninguna'}.\n"
+                "Reglas: contesta en 1-2 frases, cálido y directo; nunca inventes datos (sueldo, horario, requisitos, documentos) "
+                "que no estén arriba — si no lo sabes, di que RH se lo confirma por este medio; no pidas la confirmación de "
+                "asistencia (se agrega después); no cambies la cita ni prometas otra fecha; no preguntes ni comentes datos "
+                f"sensibles ({DATOS_SENSIBLES_PROHIBIDOS})."
+            ),
+            input=mensajes,
+            text_format=RespuestaCita,
+        )
+        return (resp.output_parsed.respuesta or "").strip() or _respuesta_cita_demo(texto, cita), True
+    except Exception as e:  # noqa: BLE001 — la conversación nunca se cae por la IA
+        print(f"[ia] respuesta_cita falló: {e}")
+        return _respuesta_cita_demo(texto, cita), False
 
 
 class TurnoOnboarding(BaseModel):

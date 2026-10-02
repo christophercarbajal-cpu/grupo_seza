@@ -75,6 +75,9 @@ def entrevista_dict(db: Session, eh) -> Optional[dict]:
         "confirmadaEn": iso(eh.confirmada_en),
         # Cambios ZESE: quién confirmó — el candidato por Telegram («Sí») o RH por él
         "confirmadaPor": "candidato" if (eh.confirmada_por or "") == "candidato" else (eh.confirmada_por or ""),
+        # 2026-10-02: el candidato avisó que no podrá asistir (y si pidió reagendar: True / False / None = sin contestar)
+        "noPodra": (lambda r: {"texto": r.get("texto", ""), "en": r.get("en", ""), "reagendar": r.get("reagendar")} if r else None)(
+            flujo.rechazo_cita(eh.postulacion, eh)),
         "asistencia": eh.asistencia or "",
         "resultado": eh.resultado or "",
         "resultadoEtiqueta": RESULTADOS_CAPACITACION.get(eh.resultado or "", ""),

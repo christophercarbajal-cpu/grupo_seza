@@ -41,7 +41,7 @@ PDF = b"%PDF-1.4\n" + b"0" * 900
 JPG = b"\xff\xd8\xff\xe0" + b"0" * 2000
 SLUG = "chofer-de-reparto-con-unidad-propia-"
 R_OK = {"municipio": "Puebla", "jornada": "Sí", "experiencia": "No", "vehiculo_propio": "Sí", "tipo_vehiculo": "Sedán de cuatro puertas",
-        "anio_vehiculo": "2019", "taxi": "No", "circulacion": "Sí", "licencia": "Sí", "poliza": "Sí", "android": "Sí"}
+        "anio_vehiculo": "2019", "taxi": "No", "circulacion": "Sí", "licencia": "Automovilista", "poliza": "Sí", "android": "Sí"}
 
 
 def check(cond, nombre):
@@ -394,8 +394,9 @@ def flujo_por_chat():
         with SessionLocal() as db:
             pm = db.query(Postulacion).filter(Postulacion.codigo == mig).first()
             eh = flujo_operativo.entrevista_actual(pm)
-            ultimo = asistente(db, pm)[-1]
-            check(pm.activa and eh.confirmada_en and eh.confirmada_por == "candidato" and ultimo == "Gracias, Miguel. Tu asistencia quedó confirmada.",
+            esperado = flujo_operativo.texto_confirmada(pm, eh, db)
+            check(pm.activa and eh.confirmada_en and eh.confirmada_por == "candidato" and esperado in asistente(db, pm)[-2:]
+                  and esperado.startswith("Perfecto, te esperamos el "),
                   "3 · «Sí» al aviso de cita → Confirmada en la base y respuesta exacta")
             todos = " ".join(m.texto for m in db.query(Mensaje).filter(Mensaje.candidato_id == pm.candidato_id).order_by(Mensaje.id.desc()).limit(3))
             check("vacantes" not in todos.lower() and pm.etapa == "Entrevista", "3 · confirmar no reinicia el reclutamiento ni ofrece otras vacantes")

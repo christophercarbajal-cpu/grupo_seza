@@ -1609,6 +1609,31 @@ def _es_confirmacion(texto: str) -> bool:
     return any(f in f" {t} " for f in (" confirm", " ahi estare ", " ahí estaré ", " asistire ", " asistiré ", " de acuerdo ", " ok ", " va ", " claro ", " por supuesto "))
 
 
+_NO_ASISTE = re.compile(
+    r"\b(no (puedo|podre|podria|voy|ire|asistire|llego|alcanzo|creo poder)|imposible|no me (da|queda)|cancel|reagend|"
+    r"cambiar (la )?(fecha|hora|cita)|otro dia|otra fecha|otro horario|se me complica)")
+
+
+def intencion_cita(texto: str) -> str:
+    """Qué contestó el candidato a «¿Confirmas que vas a asistir?» (2026-10-02): «confirma», «no_asiste» o «pregunta»
+    (cualquier otra cosa: se responde y se vuelve a pedir la confirmación). Una pregunta nunca cuenta como «Sí»
+    («¿va a ser en la mañana?» no confirma), y «no sé dónde es» es pregunta, no rechazo."""
+    t = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9ñ ?¿]", " ", prefiltro_reglas._norm(texto))).strip()
+    if not t:
+        return "pregunta"
+    if _NO_ASISTE.search(t):
+        return "no_asiste"
+    sn = prefiltro_reglas.interpretar({"id": "x", "tipo": "si_no"}, texto)
+    es_pregunta = "?" in t or "¿" in t or re.match(r"(no se|no sabia|donde|cuando|como|que|quien|a que|cual|puedo|hay|tengo|debo)\b", t)
+    if sn == "si" and not ("?" in t and not re.match(r"(si|claro)\b", t)):
+        return "confirma"
+    if es_pregunta:
+        return "pregunta"
+    if sn == "no":
+        return "no_asiste"
+    return "confirma" if _es_confirmacion(texto) else "pregunta"
+
+
 async def iniciar_handoff(db: Session, p: Postulacion, canal: str = "whatsapp", accion: str = "") -> dict:
     """`/start <token>` o `/start <accion>_<token>` (Cambios ZESE, entrada dual):
     * saludo corto: el agente es «Red Human»; la vacante es solo contexto;
@@ -1698,11 +1723,7 @@ async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) 
     if p.etapa == flujo_operativo.ENTREVISTA:
         ev = flujo_operativo.entrevista_actual(p)
         if ev and not ev.confirmada_en and not ev.asistencia and not ev.realizada:
-            if _es_confirmacion(texto):
-                # Cambios ZESE: se guarda «Confirmada» y se responde EXACTO; nunca reinicia el reclutamiento ni ofrece vacantes
-                await flujo_operativo.confirmar_cita(db, p, "candidato")
-                return await decir(f"Gracias, {nombre}. Tu asistencia quedó confirmada.")
-            return await decir(f"{nombre}, ¿confirmas tu asistencia a la entrevista? Responde *Sí*. Si necesitas otra fecha, dinos y RH te reprograma.")
+            return await _turno_confirmacion_cita(db, p, ev, texto, canal, decir)
         if ev and ev.confirmada_en and not ev.asistencia:
             return await decir(f"Tu cita ya está confirmada, {nombre}. Si necesitas cambiarla, RH te contactará por aquí.")
         if ev and ev.asistencia:
@@ -1713,6 +1734,49 @@ async def _turno_operativo(db: Session, p: Postulacion, texto: str, canal: str) 
             return await decir(f"¡Gracias, {nombre}! Tu expediente está completo; RH te confirma tu fecha de ingreso por este medio.")
         return await decir(f"{nombre}, puedes subir tus documentos y tus 3 referencias aquí: {flujo_operativo.liga_expediente(p.expediente)}")
     return await decir(f"Gracias, {nombre}. Tu información está con el equipo de RH; te contactamos por este medio.")
+
+
+async def _turno_confirmacion_cita(db: Session, p: Postulacion, ev, texto: str, canal: str, decir) -> dict:
+    """Cita «Pendiente de confirmación» (2026-10-02). Nunca reinicia el reclutamiento ni ofrece vacantes.
+    * «Sí» o similar → «Confirmada» + respuesta EXACTA y, después, el material de inducción (una sola vez);
+    * «no puedo» → se pregunta si necesita reagendar y se avisa al reclutador (la siguiente respuesta Sí/No es sobre eso);
+    * pregunta o comentario → se contesta con naturalidad y se vuelve a pedir la confirmación."""
+    nombre = nombre_ficha(p)
+    rechazo = flujo_operativo.rechazo_cita(p, ev)
+    intencion = intencion_cita(texto) if texto.strip() else ""
+    if rechazo and rechazo.get("reagendar") is None:
+        # la respuesta es a «¿Necesitas reagendar?» (un «Sí» aquí NO confirma la cita)
+        sn = prefiltro_reglas.interpretar({"id": "x", "tipo": "si_no"}, texto)
+        if sn == "si" or re.search(r"reagend|otra fecha|otro dia", prefiltro_reglas._norm(texto)):
+            await flujo_operativo.respuesta_reagendar(db, p, ev, True)
+            return await decir(f"Listo, {nombre}. Ya avisé a tu reclutador para buscarte otra fecha; te escribiremos por aquí con la nueva cita.")
+        if sn == "no":
+            await flujo_operativo.respuesta_reagendar(db, p, ev, False)
+            return await decir(f"Entendido, {nombre}. Ya avisé a tu reclutador. Gracias por avisarnos.")
+        return await decir(flujo_operativo.PREGUNTA_REAGENDAR)
+    if rechazo and intencion != "confirma":  # ya contestó lo de reagendar; RH reprograma o cancela
+        return await decir(f"Tu reclutador ya está enterado, {nombre}; te contactará por aquí.")
+    if intencion == "confirma":
+        await flujo_operativo.confirmar_cita(db, p, "candidato", enviar_material=False)
+        respuesta = await decir(flujo_operativo.texto_confirmada(p, ev, db))
+        await flujo_operativo.enviar_material_una_vez(db, p, ev, "candidato")  # después de la respuesta, una sola vez
+        db.commit()
+        return respuesta
+    if intencion == "no_asiste":
+        await flujo_operativo.candidato_no_asistira(db, p, ev, texto)
+        return await decir(f"Entendido, {nombre}. {flujo_operativo.PREGUNTA_REAGENDAR}")
+    if not texto.strip():  # se abrió la liga directa o se retomó el chat: se repite la cita
+        return await decir(flujo_operativo.texto_cita(p, ev, db))
+    from ..services import ia
+
+    fecha, hora = flujo_operativo.fecha_hora(ev)
+    vac = p.vacante
+    cita = {"vacante": vac.titulo if vac else "", "empresa": nombre_empresa_candidato(vac) if vac else "", "fecha": fecha, "hora": hora,
+            "lugar": flujo_operativo.lugar_cita(ev), "entrevistador": flujo_operativo.capacitador_de(ev, db)["nombre"],
+            "indicaciones": ev.comentario or ""}
+    historial = [{"rol": m.rol, "texto": m.texto} for m in (p.mensajes or [])]
+    respuesta, _ = ia.respuesta_cita(texto, cita, historial)
+    return await decir(f"{respuesta}\n\n{flujo_operativo.PREGUNTA_CONFIRMACION}")
 
 
 async def procesar_prefiltro(db: Session, p: Postulacion, texto: str, canal: str, wa_id: str = "") -> dict:

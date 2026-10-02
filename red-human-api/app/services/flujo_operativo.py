@@ -273,8 +273,14 @@ def entrevista_actual(p: Postulacion) -> Optional[EntrevistaHumana]:
     return vivas[-1] if vivas else None
 
 
-FILTROS_ENTREVISTA = {"sin_agendar": "Sin agendar", "agendada": "Agendada", "confirmada": "Confirmada",
-                      "realizada": "Realizada", "no_asistio": "No asistió"}
+# 2026-10-02: la cita nace «Pendiente de confirmación» (clave interna «agendada») y el material de inducción sale SOLO al
+# confirmar. Si el candidato dice que no puede ir queda «No podrá asistir» hasta que RH reprograme o cancele.
+PENDIENTE_CONFIRMACION = "Pendiente de confirmación"
+FILTROS_ENTREVISTA = {"sin_agendar": "Sin agendar", "agendada": PENDIENTE_CONFIRMACION, "no_podra": "No podrá asistir",
+                      "confirmada": "Confirmada", "realizada": "Realizada", "no_asistio": "No asistió"}
+PREGUNTA_CONFIRMACION = "¿Confirmas que vas a asistir?"
+SEGUIMIENTO_CONFIRMACION = "¿Podrás asistir? Necesitamos tu confirmación"
+PREGUNTA_REAGENDAR = "¿Necesitas reagendar tu entrevista? Responde *Sí* o *No*."
 # v3: dentro de «Realizadas» → Todos / Aptos / No aptos; y «Evaluaciones pendientes» (cualquier subestado).
 FILTRO_APTO, FILTRO_NO_APTO, FILTRO_EVAL_PENDIENTES = "apto", "no_apto", "evaluaciones_pendientes"
 FILTROS_PREFILTRO = {"sin_iniciar": PREFILTRO_SIN_INICIAR, "en_curso": PREFILTRO_EN_CURSO, "completado": PREFILTRO_COMPLETADO}
@@ -287,7 +293,9 @@ def clave_entrevista(eh: Optional[EntrevistaHumana]) -> str:
         return "no_asistio"
     if eh.asistencia == "asistio":
         return "realizada"
-    return "confirmada" if eh.confirmada_en else "agendada"
+    if eh.confirmada_en:
+        return "confirmada"
+    return "no_podra" if rechazo_cita(eh.postulacion, eh) else "agendada"
 
 
 def entrevista_apta(eh: Optional[EntrevistaHumana]) -> Optional[bool]:
@@ -306,7 +314,8 @@ def estado_entrevista(eh: Optional[EntrevistaHumana]) -> Tuple[str, str]:
             tono = {"favorable": "good", "con_observaciones": "warn", "desfavorable": "bad"}[eh.resultado]
             return f"Realizada · {RESULTADOS_CAPACITACION[eh.resultado]}", tono
         return "Realizada", "good"
-    return FILTROS_ENTREVISTA[clave], {"sin_agendar": "neutral", "agendada": "warn", "confirmada": "brand", "no_asistio": "bad"}[clave]
+    return FILTROS_ENTREVISTA[clave], {"sin_agendar": "neutral", "agendada": "warn", "no_podra": "bad", "confirmada": "brand",
+                                       "no_asistio": "bad"}[clave]
 
 
 def capacitador_de(eh: EntrevistaHumana, db: Session) -> dict:
@@ -333,9 +342,110 @@ def _cuando(eh: EntrevistaHumana) -> str:
     return f.astimezone(TZ_MEXICO).strftime("%d/%m/%Y a las %H:%M")
 
 
+def fecha_hora(eh: EntrevistaHumana) -> Tuple[str, str]:
+    """(«05/10/2026», «09:00») en hora de México."""
+    from .notificaciones import TZ_MEXICO
+
+    if not eh.fecha:
+        return "por confirmar", "por confirmar"
+    f = (eh.fecha if eh.fecha.tzinfo else eh.fecha.replace(tzinfo=timezone.utc)).astimezone(TZ_MEXICO)
+    return f.strftime("%d/%m/%Y"), f.strftime("%H:%M")
+
+
+def lugar_cita(eh: EntrevistaHumana) -> str:
+    return (eh.tienda or "") + (f", {eh.ubicacion}" if eh.ubicacion else "")
+
+
+def texto_confirmada(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
+    """Respuesta EXACTA al confirmar (2026-10-02). La frase del material solo va si la cita tiene curso de inducción:
+    nunca se promete un material que no existe."""
+    fecha, hora = fecha_hora(eh)
+    cap = capacitador_de(eh, db)["nombre"]
+    texto = f"Perfecto, te esperamos el {fecha} a las {hora} en {lugar_cita(eh)}."
+    if cap:
+        texto += f" Te recibirá {cap}."
+    if eh.curso_induccion_id:
+        texto += " Te compartimos el material de inducción para que lo revises antes de asistir"
+    return texto
+
+
+def rechazo_cita(p: Optional[Postulacion], eh: Optional[EntrevistaHumana]) -> Optional[dict]:
+    """El «no puedo asistir» del candidato para ESTA cita (se guarda en `Postulacion.analisis.cita_rechazo`). Una cita
+    reprogramada o nueva lo deja sin efecto."""
+    if p is None or eh is None:
+        return None
+    r = (p.analisis or {}).get("cita_rechazo")
+    if not r or r.get("entrevista") != eh.id or r.get("fecha_cita") != (eh.fecha.isoformat() if eh.fecha else ""):
+        return None
+    return r
+
+
+def _guardar_rechazo(p: Postulacion, r: Optional[dict]) -> None:
+    analisis = dict(p.analisis or {})
+    if r is None:
+        analisis.pop("cita_rechazo", None)
+    else:
+        analisis["cita_rechazo"] = r
+    p.analisis = analisis
+
+
+async def notificar_reclutador_cita(db: Session, p: Postulacion, eh: EntrevistaHumana, titulo: str, detalle: str) -> Optional[dict]:
+    """Aviso INMEDIATO al reclutador: nota en la ficha + bitácora (siempre) y correo al responsable de la vacante (o al
+    correo de comunicación de la Cuenta). Nunca lanza."""
+    from ..models import Cuenta, NotificacionEnviada
+    from .correo import enviar_correo
+    from .plantillas_correo import html_aviso
+
+    nota(p, "cita_aviso_reclutador", f"{titulo}: {detalle}", "candidato")
+    v = p.vacante
+    correo = (v.responsable.correo if v and v.responsable and v.responsable.correo else "") or ""
+    if not correo and p.cuenta_id:
+        cu = db.get(Cuenta, p.cuenta_id)
+        correo = (cu.correo_comunicacion or "") if cu else ""
+    if not correo:
+        return None
+    fecha, hora = fecha_hora(eh)
+    try:
+        asunto, html = html_aviso(
+            titulo, detalle,
+            filas=[("Candidato", p.nombre or ""), ("Vacante", v.titulo if v else ""), ("Cita", f"{fecha} a las {hora} h"),
+                   ("Lugar", lugar_cita(eh))],
+            cta=("Ver candidato", f"{settings.app_url}/dashboard/candidatos?abrir={p.codigo}"),
+        )
+        envio = await enviar_correo(correo, asunto, html)
+    except Exception as e:  # noqa: BLE001
+        envio = {"enviado": False, "detalle": str(e)[:200]}
+    db.add(NotificacionEnviada(cuenta_id=p.cuenta_id, candidato_id=p.candidato_id, evento="cita_no_asistira", destinatario_tipo="rh",
+                               canal="correo", destino=correo, enviado=bool(envio.get("enviado")), detalle=str(envio.get("detalle", ""))[:300]))
+    return envio
+
+
+async def candidato_no_asistira(db: Session, p: Postulacion, eh: EntrevistaHumana, texto: str) -> None:
+    """Paso 5: el candidato dice que no puede ir → queda «No podrá asistir», se le pregunta si necesita reagendar y se avisa
+    de inmediato al reclutador."""
+    _guardar_rechazo(p, {"entrevista": eh.id, "fecha_cita": eh.fecha.isoformat() if eh.fecha else "", "en": _ahora().isoformat(),
+                         "texto": (texto or "")[:300], "reagendar": None})
+    registrar(db, "candidato", "cita_no_asistira", "postulacion", p.codigo, {"entrevista_humana": eh.id, "texto": (texto or "")[:300]})
+    await notificar_reclutador_cita(db, p, eh, "El candidato no podrá asistir a su entrevista",
+                                    f"{p.nombre} avisó que no podrá asistir («{(texto or '').strip()[:200]}»). Se le preguntó si necesita reagendar.")
+
+
+async def respuesta_reagendar(db: Session, p: Postulacion, eh: EntrevistaHumana, quiere: bool) -> None:
+    r = dict(rechazo_cita(p, eh) or {})
+    r["reagendar"] = quiere
+    _guardar_rechazo(p, r)
+    registrar(db, "candidato", "cita_reagendar_solicitado" if quiere else "cita_reagendar_rechazado", "postulacion", p.codigo,
+              {"entrevista_humana": eh.id})
+    await notificar_reclutador_cita(
+        db, p, eh, "El candidato pide reagendar su entrevista" if quiere else "El candidato no reagendará su entrevista",
+        f"{p.nombre} " + ("pidió una nueva fecha: reprograma la entrevista desde su ficha." if quiere
+                          else "indicó que no necesita reagendar. Decide en su ficha si cancelas la entrevista o lo descartas."))
+
+
 def texto_cita(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
     """La cita COMPLETA (candidato, empresa, vacante, entrevistador, fecha, hora y lugar). «Reenviar cita» manda
-    exactamente este mismo texto de la misma `EntrevistaHumana` (Cambios ZESE)."""
+    exactamente este mismo texto de la misma `EntrevistaHumana` (Cambios ZESE). 2026-10-02: sin confirmar SIEMPRE cierra
+    con «¿Confirmas que vas a asistir?» y ya no anuncia el material (sale hasta que confirma)."""
     from ..serial import nombre_empresa_candidato
 
     nombre = (p.nombre or "").split(" ")[0] or "hola"
@@ -351,9 +461,7 @@ def texto_cita(p: Postulacion, eh: EntrevistaHumana, db: Session) -> str:
         partes.append(f"👤 Te recibe: {cap['nombre']}")
     if eh.comentario:
         partes.append(f"📝 {eh.comentario}")
-    if eh.curso_induccion_id:
-        partes.append("📄 Te compartimos tu material de inducción para que lo revises antes.")
-    partes.append("\n✅ Tu asistencia ya está confirmada." if eh.confirmada_en else "\n¿Confirmas tu asistencia? Responde *Sí*.")
+    partes.append("\n✅ Tu asistencia ya está confirmada." if eh.confirmada_en else f"\n{PREGUNTA_CONFIRMACION}")
     return "\n".join(partes)
 
 
@@ -500,9 +608,9 @@ async def programar_entrevista(db: Session, p: Postulacion, datos: dict, actor: 
     if _indice(p.etapa) < _indice(ENTREVISTA):
         mover(db, p, ENTREVISTA, actor, "Citado a entrevista")
     envio_c = await enviar_cita_candidato(db, p, eh)
-    induccion = await enviar_induccion(db, p, eh, actor)
+    # 2026-10-02: la cita queda «Pendiente de confirmación»; el material de inducción sale hasta que el candidato confirma
     envio_k = await enviar_aviso_capacitador(db, p, eh)
-    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k, "induccion": induccion}
+    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k, "induccion": None}
 
 
 async def reprogramar_entrevista(db: Session, p: Postulacion, datos: dict, actor: str) -> dict:
@@ -513,12 +621,13 @@ async def reprogramar_entrevista(db: Session, p: Postulacion, datos: dict, actor
         raise ValueError("Esta entrevista ya tiene resultado; programa una nueva.")
     _datos_entrevista(db, p, eh, datos)
     eh.confirmada_en = None
+    eh.confirmada_por = ""
+    _guardar_rechazo(p, None)  # nueva fecha: vuelve a «Pendiente de confirmación»
     nota(p, "entrevista_reprogramada", f"Entrevista reprogramada: {eh.tienda}, {_cuando(eh)} h", actor)
     registrar(db, actor, "capacitacion_tienda_reprogramada", "postulacion", p.codigo, {"fecha": eh.fecha.isoformat(), "tienda": eh.tienda})
     envio_c = await enviar_cita_candidato(db, p, eh)
-    induccion = await enviar_induccion(db, p, eh, actor)
     envio_k = await enviar_aviso_capacitador(db, p, eh)
-    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k, "induccion": induccion}
+    return {"entrevista": eh, "envioCandidato": envio_c, "envioCapacitador": envio_k, "induccion": None}
 
 
 def cancelar_entrevista(db: Session, p: Postulacion, motivo: str, actor: str) -> None:
@@ -532,9 +641,21 @@ def cancelar_entrevista(db: Session, p: Postulacion, motivo: str, actor: str) ->
     registrar(db, actor, "capacitacion_tienda_cancelada", "postulacion", p.codigo, {"motivo": motivo[:300]})
 
 
-async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
-    """El candidato (por Telegram/WhatsApp) o RH por él confirma la cita. El material de inducción ya salió con la
-    cita (si por algo no salió, se intenta aquí)."""
+def induccion_enviada(eh: EntrevistaHumana) -> bool:
+    return any(x.get("destinatario") == "candidato" and x.get("canal") == "induccion" and x.get("enviado") for x in (eh.envios or []))
+
+
+async def enviar_material_una_vez(db: Session, p: Postulacion, eh: EntrevistaHumana, actor: str) -> Optional[dict]:
+    """El material de inducción sale UNA sola vez por cita (2026-10-02: al confirmar)."""
+    if induccion_enviada(eh):
+        return None
+    return await enviar_induccion(db, p, eh, actor)
+
+
+async def confirmar_cita(db: Session, p: Postulacion, actor: str, enviar_material: bool = True) -> dict:
+    """El candidato (por Telegram/WhatsApp) o RH por él confirma la cita → «Confirmada» y, en ese momento, sale el
+    material de inducción (una sola vez). El chat pasa `enviar_material=False` para mandar primero la respuesta exacta y
+    después el material (`enviar_material_una_vez`)."""
     eh = entrevista_actual(p)
     if eh is None or eh.realizada or eh.asistencia:
         raise ValueError("El candidato no tiene una cita de entrevista abierta.")
@@ -542,9 +663,8 @@ async def confirmar_cita(db: Session, p: Postulacion, actor: str) -> dict:
         return {"entrevista": eh, "induccion": None, "ya_confirmada": True}
     eh.confirmada_en = _ahora()
     eh.confirmada_por = actor[:150]
-    induccion = None
-    if not any(x.get("destinatario") == "candidato" and x.get("canal") == "induccion" and x.get("enviado") for x in (eh.envios or [])):
-        induccion = await enviar_induccion(db, p, eh, actor)
+    _guardar_rechazo(p, None)
+    induccion = await enviar_material_una_vez(db, p, eh, actor) if enviar_material else None
     nota(p, "cita_confirmada", "Cita de entrevista confirmada", actor)
     return {"entrevista": eh, "induccion": induccion, "ya_confirmada": False}
 

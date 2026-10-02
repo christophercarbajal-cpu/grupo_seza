@@ -28,6 +28,7 @@ import { BOT_TELEGRAM_DEFAULT, fetchVacantePorSlug, postular, type SiguientePaso
 import { ConectarTelegram } from "@/components/conectar-telegram";
 import { PREGUNTAS_VEHICULARES, type Vacante } from "@/lib/data";
 import { cn } from "@/lib/utils";
+import { ESTADOS_MX, municipiosDe } from "@/lib/ubicacion";
 
 const pasos = ["Tus datos", "Currículum", "Unas preguntas"];
 
@@ -457,7 +458,9 @@ function PreguntasReglas({
           <p className="mb-2 text-sm font-medium">
             <span className="mr-1 font-mono text-ink-3">{i + 1}.</span> {q.texto}
           </p>
-          {q.tipo === "abierta" || q.tipo === "anio" ? (
+          {q.tipo === "municipio" ? (
+            <SelectorResidencia estadoInicial={q.estado ?? ""} valor={respuestas[q.id] ?? ""} onCambio={(v) => onCambio(q.id, v)} />
+          ) : q.tipo === "abierta" || q.tipo === "anio" ? (
             <input
               type={q.tipo === "anio" ? "number" : "text"}
               inputMode={q.tipo === "anio" ? "numeric" : undefined}
@@ -490,6 +493,35 @@ function PreguntasReglas({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Residencia con selectores (2026-10-02): Estado → Municipio/Alcaldía del catálogo INEGI; el valor que se guarda es
+ * «Municipio, Estado» (misma forma que la ubicación de las vacantes). Arranca en el Estado de la vacante. */
+function SelectorResidencia({ estadoInicial, valor, onCambio }: { estadoInicial: string; valor: string; onCambio: (v: string) => void }) {
+  const previo = valor.includes(",") ? valor.split(",").map((x) => x.trim()) : [];
+  const [estado, setEstado] = useState(previo[1] ?? (ESTADOS_MX.includes(estadoInicial) ? estadoInicial : ""));
+  const municipio = previo[1] === estado ? previo[0] : "";
+  const campo = "h-12 w-full rounded-xl border border-border-soft bg-surface px-3 text-sm outline-none transition focus:border-brand focus:ring-2 focus:ring-brand/20 disabled:opacity-60";
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      <label className="block">
+        <span className="text-[12px] text-ink-3">Estado</span>
+        <select aria-label="Estado" className={campo} value={estado}
+          onChange={(e) => { setEstado(e.target.value); onCambio(""); }}>
+          <option value="">Elige tu estado</option>
+          {ESTADOS_MX.map((e) => <option key={e} value={e}>{e}</option>)}
+        </select>
+      </label>
+      <label className="block">
+        <span className="text-[12px] text-ink-3">Municipio o alcaldía</span>
+        <select aria-label="Municipio o alcaldía" className={campo} value={municipio} disabled={!estado}
+          onChange={(e) => onCambio(e.target.value ? `${e.target.value}, ${estado}` : "")}>
+          <option value="">{estado ? "Elige tu municipio" : "Primero elige el estado"}</option>
+          {municipiosDe(estado).map((m) => <option key={m} value={m}>{m}</option>)}
+        </select>
+      </label>
     </div>
   );
 }

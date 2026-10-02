@@ -191,7 +191,7 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
       const partes = [modo === "reprogramar" ? "Entrevista reprogramada." : "Entrevista programada."];
       partes.push(c?.enviado ? "La cita le llegó al candidato." : `La cita al candidato no salió${c?.detalle ? ` (${c.detalle})` : ""}.`);
       partes.push(k.some((x) => x.enviado) ? "El entrevistador recibió su liga." : "Al entrevistador no le llegó el aviso: comparte su liga.");
-      if (p.induccionEnviada) partes.push(`Material de inducción «${p.induccionEnviada.titulo}» compartido.`);
+      partes.push("Queda pendiente de confirmación: el material de inducción sale cuando el candidato confirme.");
       return partes.join(" ");
     });
   }
@@ -258,10 +258,16 @@ export function PanelOperativo({ codigo, puesto, puedeDecidir, onCambio, onVerEv
                   <Badge tone="good" dot>
                     Confirmada{eh.confirmadaPor === "candidato" ? " por el candidato (Telegram)" : eh.confirmadaPor ? ` por ${eh.confirmadaPor}` : ""} · {fechaCorta(eh.confirmadaEn)}
                   </Badge>
+                ) : eh.noPodra ? (
+                  <Badge tone="bad" dot>
+                    No podrá asistir
+                    {eh.noPodra.reagendar === true ? " · pidió reagendar" : eh.noPodra.reagendar === false ? " · no reagendará" : " · se le preguntó si reagenda"}
+                  </Badge>
                 ) : (
-                  <Badge tone="warn" dot>Sin confirmar · esperando su «Sí»</Badge>
+                  <Badge tone="warn" dot>Pendiente de confirmación · el material sale cuando confirme</Badge>
                 )}
               </p>
+              {eh.noPodra?.texto && !eh.confirmada && <p className="mt-1 text-ink-3">«{eh.noPodra.texto}»</p>}
               {puedeDecidir && (
                 <Button size="sm" variant="ghost" className="mt-1" disabled={Boolean(ocupado)}
                   onClick={() => ejecutar("reenviar-c", () => reenviarEntrevistaOperativa(codigo, "candidato"), (p) =>

@@ -14,7 +14,7 @@ import { Save } from "lucide-react";
 import { Button } from "@/components/ui";
 import { Aviso } from "@/components/dashboard/subida";
 import { actualizarVacante } from "@/lib/api";
-import { TIPOS_VEHICULO, type ConfigPrefiltroReglas, type Vacante } from "@/lib/data";
+import { DIAS_OPERACION, TIPOS_VEHICULO, type ConfigPrefiltroReglas, type Vacante } from "@/lib/data";
 
 type Efecto = "ok" | "revision" | "no_cumple";
 
@@ -26,10 +26,10 @@ const CONFIGURABLES: { id: string; valor: string; respuesta: string; base: Efect
   { id: "vehiculo_propio", valor: "no", respuesta: "No", base: "no_cumple" },
   { id: "tipo_vehiculo", valor: "no_permitido", respuesta: "Tipo no aceptado", base: "revision" },
   { id: "anio_vehiculo", valor: "menor_al_minimo", respuesta: "Menor al año mínimo", base: "revision" },
-  { id: "taxi", valor: "si", respuesta: "Sí", base: "revision" },
+  { id: "taxi", valor: "si", respuesta: "Sí (rotulado)", base: "revision" },
   { id: "circulacion", valor: "no", respuesta: "No", base: "revision" },
-  { id: "circulacion", valor: "no estoy seguro", respuesta: "No estoy seguro", base: "revision" },
-  { id: "licencia", valor: "no", respuesta: "No", base: "revision" },
+  { id: "licencia", valor: "no tengo licencia vigente", respuesta: "No tengo licencia vigente", base: "revision" },
+  { id: "licencia", valor: "no_aceptada", respuesta: "Tipo no aceptado", base: "revision" },
   { id: "poliza", valor: "no", respuesta: "No", base: "revision" },
   { id: "android", valor: "no", respuesta: "No", base: "no_cumple" },
 ];
@@ -46,6 +46,8 @@ const vacia = (ubicacion: string): ConfigPrefiltroReglas => ({
   zona: "",
   cobertura: [],
   experiencia_indispensable: false,
+  dias_operacion: "diario",
+  licencias_aceptadas: [],
   vehiculo: { tipos_permitidos: [TIPOS_VEHICULO[0]], anio_minimo: null },
   reglas: {},
   fotos_vehiculo: true,
@@ -60,6 +62,12 @@ export function PrefiltroReglasEditor({ v, editable, onGuardada }: { v: Vacante;
   const [guardando, setGuardando] = useState(false);
   const [aviso, setAviso] = useState<{ tono: "ok" | "error"; texto: string } | null>(null);
   const textos = Object.fromEntries((v.prefiltroPreguntas ?? []).map((q) => [q.id, q.texto]));
+  // tipos de licencia del Estado de la vacante (la última opción es «No tengo licencia vigente»)
+  const licencias = ((v.prefiltroPreguntas ?? []).find((q) => q.id === "licencia")?.opciones ?? []).slice(0, -1);
+  const aceptadas = cfg.licencias_aceptadas?.length ? cfg.licencias_aceptadas : licencias.filter((l) => !/motociclista/i.test(l));
+  function alternarLicencia(l: string) {
+    setCfg((c) => ({ ...c, licencias_aceptadas: aceptadas.includes(l) ? aceptadas.filter((x) => x !== l) : [...aceptadas, l] }));
+  }
 
   const efecto = (id: string, valor: string, base: Efecto): Efecto => cfg.reglas[id]?.[valor] ?? base;
   function cambiarEfecto(id: string, valor: string, e: Efecto) {
@@ -136,6 +144,17 @@ export function PrefiltroReglasEditor({ v, editable, onGuardada }: { v: Vacante;
               <input type="number" min={1950} className={campo} disabled={!editable} value={cfg.vehiculo.anio_minimo ?? ""}
                 onChange={(e) => setCfg((c) => ({ ...c, vehiculo: { ...c.vehiculo, anio_minimo: e.target.value ? Number(e.target.value) : null } }))} />
             </label>
+            <label className="block">
+              <span className="text-[12px] font-medium text-ink-2">Días de operación (pregunta de circulación)</span>
+              <select className={campo} disabled={!editable} value={cfg.dias_operacion ?? "diario"}
+                onChange={(e) => setCfg((c) => ({ ...c, dias_operacion: e.target.value }))}>
+                {DIAS_OPERACION.map((d) => (
+                  <option key={d.valor} value={d.valor}>
+                    {d.texto}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="flex items-center gap-2 self-end pb-3 text-sm">
               <input type="checkbox" disabled={!editable} checked={cfg.experiencia_indispensable}
                 onChange={(e) => setCfg((c) => ({ ...c, experiencia_indispensable: e.target.checked }))} className={casilla} />
@@ -153,6 +172,21 @@ export function PrefiltroReglasEditor({ v, editable, onGuardada }: { v: Vacante;
               ))}
             </div>
           </div>
+          {licencias.length > 0 && (
+            <div>
+              <p className="text-[12px] font-medium text-ink-2">
+                Licencias aceptadas{cfg.estado ? ` (${cfg.estado})` : ""} — otro tipo o sin licencia va a revisión
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-2">
+                {licencias.map((l) => (
+                  <label key={l} className="flex min-h-10 items-center gap-2 rounded-xl border border-border-soft px-3 text-sm">
+                    <input type="checkbox" disabled={!editable} checked={aceptadas.includes(l)} onChange={() => alternarLicencia(l)} className={casilla} />
+                    {l}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" disabled={!editable} checked={cfg.fotos_vehiculo}
               onChange={(e) => setCfg((c) => ({ ...c, fotos_vehiculo: e.target.checked }))} className={casilla} />

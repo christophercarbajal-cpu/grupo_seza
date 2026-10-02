@@ -45,7 +45,7 @@ def check(cond, nombre):
 
 R_OK = {"municipio": "Puebla", "jornada": "Sí", "experiencia": "No", "vehiculo_propio": "Sí",
         "tipo_vehiculo": "Sedán de cuatro puertas", "anio_vehiculo": "2019", "taxi": "No", "circulacion": "Sí",
-        "licencia": "Sí", "poliza": "Sí", "android": "Sí"}
+        "licencia": "Automovilista", "poliza": "Sí", "android": "Sí"}
 SLUG = "chofer-de-reparto-con-unidad-propia-"
 JPG = b"\xff\xd8\xff\xe0" + b"0" * 2000
 
@@ -100,10 +100,10 @@ def main():
         check(det["prefiltroReglas"]["resultado"] == "revision", "CDMX «Otro» vehículo → Requiere revisión (solo sedán o Kangoo)")
         _, det = postular("puebla", "Gus", "2221000010", jornada="No")
         check(det["prefiltroReglas"]["resultado"] == "no_cumple", "no cubre la jornada completa → No cumple (no hay medio turno)")
-        _, det = postular("puebla", "Ivo", "2221000011", licencia="No")
+        _, det = postular("puebla", "Ivo", "2221000011", licencia="No tengo licencia vigente")
         check(det["prefiltroReglas"]["resultado"] == "revision", "licencia pendiente → Requiere revisión (documento pendiente ≠ descarte)")
-        _, det = postular("puebla", "Jo", "2221000012", taxi="Sí", circulacion="No estoy seguro")
-        check(det["prefiltroReglas"]["resultado"] == "revision" and len(det["prefiltroReglas"]["motivos"]) == 2, "taxi «Sí» y circulación «No estoy seguro» → Requiere revisión")
+        _, det = postular("puebla", "Jo", "2221000012", taxi="Sí", circulacion="No")
+        check(det["prefiltroReglas"]["resultado"] == "revision" and len(det["prefiltroReglas"]["motivos"]) == 2, "rotulado «Sí» y circulación «No» → Requiere revisión")
         _, det = postular("puebla", "Kim", "2221000013", vehiculo_propio="No", tipo_vehiculo="", anio_vehiculo="", taxi="", circulacion="", poliza="")
         check(det["prefiltroReglas"]["resultado"] == "no_cumple", "sin vehículo propio → No cumple (indispensable)")
         d, det = postular("cdmx", "Fer", "5551000006", poliza="No")
@@ -204,15 +204,17 @@ def _flujo_operativo(c, h, ana, fer):
     r = c.post(f"/candidatos/{ana}/operativo/entrevista", json=cita, headers=h)
     d = r.json()
     check(r.status_code == 200 and d["entrevista"]["tienda"] == "Tienda prueba" and d["entrevista"]["capacitador"]["nombre"] == "Capacitador Prueba"
-          and d["entrevista"]["estado"] == "Agendada", "programar capacitación: tienda, fecha/hora y capacitador")
-    check(d["induccionEnviada"] and d["induccionEnviada"]["simulado"], "al agendar sale el material de inducción (PDF; simulado sin Telegram)")
+          and d["entrevista"]["estado"] == "Pendiente de confirmación", "programar capacitación: tienda, fecha/hora y capacitador → «Pendiente de confirmación»")
+    check(d["induccionEnviada"] is None, "al agendar NO sale el material de inducción (2026-10-02: sale hasta confirmar)")
     check(d["envioCandidato"]["enviado"] is False and d["envioCapacitador"][0]["enviado"] is False and d["entrevista"]["ligaCapacitador"],
           "el envío va por separado: aunque no salga, la cita y la liga del capacitador quedan creadas")
     r = c.post(f"/candidatos/{fer}/operativo/entrevista", json=cita, headers=h)
     check(r.status_code == 200, "otra cita en la misma tienda y hora: sin cupos")
     r = c.post(f"/candidatos/{ana}/operativo/confirmar-cita", headers=h).json()
-    check(r["entrevista"]["confirmada"] and r["entrevista"]["estado"] == "Confirmada" and r["induccionEnviada"] is None,
-          "confirmar la cita no vuelve a mandar el PDF (ya salió al agendar)")
+    check(r["entrevista"]["confirmada"] and r["entrevista"]["estado"] == "Confirmada" and r["induccionEnviada"] and r["induccionEnviada"]["simulado"],
+          "al confirmar la cita sale el material de inducción (PDF; simulado sin Telegram)")
+    r = c.post(f"/candidatos/{ana}/operativo/confirmar-cita", headers=h).json()
+    check(r["entrevista"]["confirmada"] and not r.get("induccionEnviada"), "confirmar otra vez no vuelve a mandar el material (una sola vez)")
     msgs = c.get(f"/candidatos/{ana}/mensajes", headers=h).json()
     lista_m = msgs if isinstance(msgs, list) else msgs.get("mensajes", [])
     check(any("[Simulado" in (m.get("texto") or "") and "Inducción SEZA" in (m.get("texto") or "") for m in lista_m), "el envío simulado queda en el chat")
@@ -374,7 +376,7 @@ async def _whatsapp():
     p, _ = postulacion_para_vacante(db, persona, v, v.cuenta_id, "whatsapp", consentimiento=True)
     db.commit()
     check(p.etapa == "Prefiltro", "todo candidato nuevo entra a Prefiltro")
-    guion = ["Me interesa", "Iztapalapa", "si", "claro", "Sí", "tengo una kangoo", "no sé", "modelo 09", "nel", "no sé", "si", "no tengo", "sí"]
+    guion = ["Me interesa", "Iztapalapa", "si", "claro", "Sí", "tengo una kangoo", "no sé", "modelo 09", "nel", "no sé", "tipo a", "no tengo", "sí"]
     ultima = {}
     for t in guion:
         ultima = await procesar_prefiltro(db, p, t, "whatsapp")
@@ -402,7 +404,7 @@ async def _whatsapp_por_plaza(nombre: str, plaza: str, cambios: dict):
     p, _ = postulacion_para_vacante(db, persona, v, v.cuenta_id, "whatsapp", consentimiento=True)
     db.commit()
     base = {"municipio": "Puebla", "jornada": "sí", "zona": "sí", "experiencia": "sí", "vehiculo_propio": "sí",
-            "tipo_vehiculo": "1", "anio_vehiculo": "2019", "taxi": "no", "circulacion": "1", "licencia": "si",
+            "tipo_vehiculo": "1", "anio_vehiculo": "2019", "taxi": "no", "circulacion": "sí", "licencia": "1",
             "poliza": "si", "android": "si", **cambios}
     ids = [q["id"] for q in pr.preguntas(v.prefiltro_reglas)]
     salidas = [(await procesar_prefiltro(db, p, "Me interesa la vacante", "whatsapp"))["respuesta"]]
@@ -483,7 +485,8 @@ def _capacitacion_y_contadores(cumple: str):
         c.post(f"/candidatos/{cumple}/operativo/entrevista", json=cita, headers=h)
 
         resp = asyncio.run(_whatsapp_confirma(cumple, "Sí, ahí estaré"))
-        check("confirmada" in resp, "chat «Sí» confirma la cita")
+        check(resp.startswith("Perfecto, te esperamos el 01/02/2030 a las 09:00 en Tienda WA. Te recibirá Sup WA."),
+              "chat «Sí» confirma la cita con la respuesta exacta (fecha, hora, lugar y quién lo recibe)")
         panel = c.get(f"/candidatos/{cumple}/operativo", headers=h).json()
         msgs = c.get(f"/candidatos/{cumple}/mensajes", headers=h).json()
         liga = next((m["texto"].rsplit(" ", 1)[1] for m in (msgs if isinstance(msgs, list) else msgs.get("mensajes", []))
@@ -501,15 +504,17 @@ def _capacitacion_y_contadores(cumple: str):
 
         otro = next(x["id"] for x in c.get("/candidatos", headers=h).json() if x["etapa"] == "Revisión de vehículo")
         c.post(f"/candidatos/{otro}/vehiculo/decision", json={"accion": "excepcion", "comentario": "Prueba"}, headers=h)
+        r = c.post(f"/candidatos/{otro}/operativo/entrevista", json=cita, headers=h)
         with mock.patch("app.routers.capacitacion.asignar_a_postulacion", side_effect=RuntimeError("falla simulada")):
-            r = c.post(f"/candidatos/{otro}/operativo/entrevista", json=cita, headers=h)
-        check(r.status_code == 200 and r.json()["entrevista"]["estado"] == "Agendada" and r.json()["induccionEnviada"] is None,
-              "si falla el PDF de inducción, la cita queda agendada igual")
+            r2 = c.post(f"/candidatos/{otro}/operativo/confirmar-cita", headers=h)
+        check(r.status_code == 200 and r.json()["entrevista"]["estado"] == "Pendiente de confirmación" and r2.status_code == 200
+              and r2.json()["entrevista"]["confirmada"] and r2.json()["induccionEnviada"] is None,
+              "si falla el PDF de inducción al confirmar, la cita queda confirmada igual")
         r = c.post(f"/candidatos/{otro}/operativo/entrevista/resultado", json={"asistio": False, "comentario": "No llegó"}, headers=h)
         check(r.status_code == 200 and r.json()["etapa"] == "Entrevista" and r.json()["subestado"]["texto"] == "No asistió",
               "«No asistió» deja la tarjeta en «Entrevista» para reprogramar")
         r = c.post(f"/candidatos/{otro}/operativo/entrevista", json=cita, headers=h)
-        check(r.status_code == 200 and r.json()["entrevista"]["estado"] == "Agendada" and r.json()["entrevistasAnteriores"] == 1,
+        check(r.status_code == 200 and r.json()["entrevista"]["estado"] == "Pendiente de confirmación" and r.json()["entrevistasAnteriores"] == 1,
               "reprogramar tras «No asistió» crea una cita nueva y conserva la anterior")
 
 

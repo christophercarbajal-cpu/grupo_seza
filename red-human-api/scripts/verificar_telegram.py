@@ -131,7 +131,7 @@ def main():
         env = enviados_desde(i)
         check(any("<b>1/11</b>" in x["json"].get("text", "") for x in env), "«Sí» → arranca el prefiltro (pregunta 1/11, negritas en HTML)")
 
-        respuestas = ["Puebla", "sí", "sí", "sí", "1", "2019", "no", "1", "si", "si", "si"]
+        respuestas = ["Puebla", "sí", "sí", "sí", "1", "2019", "no", "sí", "1", "si", "si"]
         for t in respuestas:
             i = len(LLAMADAS)
             c.post(url, json=update_mensaje(t), headers=sec)
@@ -158,19 +158,26 @@ def main():
                                                                      "capacitador_tipo": "externo", "capacitador_nombre": "Sup",
                                                                      "curso_induccion": induccion["id"]}, headers=h)
         env = enviados_desde(i)
-        check(any("¿Confirmas tu asistencia?" in x["json"].get("text", "") and x["json"].get("chat_id") == str(CHAT) for x in env),
-              "RH cita → el aviso sale al chat de Telegram del candidato (envío por teléfono → chat)")
-        docs = [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"]
-        textos = [x["json"].get("text", "") for x in env if x["metodo"] == "sendMessage"]
-        pdf = (docs[0]["files"].get("document") or (None, b""))[1] if docs else b""
-        check(docs and pdf[:4] == b"%PDF" and docs[0]["data"]["chat_id"] == str(CHAT),
-              "al agendar, el PDF de «Inducción SEZA» sale como archivo por Telegram junto con la cita")
-        check(any("Inducción SEZA" in t and "[Simulado" not in t for t in textos), "el mensaje de inducción no va marcado como simulado")
+        check(any(x["json"].get("text", "").rstrip().endswith("¿Confirmas que vas a asistir?") and x["json"].get("chat_id") == str(CHAT) for x in env),
+              "RH cita → el aviso sale al chat de Telegram del candidato y cierra con «¿Confirmas que vas a asistir?»")
+        check(not [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"]
+              and not any("Inducción SEZA" in x["json"].get("text", "") for x in env), "al agendar NO sale el material de inducción (pendiente de confirmación)")
 
         i = len(LLAMADAS)
         c.post(url, json=update_mensaje("Sí"), headers=sec)
-        check(any("confirmada" in x["json"].get("text", "") for x in enviados_desde(i))
-              and not [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"], "«Sí» confirma la cita (sin reenviar el PDF)")
+        env = enviados_desde(i)
+        textos = [x["json"].get("text", "") for x in env if x["metodo"] == "sendMessage"]
+        docs = [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"]
+        pdf = (docs[0]["files"].get("document") or (None, b""))[1] if docs else b""
+        check(textos and textos[0].startswith("Perfecto, te esperamos el 01/03/2030 a las 09:00 en Tienda TG. Te recibirá Sup. "
+                                              "Te compartimos el material de inducción para que lo revises antes de asistir"),
+              "«Sí» → respuesta exacta con fecha, hora, lugar y quién lo recibe")
+        check(docs and pdf[:4] == b"%PDF" and docs[0]["data"]["chat_id"] == str(CHAT),
+              "al confirmar, el PDF de «Inducción SEZA» sale como archivo por Telegram")
+        check(any("Inducción SEZA" in t and "[Simulado" not in t for t in textos), "el mensaje de inducción no va marcado como simulado")
+        i = len(LLAMADAS)
+        c.post(url, json=update_mensaje("Sí"), headers=sec)
+        check(not [x for x in LLAMADAS[i:] if x["metodo"] == "sendDocument"], "un segundo «Sí» no reenvía el material (una sola vez)")
 
     # Un número que nunca habló con el bot: no se le puede escribir (Telegram no lo permite)
     import asyncio

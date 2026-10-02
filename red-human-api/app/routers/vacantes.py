@@ -390,9 +390,9 @@ class CrearIn(GenerarIn):
     cv_obligatorio: bool = True
 
 
-def _reglas_validas(cfg: Optional[dict], ubicacion: str = "") -> dict:
+def _reglas_validas(cfg: Optional[dict], ubicacion: str = "", estado: str = "") -> dict:
     try:
-        return prefiltro_reglas.normalizar(cfg, ubicacion)
+        return prefiltro_reglas.normalizar(cfg, ubicacion, estado)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -459,7 +459,7 @@ def crear(
         seniority=datos.seniority,
         avisos_cumplimiento=datos.avisos_cumplimiento,
         publicaciones=datos.publicaciones,
-        prefiltro_reglas=_reglas_validas(datos.prefiltro_reglas, datos.ubicacion_texto()),
+        prefiltro_reglas=_reglas_validas(datos.prefiltro_reglas, datos.ubicacion_texto(), datos.ubicacion_estado or ""),
         cv_obligatorio=datos.cv_obligatorio,
     )
 
@@ -664,7 +664,8 @@ def actualizar(
         raise HTTPException(400, f"Enfoque de entrevista inválido. Usa uno de: {', '.join(ENFOQUES_ENTREVISTA)}")
     cambios.pop("empresa", None)  # Punto 1: nunca texto libre; se recalcula abajo
     if "prefiltro_reglas" in cambios:
-        cambios["prefiltro_reglas"] = _reglas_validas(cambios["prefiltro_reglas"], v.ubicacion)
+        cambios["prefiltro_reglas"] = _reglas_validas(cambios["prefiltro_reglas"], v.ubicacion,
+                                                    cambios.get("ubicacion_estado") or v.ubicacion_estado or "")
     if "curso_filtro" in cambios:
         codigo_curso = (cambios.pop("curso_filtro") or "").strip()
         if not codigo_curso:

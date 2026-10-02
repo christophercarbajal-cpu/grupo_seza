@@ -8,7 +8,15 @@ sin año mínimo — el código no conoce ninguna plaza.
 Regla estricta del documento: «fuera de parámetro o posible excepción = revisión humana; documento
 pendiente no es descarte». Por eso solo descarta lo que la vacante declara indispensable (jornada completa,
 zona, vehículo propio, Android y —si se configuró— experiencia); tipo o año del vehículo fuera de la
-vacante, taxi, circulación, licencia y póliza van a revisión.
+vacante, rotulado, circulación, licencia y póliza van a revisión.
+
+Ajustes 2026-10-02 (preguntas corregidas):
+* Residencia: en la web se elige Estado → Municipio/Alcaldía con selectores (catálogo INEGI); el valor guardado es
+  «Municipio, Estado». En el chat se escribe.
+* Rotulado: «¿Tu vehículo está rotulado?» (Sí / No); el criterio es el rotulado (id interno «taxi» por compatibilidad).
+* Circulación: el texto sale de los días de operación de la vacante (`dias_operacion`, `DIAS_OPERACION`), Sí / No.
+* Licencia: «¿Qué tipo de licencia tienes?» con las opciones del Estado de la vacante (`LICENCIAS_POR_ESTADO`);
+  sin licencia o un tipo no aceptado = revisión (documento pendiente ≠ descarte).
 
 Forma de `Vacante.prefiltro_reglas`:
     {
@@ -18,6 +26,9 @@ Forma de `Vacante.prefiltro_reglas`:
       "zona": "",                             # [zona] de la pregunta 3; vacía = la pregunta se omite
       "cobertura": [],                        # municipios atendidos; vacía = el municipio nunca descarta
       "experiencia_indispensable": false,
+      "estado": "Puebla",                     # Estado de la vacante: opciones de licencia y selector de residencia
+      "dias_operacion": "diario",             # clave de DIAS_OPERACION → texto de la pregunta de circulación
+      "licencias_aceptadas": [],              # vacío = todas las del Estado salvo motociclista
       "vehiculo": {"tipos_permitidos": ["Sedán de cuatro puertas"], "anio_minimo": 2018},  # null = sin mínimo
       "reglas": {"<id>": {"<valor>": "ok" | "revision" | "no_cumple"}},   # encima de REGLAS_BASE
       "fotos_vehiculo": true
@@ -43,22 +54,54 @@ SEDAN, KANGOO, OTRO = "Sedán de cuatro puertas", "Kangoo", "Otro"
 TIPOS_VEHICULO = [SEDAN, KANGOO, OTRO]
 NO_SEGURO = "No estoy seguro"
 
-# Las 12 preguntas, en orden y con el texto del documento. {horas}, {ubicacion} y {zona} salen de la vacante.
+# Días de operación → cómo se pregunta la circulación («¿Tu vehículo puede circular todos los días?»).
+DIAS_OPERACION: Dict[str, str] = {
+    "diario": "todos los días",
+    "lunes_sabado": "de lunes a sábado",
+    "lunes_viernes": "de lunes a viernes",
+    "fines_semana": "los fines de semana",
+}
+DIAS_DEFAULT = "diario"
+
+SIN_LICENCIA = "No tengo licencia vigente"
+MOTOCICLISTA = "Motociclista"
+# Tipos de licencia que expide cada Estado (los nombres cambian por entidad). Lo que no está aquí usa la genérica.
+LICENCIAS_GENERICAS = ["Automovilista", "Chofer", "Transporte público o de carga", MOTOCICLISTA]
+LICENCIAS_POR_ESTADO: Dict[str, List[str]] = {
+    "Ciudad de México": ["Tipo A (automovilista)", "Tipo B (taxi)", "Tipo C, D o E (transporte público o de carga)", MOTOCICLISTA],
+    "México": ["Tipo A (automovilista)", "Tipo B (taxi)", "Tipo C (transporte público o de carga)", "Tipo D (motociclista)"],
+    "Puebla": ["Automovilista", "Chofer particular", "Chofer de servicio público", MOTOCICLISTA],
+    "Baja California Sur": ["Automovilista", "Chofer", "Servicio público", MOTOCICLISTA],
+}
+
+# Para deducir el Estado de configuraciones previas a 2026-10-02 (solo traían `ubicacion_texto`).
+_ALIAS_ESTADO = {
+    "cdmx": "Ciudad de México", "ciudad de mexico": "Ciudad de México", "df": "Ciudad de México",
+    "estado de mexico": "México", "edomex": "México", "puebla": "Puebla",
+    "baja california sur": "Baja California Sur", "bcs": "Baja California Sur", "san jose del cabo": "Baja California Sur",
+    "los cabos": "Baja California Sur", "cabo san lucas": "Baja California Sur", "la paz": "Baja California Sur",
+}
+
+# Las preguntas, en orden. {horas}, {ubicacion}, {zona} y {dias} salen de la vacante.
 PREGUNTAS: List[dict] = [
-    {"id": "municipio", "tipo": "abierta", "texto": "¿En qué municipio o alcaldía vives?"},
+    {"id": "municipio", "tipo": "municipio", "texto": "¿En qué municipio o alcaldía vives?"},
     {"id": "jornada", "tipo": "si_no", "texto": "Esta vacante requiere {horas} horas de jornada en {ubicacion}. ¿Puedes cubrirla completa?"},
     {"id": "zona", "tipo": "si_no", "texto": "¿Puedes realizar entregas en {zona}?"},
     {"id": "experiencia", "tipo": "si_no", "texto": "¿Has trabajado como chofer o repartidor?"},
     {"id": "vehiculo_propio", "tipo": "si_no", "texto": "¿Tienes vehículo propio para trabajar?"},
     {"id": "tipo_vehiculo", "tipo": "opcion", "texto": "¿Qué vehículo tienes?", "opciones": TIPOS_VEHICULO},
     {"id": "anio_vehiculo", "tipo": "anio", "texto": "¿De qué año es?"},
-    {"id": "taxi", "tipo": "si_no", "texto": "¿Está rotulado o registrado como taxi?"},
-    {"id": "circulacion", "tipo": "opcion", "texto": "¿Puede circular todos los días que requiere la operación?", "opciones": ["Sí", "No", NO_SEGURO]},
-    {"id": "licencia", "tipo": "si_no", "texto": "¿Tienes licencia vigente correspondiente al vehículo?"},
+    {"id": "taxi", "tipo": "si_no", "texto": "¿Tu vehículo está rotulado?"},
+    {"id": "circulacion", "tipo": "si_no", "texto": "¿Tu vehículo puede circular {dias}?"},
+    {"id": "licencia", "tipo": "opcion", "texto": "¿Qué tipo de licencia tienes?"},
     {"id": "poliza", "tipo": "si_no", "texto": "¿Tienes póliza de seguro vigente?"},
     {"id": "android", "tipo": "si_no", "texto": "¿Tienes teléfono Android para usar las aplicaciones de reparto?"},
 ]
 IDS = [p["id"] for p in PREGUNTAS]
+
+def _norm_simple(s: str) -> str:
+    return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower().strip()
+
 
 # Sin vehículo propio estas ya no se preguntan (y no cuentan como faltantes).
 VEHICULARES = ("tipo_vehiculo", "anio_vehiculo", "taxi", "circulacion", "poliza")
@@ -69,9 +112,9 @@ REGLAS_BASE: Dict[str, Dict[str, str]] = {
     "jornada": {"no": NO_CUMPLE},  # no hay medio turno
     "zona": {"no": NO_CUMPLE},
     "vehiculo_propio": {"no": NO_CUMPLE},  # indispensable en estas vacantes
-    "taxi": {"si": REVISION},
-    "circulacion": {"no": REVISION, "no estoy seguro": REVISION},
-    "licencia": {"no": REVISION},  # documento pendiente ≠ descarte
+    "taxi": {"si": REVISION},  # rotulado
+    "circulacion": {"no": REVISION, "no estoy seguro": REVISION},  # «no estoy seguro» = respuestas previas
+    "licencia": {"no": REVISION, _norm_simple(SIN_LICENCIA): REVISION},  # documento pendiente ≠ descarte; «no» = previas
     "poliza": {"no": REVISION},    # documento pendiente ≠ descarte
     "android": {"no": NO_CUMPLE},
 }
@@ -81,10 +124,11 @@ MOTIVOS = {  # (pregunta, valor) → motivo legible para RH
     ("zona", "no"): "No puede realizar entregas en {zona}",
     ("experiencia", "no"): "Sin experiencia como chofer o repartidor (indispensable en esta vacante)",
     ("vehiculo_propio", "no"): "No tiene vehículo propio",
-    ("taxi", "si"): "El vehículo está rotulado o registrado como taxi",
-    ("circulacion", "no"): "No puede circular todos los días de la operación",
-    ("circulacion", "no estoy seguro"): "No está seguro de poder circular todos los días de la operación",
+    ("taxi", "si"): "El vehículo está rotulado",
+    ("circulacion", "no"): "Su vehículo no puede circular {dias}",
+    ("circulacion", "no estoy seguro"): "No está seguro de poder circular {dias}",
     ("licencia", "no"): "Licencia vigente pendiente",
+    ("licencia", _norm_simple(SIN_LICENCIA)): "Licencia vigente pendiente",
     ("poliza", "no"): "Póliza de seguro vigente pendiente",
     ("android", "no"): "No tiene teléfono Android para las aplicaciones de reparto",
 }
@@ -92,9 +136,13 @@ MOTIVOS = {  # (pregunta, valor) → motivo legible para RH
 
 def configuracion(jornada_horas: Optional[int], tipos_permitidos: List[str], anio_minimo: Optional[int], *,
                   ubicacion_texto: str = "", zona: str = "", cobertura: Optional[List[str]] = None,
-                  experiencia_indispensable: bool = False, reglas: Optional[dict] = None) -> dict:
+                  experiencia_indispensable: bool = False, reglas: Optional[dict] = None,
+                  estado: str = "", dias_operacion: str = DIAS_DEFAULT, licencias_aceptadas: Optional[List[str]] = None) -> dict:
     """Config lista para guardar en `Vacante.prefiltro_reglas`."""
     return {
+        "estado": estado or estado_de({"ubicacion_texto": ubicacion_texto}),
+        "dias_operacion": dias_operacion if dias_operacion in DIAS_OPERACION else DIAS_DEFAULT,
+        "licencias_aceptadas": list(licencias_aceptadas or []),
         "activo": True,
         "jornada_horas": jornada_horas,
         "ubicacion_texto": ubicacion_texto,
@@ -111,12 +159,40 @@ def activo(config: Optional[dict]) -> bool:
     return bool(config and config.get("activo"))
 
 
+def estado_de(config: dict) -> str:
+    """Estado de la vacante: el guardado o, en configuraciones previas, el que se reconozca en `ubicacion_texto`."""
+    if (config.get("estado") or "").strip():
+        return config["estado"].strip()
+    texto = _norm_simple(config.get("ubicacion_texto") or "")
+    for parte in [texto, *[x.strip() for x in re.split(r"[,·|/-]", texto)]]:
+        if parte in _ALIAS_ESTADO:
+            return _ALIAS_ESTADO[parte]
+    return ""
+
+
+def texto_dias(config: dict) -> str:
+    return DIAS_OPERACION.get(config.get("dias_operacion") or DIAS_DEFAULT, DIAS_OPERACION[DIAS_DEFAULT])
+
+
+def licencias_de(config: dict) -> List[str]:
+    """Opciones de la pregunta de licencia: los tipos del Estado de la vacante + «No tengo licencia vigente»."""
+    return [*LICENCIAS_POR_ESTADO.get(estado_de(config), LICENCIAS_GENERICAS), SIN_LICENCIA]
+
+
+def licencias_aceptadas(config: dict) -> List[str]:
+    """Tipos que cumplen: los que RH marcó o, si no marcó, todos los del Estado salvo motociclista."""
+    opciones = licencias_de(config)[:-1]
+    marcadas = [x for x in (config.get("licencias_aceptadas") or []) if x in opciones]
+    return marcadas or [x for x in opciones if "motociclista" not in _norm_simple(x)]
+
+
 def _texto(p: dict, config: dict) -> str:
     return (
         p["texto"]
         .replace("{horas}", str(config.get("jornada_horas") or "las"))
         .replace("{ubicacion}", (config.get("ubicacion_texto") or "la plaza").strip())
         .replace("{zona}", (config.get("zona") or "").strip())
+        .replace("{dias}", texto_dias(config))
     )
 
 
@@ -127,8 +203,14 @@ def preguntas(config: dict) -> List[dict]:
     for p in PREGUNTAS:
         if p["id"] == "zona" and not (config.get("zona") or "").strip():
             continue
-        opciones = list(p.get("opciones") or (["Sí", "No"] if p["tipo"] == "si_no" else []))
-        salida.append({**p, "texto": _texto(p, config), "opciones": opciones})
+        if p["id"] == "licencia":
+            opciones = licencias_de(config)
+        else:
+            opciones = list(p.get("opciones") or (["Sí", "No"] if p["tipo"] == "si_no" else []))
+        q = {**p, "texto": _texto(p, config), "opciones": opciones}
+        if p["tipo"] == "municipio":
+            q["estado"] = estado_de(config)  # el selector web arranca en el Estado de la vacante
+        salida.append(q)
     return salida
 
 
@@ -178,6 +260,28 @@ def _opcion(pid: str, texto: str, opciones: List[str]) -> Optional[str]:
             return NO_SEGURO
         sn = _si_no(texto)
         return {"si": "Sí", "no": "No"}.get(sn or "")
+    if pid == "licencia":
+        if re.search(r"\b(no tengo|ninguna|sin licencia|no cuento|vencida|no)\b", t) and not re.search(r"\btipo\b", t):
+            return SIN_LICENCIA
+        tipo = re.search(r"\btipo\s+([a-e])\b", t)
+        for o in opciones:
+            on = _norm(o)
+            # «tipo d» → «Tipo C, D o E (…)»: la letra se busca en el encabezado (antes del paréntesis)
+            if tipo and on.startswith("tipo") and re.search(rf"\b{tipo.group(1)}\b", on.split("(")[0][4:]):
+                return o
+        claves = {"automovilista": ("automovilista", "particular", "auto", "carro", "coche"),
+                  "chofer": ("chofer",), "taxi": ("taxi",), "motociclista": ("moto", "motociclista"),
+                  "publico": ("publico", "transporte", "carga")}
+        for o in opciones:
+            on = _norm(o)
+            if on == t or t in on.split():
+                return o
+        for o in opciones:
+            on = _norm(o)
+            for clave, palabras in claves.items():
+                if clave in on and any(re.search(rf"\b{w}\b", t) for w in palabras):
+                    return o
+        return None
     if pid == "tipo_vehiculo":
         if re.search(r"\bkangoo\b", t):
             return KANGOO
@@ -212,7 +316,7 @@ def interpretar(pregunta: dict, texto: str) -> Optional[str]:
     if not texto:
         return None
     tipo = pregunta["tipo"]
-    if tipo == "abierta":
+    if tipo in ("abierta", "municipio"):
         return texto[:150]
     if tipo == "si_no":
         return _si_no(texto)
@@ -229,6 +333,8 @@ def ayuda(pregunta: dict) -> str:
     tipo = pregunta["tipo"]
     if tipo == "si_no":
         return "Responde *Sí* o *No*, por favor."
+    if tipo == "municipio":
+        return "Escribe tu municipio o alcaldía, por ejemplo *Puebla* o *Iztapalapa*."
     if tipo == "opcion":
         return "Responde con el número de la opción:\n" + "\n".join(f"{i}. {o}" for i, o in enumerate(pregunta["opciones"], 1))
     if tipo == "anio":
@@ -267,7 +373,7 @@ def evaluar(config: dict, respuestas: Dict[str, str]) -> dict:
     reglas = reglas_efectivas(config)
     veh = config.get("vehiculo") or {}
     textos = {p["id"]: p["texto"] for p in preguntas(config)}
-    horas, zona = config.get("jornada_horas") or "", (config.get("zona") or "").strip()
+    horas, zona, dias = config.get("jornada_horas") or "", (config.get("zona") or "").strip(), texto_dias(config)
     motivos: List[dict] = []
 
     def marcar(pid: str, efecto: str, motivo: str) -> None:
@@ -285,11 +391,12 @@ def evaluar(config: dict, respuestas: Dict[str, str]) -> dict:
         valor = _clave(respuestas.get(pid))
         if valor and valor in mapa:
             motivo = MOTIVOS.get((pid, valor), f"Respuesta «{respuestas.get(pid)}»")
-            marcar(pid, mapa[valor], motivo.replace("{horas}", str(horas)).replace("{zona}", zona))
+            marcar(pid, mapa[valor], motivo.replace("{horas}", str(horas)).replace("{zona}", zona).replace("{dias}", dias))
 
     # Municipio: solo cuenta si la vacante configuró cobertura; fuera de ella = revisión (nunca descarte)
     cobertura = [_norm(m) for m in (config.get("cobertura") or []) if str(m).strip()]
-    municipio = _norm(respuestas.get("municipio") or "")
+    # de la web llega «Municipio, Estado» (selectores): se compara solo el municipio
+    municipio = _norm((respuestas.get("municipio") or "").split(",")[0])
     if cobertura and municipio and not any(m in municipio or municipio in m for m in cobertura):
         marcar("municipio", (config.get("reglas") or {}).get("municipio", {}).get("fuera_cobertura", REVISION),
                f"Vive en «{respuestas.get('municipio')}», fuera de la cobertura configurada")
@@ -311,6 +418,12 @@ def evaluar(config: dict, respuestas: Dict[str, str]) -> dict:
         except ValueError:
             marcar("anio_vehiculo", REVISION, f"Año ilegible: «{anio}»")
 
+    # Licencia: tipo fuera de los aceptados = revisión (sin licencia ya lo marca REGLAS_BASE)
+    licencia = respuestas.get("licencia") or ""
+    if licencia and licencia in licencias_de(config) and licencia != SIN_LICENCIA and licencia not in licencias_aceptadas(config):
+        marcar("licencia", (config.get("reglas") or {}).get("licencia", {}).get("no_aceptada", REVISION),
+               f"Licencia «{licencia}»; esta vacante acepta: {', '.join(licencias_aceptadas(config))}")
+
     peor = max((_GRAVEDAD[m["efecto"]] for m in motivos), default=0)
     resultado = {0: "cumple", 1: "revision", 2: "no_cumple"}[peor]
     motivos.sort(key=lambda m: -_GRAVEDAD[m["efecto"]])
@@ -328,7 +441,7 @@ def respuestas_legibles(config: dict, respuestas: Dict[str, str]) -> List[dict]:
     return [{"id": p["id"], "pregunta": p["texto"], "respuesta": respuestas.get(p["id"], "")} for p in preguntas(config)]
 
 
-def normalizar(cfg: Optional[dict], ubicacion_default: str = "") -> dict:
+def normalizar(cfg: Optional[dict], ubicacion_default: str = "", estado_default: str = "") -> dict:
     """Valida lo que RH guarda en `Vacante.prefiltro_reglas` (vacío = sin prefiltro por reglas)."""
     if not cfg:
         return {}
@@ -350,10 +463,18 @@ def normalizar(cfg: Optional[dict], ubicacion_default: str = "") -> dict:
     for pid, mapa in (cfg.get("reglas") or {}).items():
         if pid in IDS and isinstance(mapa, dict):
             reglas[pid] = {str(k).lower(): v for k, v in mapa.items() if v in EFECTOS}
+    dias = cfg.get("dias_operacion") or DIAS_DEFAULT
+    if dias not in DIAS_OPERACION:
+        raise ValueError("Días de operación no válidos.")
+    ubicacion = str(cfg.get("ubicacion_texto") or ubicacion_default or "").strip()[:120]
+    estado = str(cfg.get("estado") or estado_default or "").strip()[:60] or estado_de({"ubicacion_texto": ubicacion})
     return {
+        "estado": estado,
+        "dias_operacion": dias,
+        "licencias_aceptadas": [str(x)[:80] for x in (cfg.get("licencias_aceptadas") or []) if str(x).strip()][:10],
         "activo": bool(cfg.get("activo", True)),
         "jornada_horas": horas,
-        "ubicacion_texto": str(cfg.get("ubicacion_texto") or ubicacion_default or "").strip()[:120],
+        "ubicacion_texto": ubicacion,
         "zona": str(cfg.get("zona") or "").strip()[:120],
         "cobertura": [str(m).strip()[:80] for m in (cfg.get("cobertura") or []) if str(m).strip()][:60],
         "experiencia_indispensable": bool(cfg.get("experiencia_indispensable")),

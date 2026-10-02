@@ -165,7 +165,8 @@ const FILTROS_COLUMNA: Partial<Record<EtapaCandidato, { clave: string; texto: st
   ],
   Entrevista: [
     { clave: "sin_agendar", texto: "Sin agendar" },
-    { clave: "agendada", texto: "Agendada" },
+    { clave: "agendada", texto: "Pendiente de confirmación" },
+    { clave: "no_podra", texto: "No podrá asistir" },
     { clave: "confirmada", texto: "Confirmada" },
     { clave: "realizada", texto: "Realizadas" },
     { clave: "no_asistio", texto: "No asistió" },

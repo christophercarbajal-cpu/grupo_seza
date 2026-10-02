@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     # Número PÚBLICO de WhatsApp (10 dígitos) para «Copiar liga WhatsApp» de cada vacante (wa.me). Si una Cuenta tiene
     # su `whatsapp_comunicacion`, manda esa. Solo se ofrece con WhatsApp habilitado (no aplica con Telegram activo).
     whatsapp_numero_publico: str = ""
+    # 2026-10-02: horas sin movimiento antes de mandar «¿Podrás asistir? Necesitamos tu confirmación» (0 = apagado)
+    cita_seguimiento_horas: float = 4
 
     # --- Gateway propio (alternativa sin costo por mensaje) ---
     waha_url: str = "http://localhost:3001"

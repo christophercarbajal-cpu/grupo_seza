@@ -40,8 +40,8 @@ FALLAS = []
 PDF = b"%PDF-1.4\n" + b"0" * 900
 JPG = b"\xff\xd8\xff\xe0" + b"0" * 2000
 SLUG = "chofer-de-reparto-con-unidad-propia-puebla"
-R_OK = {"municipio": "Puebla", "jornada": "Sí", "experiencia": "No", "vehiculo_propio": "Sí", "tipo_vehiculo": "Sedán de cuatro puertas",
-        "anio_vehiculo": "2019", "taxi": "No", "circulacion": "Sí", "licencia": "Sí", "poliza": "Sí", "android": "Sí", "zona": "Sí", "cobertura": "Sí"}
+R_OK = {"municipio": "Puebla, Puebla", "jornada": "Sí", "experiencia": "No", "vehiculo_propio": "Sí", "tipo_vehiculo": "Sedán de cuatro puertas",
+        "anio_vehiculo": "2019", "taxi": "No", "circulacion": "Sí", "licencia": "Automovilista", "poliza": "Sí", "android": "Sí", "zona": "Sí", "cobertura": "Sí"}
 FOTOS = ["frente", "atras", "izquierdo", "derecho"]
 DOCS = ["licencia", "tarjeta", "poliza"]
 

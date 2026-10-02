@@ -284,9 +284,12 @@ export interface BloquePublicacion {
 /** Demo SEZA (2026-09-29): prefiltro por reglas (services/prefiltro_reglas.py). */
 export interface PreguntaReglas {
   id: string;
-  tipo: "abierta" | "si_no" | "opcion" | "anio";
+  /** «municipio» (2026-10-02): en la web se elige Estado → Municipio con selectores; valor «Municipio, Estado». */
+  tipo: "abierta" | "si_no" | "opcion" | "anio" | "municipio";
   texto: string;
   opciones: string[];
+  /** Solo «municipio»: Estado de la vacante con el que arranca el selector. */
+  estado?: string;
 }
 export interface ConfigPrefiltroReglas {
   activo: boolean;
@@ -297,10 +300,23 @@ export interface ConfigPrefiltroReglas {
   /** Municipios atendidos: vacía = el municipio nunca descarta; fuera de ella = revisión. */
   cobertura: string[];
   experiencia_indispensable: boolean;
+  /** Estado de la vacante (opciones de licencia y selector de residencia). */
+  estado?: string;
+  /** Clave de DIAS_OPERACION: define la pregunta de circulación. */
+  dias_operacion?: string;
+  /** Licencias que cumplen; vacía = todas las del Estado salvo motociclista. */
+  licencias_aceptadas?: string[];
   vehiculo: { tipos_permitidos: string[]; anio_minimo: number | null };
   reglas: Record<string, Record<string, "ok" | "revision" | "no_cumple">>;
   fotos_vehiculo: boolean;
 }
+/** Días de operación de la vacante → «¿Tu vehículo puede circular …?» (espejo de prefiltro_reglas.DIAS_OPERACION). */
+export const DIAS_OPERACION: { valor: string; texto: string }[] = [
+  { valor: "diario", texto: "Todos los días" },
+  { valor: "lunes_sabado", texto: "De lunes a sábado" },
+  { valor: "lunes_viernes", texto: "De lunes a viernes" },
+  { valor: "fines_semana", texto: "Fines de semana" },
+];
 /** Sin vehículo propio estas preguntas ya no aplican (mismo criterio que el backend). */
 export const PREGUNTAS_VEHICULARES = ["tipo_vehiculo", "anio_vehiculo", "taxi", "circulacion", "poliza"];
 export const TIPOS_VEHICULO = ["Sedán de cuatro puertas", "Kangoo", "Otro"];

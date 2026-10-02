@@ -3751,6 +3751,8 @@ export interface EntrevistaOperativa {
   confirmadaEn: string | null;
   /** «candidato» (respondió «Sí» en Telegram) o el nombre de quien confirmó desde RH. */
   confirmadaPor?: string;
+  /** 2026-10-02: el candidato avisó que no podrá asistir (reagendar: true/false/null = sin contestar). */
+  noPodra?: { texto: string; en: string; reagendar: boolean | null } | null;
   asistencia: "" | "asistio" | "no_asistio";
   resultado: "" | "favorable" | "con_observaciones" | "desfavorable";
   resultadoEtiqueta: string;
