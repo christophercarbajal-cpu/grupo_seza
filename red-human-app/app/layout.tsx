@@ -6,7 +6,6 @@ const display = Inter_Tight({
   subsets: ["latin"],
   variable: "--font-display",
   display: "swap",
-  weight: ["400", "500", "600", "700", "800"],
 });
 
 const sans = Inter({
